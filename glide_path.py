@@ -112,7 +112,22 @@ def build_glide_path(
         w = _effective_weights(chunks[0])
         return GlidePath(schedule={y: w for y in range(1, 31)})
 
-    spread = max(2, spread_years)
+    # spread_years <= 1 means a hard cut at each boundary: no transition
+    # window, every year simply carries its owning chunk's weights.
+    # (Previously max(2, spread_years) forced a 2-year ramp, so 0, 1 and 2 all
+    # produced identical schedules and a hard cut was unreachable.)
+    if spread_years <= 1:
+        schedule = {}
+        for y in range(1, 31):
+            for c in chunks:
+                if c.year_from <= y <= c.year_to:
+                    schedule[y] = _effective_weights(c)
+                    break
+            else:
+                schedule[y] = _effective_weights(chunks[-1])
+        return GlidePath(schedule=schedule)
+
+    spread = spread_years
 
     # ── Pre-compute transition windows for each boundary ──────────────────────
     boundaries: list[tuple[int, int, int, dict, dict]] = []
