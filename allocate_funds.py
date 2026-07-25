@@ -959,9 +959,14 @@ def optimise_with_relaxation(
             )
 
         df_filtered = apply_fund_filters(df, cur_std, cur_dd)
-        if len(df_filtered) < 2:
-            print(f"    Only {len(df_filtered)} fund(s) pass filters — skipping.")
+        if len(df_filtered) < 1:
+            print("    No funds pass filters — skipping.")
             continue
+        # A single-fund universe is a valid, trivially-solvable problem: the
+        # MILP either returns w=[1.0] (when max_per_fund permits it and the
+        # fund clears the return/risk floors) or reports infeasible. It was
+        # previously skipped by a `< 2` guard, which left the chunk empty with
+        # target_weights summing to 0.0 instead of 1.0.
 
         # Skip if widening didn't add any new funds — same universe means same
         # inner-loop result, so re-running is pure waste.
