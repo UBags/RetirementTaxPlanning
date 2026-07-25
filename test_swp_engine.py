@@ -73,21 +73,25 @@ def _make_fund(name="Fund A", fund_type="debt", allocation=100.0,
 
 def _make_state(funds=None, total_alloc=100.0, req_annual=8.0,
                 inv_date=None):
-    """Create a minimal AppState with sensible defaults."""
-    from models import (AppState, AllocationChunk, TaxChunk, TaxSlab,
-                        EquityTaxChunk, OtherTaxChunk, PersonalIncome,
-                        HUFIncome, ReturnChunk, SplitChunk, FDRateChunk)
+    """Create a minimal AppState with sensible defaults.
 
-    state = AppState()
+    Built on models.default_state() so the six tax-chunk lists stay in sync
+    with the application rather than being duplicated here.
+
+    ``total_alloc`` is accepted for signature compatibility but unused --
+    each FundEntry carries its own ``allocation``.
+    """
+    from models import (AllocationChunk, ReturnChunk, FDRateChunk,
+                        OtherIncome, default_state)
+
+    state = default_state()
     state.investment_date = inv_date or date(2024, 4, 1)
 
     if funds is None:
         funds = [_make_fund()]
 
-    # Flat fund list
-    state.funds = funds
+    state.funds = list(funds)
 
-    # Single allocation chunk spanning all 30 years
     chunk = AllocationChunk(year_from=1, year_to=30, funds=list(funds))
     chunk.min_return   = 0.065
     chunk.max_std_dev  = 0.04
@@ -96,29 +100,21 @@ def _make_state(funds=None, total_alloc=100.0, req_annual=8.0,
     chunk.min_per_fund = 0.01
     state.allocation_chunks = [chunk]
 
-    # Requirements
-    from models import RequirementChunk
-    rc = RequirementChunk(year_from=1, year_to=30, annual_requirement=req_annual)
-    state.annual_requirements = [rc]
+    # annual_requirements is a Dict[int, float], not a list of chunks
+    state.annual_requirements = {y: req_annual for y in range(1, 31)}
 
-    # Returns
-    state.return_chunks = [ReturnChunk(year_from=1, year_to=30, annual_return=0.07)]
+    state.return_chunks = [ReturnChunk(year_from=1, year_to=30,
+                                       annual_return=0.07)]
 
-    # Split
-    state.split_chunks = [SplitChunk(year_from=1, year_to=30,
-                                     debt_ratio=0.8, equity_ratio=0.2, other_ratio=0.0)]
+    # Left empty: the engine derives debt/equity/other split from the actual
+    # fund allocations, which is what these tests vary.
+    state.split_chunks = []
 
-    # Tax chunks — individual debt
-    from models import DEFAULT_INDIVIDUAL_DEBT_CHUNKS as _di
-    state.individual_debt_chunks = _di()
-    from models import DEFAULT_INDIVIDUAL_EQUITY_CHUNKS as _ie
-    state.individual_equity_chunks = _ie()
-    from models import DEFAULT_OTHER_TAX_CHUNKS as _ot
-    state.other_tax_chunks = _ot()
-    from models import DEFAULT_HUF_DEBT_CHUNKS as _hd
-    state.huf_debt_chunks = _hd()
-    from models import DEFAULT_HUF_EQUITY_CHUNKS as _he
-    state.huf_equity_chunks = _he()
+    state.personal_income = OtherIncome()
+    state.huf_income      = OtherIncome()
+    state.windfalls       = []
+    state.huf_withdrawal_chunks = []
+    state.huf_annual_requirements = {}
 
     state.fd_rate_chunks = [FDRateChunk(year_from=1, year_to=30, fd_rate=0.07)]
     state.fd_rate = 0.07
@@ -127,7 +123,6 @@ def _make_state(funds=None, total_alloc=100.0, req_annual=8.0,
     state.glide_path = None
 
     return state
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Section 1 — Engine edge cases
@@ -171,9 +166,8 @@ def test_engine_all_equity():
 def test_engine_corpus_depletion():
     _section("Engine — Corpus Depletion (high withdrawal)")
     # Very high withdrawal relative to corpus — corpus should exhaust but not crash
-    from models import RequirementChunk
     state = _make_state(funds=[_make_fund("Debt A", "debt", 50.0)], req_annual=20.0)
-    state.annual_requirements = [RequirementChunk(year_from=1, year_to=30, annual_requirement=20.0)]
+    state.annual_requirements = {y: 20.0 for y in range(1, 31)}
     try:
         _, yearly, _ = _run_engine(state)
         _check("Engine doesn't crash on depletion", True)
@@ -208,7 +202,7 @@ def test_engine_rebalancing_tax_self_funded():
     and verify that net_cash_personal in the rebalance year is NOT reduced
     by the rebalancing tax — it should be portfolio-self-funded.
     """
-    from models import AllocationChunk, RequirementChunk, ReturnChunk, SplitChunk
+    from models import AllocationChunk, ReturnChunk, SplitChunk
     from glide_path import build_glide_path
 
     state = _make_state(funds=[
@@ -260,13 +254,13 @@ def test_engine_rebalancing_tax_self_funded():
 
 def test_engine_windfall():
     _section("Engine — Windfall in Final Year")
-    from models import Windfall
+    from models import WindfallEntry
     state = _make_state(funds=[_make_fund("Debt", "debt", 100.0)])
-    state.windfalls = [Windfall(year=30, amount=50.0, target="personal")]
-    _, yearly, _ = _run_engine(state)
+    state.windfalls = [WindfallEntry(year=30, amount=50.0, target="personal")]
+    p_rows, yearly, _ = _run_engine(state)
     _check("Engine handles late windfall", len(yearly) == 30)
     _check("Year 30 windfall registered",
-           any(r.windfall_personal > 0 for r in _ or []))
+           any(r.windfall_personal > 0 for r in p_rows or []))
 
 
 def test_engine_no_trade_threshold():
