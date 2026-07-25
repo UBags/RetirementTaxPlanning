@@ -1,0 +1,7 @@
+-r requirements.txt
+
+pytest>=8.0
+pytest-qt>=4.4          # Phase 4 GUI worker tests
+pytest-cov>=5.0
+hypothesis>=6.100       # Phase 1.3 property tests
+responses>=0.25         # Phase 1.2 HTTP stubbing

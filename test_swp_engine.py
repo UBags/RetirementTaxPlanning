@@ -34,13 +34,18 @@ PASS = "\033[92m✓\033[0m"
 FAIL = "\033[91m✗\033[0m"
 _results = []
 
+_COLLECT_MODE = False   # True only for the standalone runner (see run_all)
+
 def _check(name: str, condition: bool, detail: str = ""):
+    condition = bool(condition)
     sym = PASS if condition else FAIL
     msg = f"  {sym}  {name}"
     if detail:
         msg += f"  [{detail}]"
     print(msg)
     _results.append((name, condition))
+    if not condition and not _COLLECT_MODE:
+        raise AssertionError(f"{name}: {detail}" if detail else name)
 
 def _approx(a: float, b: float, tol: float = 1e-4) -> bool:
     return abs(a - b) <= tol
@@ -662,6 +667,8 @@ ALL_TESTS = [
 
 
 def run_all():
+    global _COLLECT_MODE
+    _COLLECT_MODE = True      # collect all results instead of aborting
     print("\n" + "═"*60)
     print("  SWP Financial Planner — Robustness Test Suite")
     print("═"*60)
