@@ -1,18 +1,97 @@
-# Ignore everything
-*
+# ==============================================================================
+# RetirementTaxPlanning — private repository
+# Track authored work: .py, .json, .docx/.odt/.xlsx, config, ReadMe.
+# Everything downloaded, generated or archived stays out.
+# ==============================================================================
 
-# Un-ignore .py files in the root only
-!*.py
+# ── Large binaries & archives — GitHub hard-rejects any file over 100 MB ─────
+*.deb
+*.rpm
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar
+*.exe
+*.msi
+*.dmg
+*.so
+*.so.*
 
-# Un-ignore README and .gitignore itself
-!README.md
-!.gitignore
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
 
-# Explicitly ignore subdirectories
-__pycache__/
-.venv/
-.idea/
-older_versions/
+# ── Engine / allocator output (recreated by "Run Calculations") ──────────────
+*_Personal_Monthly.csv
+*_Personal_Monthly_FundDetail.csv
+*_Personal_Annual_Summary.csv
+*_HUF_Monthly.csv
+*_HUF_Monthly_FundDetail.csv
+*_HUF_Annual_Summary.csv
+*_Sensitivity.csv
+allocation_chunk_*.csv
+allocation_summary.csv
+allocation_output.csv
+portfolio_viz.html
+
+# ── Downloaded / derived market data ─────────────────────────────────────────
+Fund_Metrics_Output.csv
+Fund_Metrics_Errors.csv
+mc_nifty50_nav.csv
+mc_debt_index.csv
+rolling_data.json
 Schemes_and_Funds/
-test/
-Uddipan/
+
+# ── Scratch ──────────────────────────────────────────────────────────────────
+_chunks_tmp.json
+
+# ── Regenerable LLM bundles (~5.9 MB, rewritten wholesale each time) ─────────
+Code packaged into MDs for LLMs/
+
+# ── Superseded local copies — git history is the right place for these ───────
+older_versions/
+allocate_funds_v0.9.py
+
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ── Environments (yours holds a 193 MB Qt library) ───────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Test / coverage ──────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.hypothesis/
+.tox/
+
+# ── Editors / OS ─────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+~$*.docx
+~$*.xlsx
+
+# ==============================================================================
+# Deliberately TRACKED — do not add these above:
+#   RetirementTaxPlanning.configuration   without it a clone cannot import engine
+#   Uddipan/*.swp.json                    Phase 1 golden-master fixtures
+#   Uddipan/allocation_params.json        hand-tuned allocator settings
+#   *.docx, *.odt, *.xlsx                 authored design documents
+# ==============================================================================

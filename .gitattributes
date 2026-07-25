@@ -1,0 +1,20 @@
+# Normalise text to LF in the object database regardless of platform.
+* text=auto eol=lf
+
+*.py            text eol=lf
+*.md            text eol=lf
+*.txt           text eol=lf
+*.json          text eol=lf
+*.yml           text eol=lf
+*.configuration text eol=lf
+
+# Binary — never diff, never touch line endings.
+*.docx  binary
+*.xlsx  binary
+*.odt   binary
+*.pdf   binary
+*.png   binary
+*.jpg   binary
+*.zip   binary
+
+*.csv   text eol=lf -diff
