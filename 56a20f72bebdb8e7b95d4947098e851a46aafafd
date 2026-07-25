@@ -1,0 +1,7 @@
+Impact table (truncated in the original message):
+
+  scenario | HUF @FY30  | household @FY30 | personal depleted | cum. tax
+  Opt1     | 825 -> 389 | 825 -> 389      | FY27 -> FY21      | 84.2 -> 52.7
+  Opt2     | 784 -> 351 | 784 -> 351      | FY26 -> FY20      | 83.2 -> 56.5
+  Opt3     | 776 -> 331 | 776 -> 331      | FY26 -> FY20      | 81.4 -> 52.8
+  Opt4     | 859 -> 415 | 859 -> 415      | FY27 -> FY21      | 89.5 -> 56.3
