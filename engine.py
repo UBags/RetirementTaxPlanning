@@ -163,6 +163,45 @@ class FIFOBucket:
         return principal, gain
 
 
+ACCRUE_REDEMPTION_GAINS = True
+
+def _redeem_pro_rata(buckets: Dict[str, "FIFOBucket"],
+                     navs: Dict[str, float],
+                     amount: float) -> Tuple[float, float, Dict[str, float]]:
+    """Redeem *amount* across per-fund buckets in proportion to their value.
+
+    Returns (principal, gain, gain_by_fund_name).
+
+    Used for cash that leaves the portfolio without being an SWP withdrawal:
+    the April income-tax payment and the HUF tax-saving transfer. Both were
+    previously applied to the aggregate buckets only, which the annual
+    re-sync then overwrote -- so the money never actually left.
+    """
+    if amount <= 1e-9 or not buckets:
+        return 0.0, 0.0, {}
+
+    total = sum(bk.current_value(navs.get(fn, 1.0)) for fn, bk in buckets.items())
+    if total <= 1e-9:
+        return 0.0, 0.0, {}
+
+    amount = min(amount, total)
+    principal = gain = 0.0
+    gains_by_fund: Dict[str, float] = {}
+
+    for fn, bk in list(buckets.items()):
+        val = bk.current_value(navs.get(fn, 1.0))
+        if val <= 1e-9:
+            continue
+        nav = navs.get(fn, 1.0)
+        pr, gn = bk.redeem(amount * val / total, nav)
+        principal += pr
+        gain += gn
+        if gn:
+            gains_by_fund[fn] = gains_by_fund.get(fn, 0.0) + gn
+
+    return principal, gain, gains_by_fund
+
+
 # ─── Glide-path rebalancing ───────────────────────────────────────────────────
 
 def _rebalance_portfolio(
@@ -1562,11 +1601,27 @@ class Engine:
                     huf_xfer_this = pend["tax_saved"]
 
                     # ── Personal tax: bounded by personal corpus ──────────────
-                    _p_corpus_now = (p_debt_agg.current_value(p_nav_d)
-                                     + p_equity_agg.current_value(p_nav_e)
-                                     + p_other_agg.current_value(p_nav_o))
+                    # Value from the PER-FUND buckets, which are the source of
+                    # truth. The aggregates are rebuilt from them a few lines
+                    # below, so anything debited only from the aggregates is
+                    # discarded (this was the bug).
+                    _p_corpus_now = sum(
+                        bk.current_value(p_fund_navs.get(fn, 1.0))
+                        for fn, bk in p_fund_buckets.items())
                     _p_tax_payable  = min(raw_ind_tax, max(0.0, _p_corpus_now))
                     _p_tax_shortfall = max(0.0, raw_ind_tax - _p_tax_payable)
+
+                    # Debit the tax from the per-fund buckets.
+                    if _p_tax_payable > 1e-9:
+                        _tx_pr, _tx_gn, _tx_gbf = _redeem_pro_rata(
+                            p_fund_buckets, p_fund_navs, _p_tax_payable)
+                        if ACCRUE_REDEMPTION_GAINS and _tx_gn > 1e-12:
+                            _a_tx = acc_get(p_acc, fy)
+                            for _fn, _g in _tx_gbf.items():
+                                _ft = fund_types_map.get(_fn, "debt")
+                                _a_tx["gain_e" if _ft == "equity"
+                                      else "gain_o" if _ft == "other"
+                                      else "gain_d"] += _g
 
                     # If personal is short, draw the remainder from HUF corpus
                     if _p_tax_shortfall > 1e-6:
@@ -1598,8 +1653,24 @@ class Engine:
                     # ── HUF transfer: bounded by personal corpus ──────────────
                     # The HUF transfer (tax saving) is a cash transfer OUT of
                     # personal into HUF.  Cap it at available personal corpus.
-                    _p_corpus_after_tax = max(0.0, _p_corpus_now - _p_tax_payable)
-                    huf_xfer_this = min(huf_xfer_this, _p_corpus_after_tax)
+                    _p_corpus_after_tax = sum(
+                        bk.current_value(p_fund_navs.get(fn, 1.0))
+                        for fn, bk in p_fund_buckets.items())
+                    huf_xfer_this = min(huf_xfer_this, max(0.0, _p_corpus_after_tax))
+
+                    # Debit the transfer from the per-fund buckets. Without
+                    # this the amount was credited to the HUF and never
+                    # removed from Personal -- money created from nothing.
+                    if huf_xfer_this > 1e-9:
+                        _xf_pr, _xf_gn, _xf_gbf = _redeem_pro_rata(
+                            p_fund_buckets, p_fund_navs, huf_xfer_this)
+                        if ACCRUE_REDEMPTION_GAINS and _xf_gn > 1e-12:
+                            _a_xf = acc_get(p_acc, fy)
+                            for _fn, _g in _xf_gbf.items():
+                                _ft = fund_types_map.get(_fn, "debt")
+                                _a_xf["gain_e" if _ft == "equity"
+                                      else "gain_o" if _ft == "other"
+                                      else "gain_d"] += _g
 
             # ── Annual aggregate sync (every April) ─────────────────────────
             # The per-fund buckets grow at each fund's own CAGR; the aggregate
