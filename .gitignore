@@ -98,3 +98,6 @@ Thumbs.db
 
 # ── LibreOffice lock files ───────────────────────────────────────────────────
 .~lock.*#
+
+# Patcher backups
+*.bak
