@@ -412,6 +412,7 @@ class AnnualSummaryChart(ChartWindow):
         "Net Cash Breakdown",
         "Tax Comparison (Personal vs HUF vs FD Benchmark)",
         "Full 5-Panel Dashboard",
+        "Personal vs HUF Wealth Shift",
     ]
 
     def __init__(self, rows, parent=None):
@@ -575,6 +576,89 @@ class AnnualSummaryChart(ChartWindow):
             a.yaxis.set_major_formatter(ticker.FuncFormatter(lambda v, _: f"{v:.0f}"))
 
             self.fig.tight_layout()
+
+        elif v == 4:
+            # ── Personal vs HUF Wealth Shift ──────────────────────────────
+            # Two-panel stacked area chart showing how wealth migrates from
+            # the Personal corpus to the HUF corpus over 30 years.
+            # Top panel: absolute corpus values (stacked area, Personal on
+            #            bottom, HUF on top — total = combined wealth).
+            # Bottom panel: HUF share % of total combined corpus, showing
+            #               the migration trajectory.
+            axes = self.fig.subplots(2, 1, gridspec_kw={"height_ratios": [3, 1]})
+            self.fig.suptitle("Wealth Migration: Personal → HUF", fontsize=12,
+                              fontweight="bold")
+
+            p_total = [r.corpus_debt_personal + r.corpus_equity_personal +
+                       r.corpus_other_personal for r in rows]
+            h_total = [r.corpus_debt_huf + r.corpus_equity_huf +
+                       r.corpus_other_huf for r in rows]
+            combined = [p + h for p, h in zip(p_total, h_total)]
+
+            # ── Top panel: stacked area ────────────────────────────────────
+            a0 = axes[0]
+            a0.stackplot(
+                yrs,
+                p_total, h_total,
+                labels=["Personal Corpus", "HUF Corpus"],
+                colors=[COLOURS[0], COLOURS[3]],
+                alpha=0.82,
+            )
+            # Overlay total combined corpus line
+            a0.plot(yrs, combined, color="#2c3e50", linewidth=1.8,
+                    linestyle="--", label="Total Combined", zorder=5)
+
+            # Annotate crossover year if HUF ever exceeds Personal
+            for i in range(1, len(yrs)):
+                if h_total[i] >= p_total[i] and h_total[i - 1] < p_total[i - 1]:
+                    a0.axvline(yrs[i], color="#c0392b", linewidth=1.2,
+                               linestyle=":", alpha=0.8)
+                    a0.annotate(
+                        f"HUF > Personal\n(Yr {yrs[i]})",
+                        xy=(yrs[i], combined[i] * 0.55),
+                        fontsize=7, color="#c0392b", ha="left",
+                        bbox=dict(boxstyle="round,pad=0.2", fc="white",
+                                  ec="#c0392b", alpha=0.7),
+                    )
+                    break
+
+            a0.set_ylabel("Rs Lakhs")
+            a0.legend(fontsize=8, loc="upper left")
+            a0.grid(alpha=0.3)
+            a0.yaxis.set_major_formatter(
+                ticker.FuncFormatter(lambda val, _: f"{val:.0f}"))
+
+            # Annotate final year split
+            if combined[-1] > 0.01:
+                p_pct = p_total[-1] / combined[-1] * 100
+                h_pct = h_total[-1] / combined[-1] * 100
+                a0.annotate(
+                    f"Yr 30: Personal {p_pct:.0f}%  |  HUF {h_pct:.0f}%",
+                    xy=(0.98, 0.04), xycoords="axes fraction",
+                    fontsize=8, ha="right", va="bottom",
+                    bbox=dict(boxstyle="round,pad=0.3", fc="#ecf0f1",
+                              ec="#bdc3c7", alpha=0.9),
+                )
+
+            # ── Bottom panel: HUF share % ──────────────────────────────────
+            a1 = axes[1]
+            huf_share_pct = [
+                (h / c * 100) if c > 0.01 else 0.0
+                for h, c in zip(h_total, combined)
+            ]
+            a1.fill_between(yrs, huf_share_pct, alpha=0.55,
+                            color=COLOURS[3], label="HUF share %")
+            a1.plot(yrs, huf_share_pct, color=COLOURS[3], linewidth=1.5)
+            a1.axhline(50, color="#7f8c8d", linewidth=0.9, linestyle="--",
+                       alpha=0.7)
+            a1.set_ylabel("HUF %", fontsize=9)
+            a1.set_xlabel("FY Year")
+            a1.set_ylim(0, 100)
+            a1.yaxis.set_major_formatter(
+                ticker.FuncFormatter(lambda val, _: f"{val:.0f}%"))
+            a1.grid(alpha=0.3)
+
+            self.fig.tight_layout(rect=[0, 0, 1, 0.95])
 
         self._draw()
 

@@ -759,30 +759,71 @@ def run_monte_carlo(
             else:
                 _what = ("Debt Index unavailable — get_funds_data.py not "
                          "importable or data too short")
-            warnings.warn(
+            import textwrap as _tw
+            _msg = _tw.fill(
                 f"Block bootstrap: {_what}. Falling back to log-normal.",
-                RuntimeWarning, stacklevel=2,
+                width=80,
             )
+            warnings.warn(_msg, RuntimeWarning, stacklevel=2)
             r_sim = _lognormal_returns(mu_det, sigmas, n_sims, floors, rng)
     else:
         r_sim = _lognormal_returns(mu_det, sigmas, n_sims, floors, rng)
 
     # ── Deterministic base from engine ───────────────────────────────────────
     from engine import Engine
-    _, det_y, _, _ = Engine(state).run()
+    _, det_y, h_mon, _ = Engine(state).run()
     det_corpus   = np.array([r.corpus_debt_personal + r.corpus_equity_personal +
                               r.corpus_other_personal for r in det_y])
     det_huf_corp = np.array([r.corpus_debt_huf + r.corpus_equity_huf +
                               r.corpus_other_huf       for r in det_y])
+    det_net_cash = np.array([r.net_cash_total for r in det_y])
+    det_net_pers = np.array([r.net_cash_personal for r in det_y])
+    det_net_huf  = np.array([r.net_cash_huf      for r in det_y])
     det_tax_pers = np.array([r.tax_personal   for r in det_y])
     det_tax_sav  = np.array([r.tax_saved      for r in det_y])
-    det_net_cash = np.array([r.net_cash_total for r in det_y])
     det_req      = np.array([state.get_requirement(fy) for fy in range(1, 31)])
 
-    safe_corp    = np.where(det_corpus > 0, det_corpus, 1.0)
-    tax_sav_frac = np.where(det_corpus > 0, det_tax_sav  / safe_corp, 0.0)
-    tax_per_frac = np.where(det_corpus > 0, det_tax_pers / safe_corp, 0.0)
-    other_cash   = det_net_cash - (det_req - det_tax_sav - det_tax_pers)
+    # ── HUF absolute cash flows (do NOT scale by simulated corp_p) ───────────
+    # HUF inflows and outflows are POLICY-FIXED (tax-savings transfers, windfall,
+    # scheduled WD) and must not be expressed as a fraction of the simulated
+    # personal corpus.  The original fractional approach caused a catastrophic
+    # explosion when the personal corpus approached zero (denominator = 1.0 guard
+    # inflated the fraction to the literal lakh value, multiplying by corp_p ≫ 0).
+    #
+    # det_huf_wd[fi]   : total HUF withdrawals in FY fi
+    #   = scheduled (0/5/10 L) + any personal-shortfall top-up from this FY.
+    #   Derived directly from the monthly HUF rows so it includes the top-up.
+    #
+    # huf_inflow[fi]   : new money entering HUF in FY fi
+    #   = det_huf_corp[fi] - det_huf_corp[fi-1]*(1+mu_det[fi]) + det_huf_wd[fi]
+    #   This is the model-consistent inflow regardless of source
+    #   (tax-savings transfer, windfall, etc.).
+    #   Clamped to ≥ 0 (tiny negatives arise from monthly-vs-annual compounding).
+    det_huf_wd = np.array([
+        sum(r.wd_debt + r.wd_equity + r.wd_other for r in h_mon if r.fy_year == fy)
+        for fy in range(1, 31)], dtype=np.float64)
+
+    huf_inflow = np.empty(30, dtype=np.float64)
+    for _fi in range(30):
+        _prev = det_huf_corp[_fi - 1] if _fi > 0 else 0.0
+        huf_inflow[_fi] = (det_huf_corp[_fi]
+                           - _prev * (1.0 + mu_det[_fi])
+                           + det_huf_wd[_fi])
+    huf_inflow = np.maximum(huf_inflow, 0.0)  # clamp rounding artefacts
+
+    # ── Fixed (non-SWP) personal cash component ──────────────────────────────
+    # Captures pension, rental, tax-free interest, minus taxes — everything that
+    # is NOT the simulated SWP withdrawal and NOT the HUF scheduled withdrawal.
+    # personal_fixed[fi] = det_net_pers[fi] - p_wd_det[fi] - topup_det[fi]
+    # where p_wd_det = min(det_req, det_corpus) and topup_det = HUF→personal transfer.
+    #
+    # Approximation: p_wd_det = min(det_req, max(det_corpus, 0)).
+    # topup_det = det_net_pers - p_wd_det - personal_other   (circular); instead
+    # use: personal_fixed = det_net_pers - min(det_req, max(det_corpus, 0))
+    # This slightly overstates personal_fixed in depletion years (it absorbs the topup)
+    # but gives consistent total cash = actual_wd_sim + topup_sim + personal_fixed + det_net_huf.
+    _p_wd_det      = np.minimum(det_req, np.maximum(det_corpus, 0.0))
+    personal_fixed = det_net_pers - _p_wd_det   # shape (30,) absolute Lakhs
 
     # ── Simulate ─────────────────────────────────────────────────────────────
     # Use float32 throughout to halve memory (240 MB vs 480 MB at 1 M sims).
@@ -793,30 +834,48 @@ def run_monte_carlo(
     init_p = float(state.total_debt_allocation() + state.total_equity_allocation() +
                    state.total_other_allocation())
 
-    r32          = r_sim.astype(np.float32)    # bootstrap already fast; cast here
-    det_req32    = det_req   .astype(np.float32)
-    tsav_frac32  = tax_sav_frac.astype(np.float32)
-    tper_frac32  = tax_per_frac.astype(np.float32)
-    other_cash32 = other_cash  .astype(np.float32)
+    r32            = r_sim.astype(np.float32)
+    det_req32      = det_req   .astype(np.float32)
+    huf_inflow32   = huf_inflow.astype(np.float32)
+    det_huf_wd32   = det_huf_wd.astype(np.float32)
+    pers_fixed32   = personal_fixed.astype(np.float32)
+    det_net_huf32  = det_net_huf   .astype(np.float32)
 
-    corpus_all = np.empty((n_sims, 30), dtype=np.float32)  # 120 MB at 1 M sims
-    cash_all   = np.empty((n_sims, 30), dtype=np.float32)  # 120 MB at 1 M sims
-    corp_p     = np.full(n_sims, np.float32(init_p), dtype=np.float32)
-    corp_h     = np.zeros(n_sims, dtype=np.float32)
+    corpus_all  = np.empty((n_sims, 30), dtype=np.float32)
+    cash_all    = np.empty((n_sims, 30), dtype=np.float32)
+    corp_p      = np.full(n_sims, np.float32(init_p), dtype=np.float32)
+    corp_h      = np.zeros(n_sims, dtype=np.float32)
     ever_ruined = np.zeros(n_sims, dtype=bool)
     ruin_by_fy  = np.zeros(30, dtype=np.float64)
 
     for fi in range(30):
-        r         = r32[:, fi]
+        r = r32[:, fi]
+
+        # ── Personal ─────────────────────────────────────────────────────────
         corp_p    = corp_p * (np.float32(1.0) + r)
-        actual_wd = np.minimum(det_req32[fi], corp_p)
-        tax_sav   = tsav_frac32[fi] * corp_p
-        tax_per   = tper_frac32[fi] * corp_p
-        corp_p    = np.maximum(np.float32(0.0), corp_p - actual_wd)
-        corp_h    = corp_h * (np.float32(1.0) + r) + tax_sav
+        p_can_pay = np.minimum(det_req32[fi], corp_p)
+        shortfall = det_req32[fi] - p_can_pay
+        corp_p    = np.maximum(np.float32(0.0), corp_p - p_can_pay)
+
+        # ── HUF ──────────────────────────────────────────────────────────────
+        # HUF grows at the same simulated return, receives fixed absolute
+        # inflows (tax savings transferred + windfall), pays fixed scheduled WD.
+        corp_h = corp_h * (np.float32(1.0) + r) + huf_inflow32[fi]
+        # Top up personal shortfall from HUF (mirrors engine logic)
+        huf_topup = np.minimum(shortfall, np.maximum(np.float32(0.0),
+                                corp_h - det_huf_wd32[fi]))
+        corp_h = np.maximum(np.float32(0.0),
+                            corp_h - det_huf_wd32[fi] - huf_topup)
 
         corpus_all[:, fi] = corp_p + corp_h
-        cash_all  [:, fi] = actual_wd + other_cash32[fi] - tax_sav - tax_per
+
+        # Total cash received: personal SWP + HUF topup + fixed personal income
+        # + HUF scheduled net cash (absolute from deterministic run).
+        # Using det_net_huf32 as fixed keeps HUF scheduled cash invariant to
+        # simulated returns (HUF tax, etc. don't change materially with returns).
+        cash_all[:, fi] = (p_can_pay + huf_topup
+                           + pers_fixed32[fi]
+                           + det_net_huf32[fi])
 
         # Track ruin inline — avoids second pass over (n_sims,30) matrix later
         ever_ruined |= (corpus_all[:, fi] <= np.float32(0.01))

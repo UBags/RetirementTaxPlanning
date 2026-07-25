@@ -55,6 +55,8 @@ CESS = config.cess_rate
 # ─── Tax helpers ──────────────────────────────────────────────────────────────
 
 def _nil_slab_upper(chunk: TaxChunk) -> float:
+    if chunk is None:
+        return 0.0
     for slab in chunk.slabs:
         if slab.rate == 0.0:
             return slab.upper
@@ -62,7 +64,7 @@ def _nil_slab_upper(chunk: TaxChunk) -> float:
 
 
 def compute_slab_tax(income: float, chunk: TaxChunk, entity: str) -> float:
-    if income <= 0:
+    if income <= 0 or chunk is None:
         return 0.0
     tax = 0.0
     for slab in chunk.slabs:
@@ -79,6 +81,8 @@ def compute_slab_tax(income: float, chunk: TaxChunk, entity: str) -> float:
 
 
 def compute_ltcg_individual(gains: float, eq_chunk: EquityTaxChunk) -> float:
+    if gains <= 0 or eq_chunk is None:
+        return 0.0
     taxable = max(0.0, gains - eq_chunk.exempt_limit)
     return taxable * eq_chunk.tax_rate * (1 + CESS)
 
@@ -93,6 +97,8 @@ def compute_ltcg_other_individual(gains: float, oc) -> float:
 
 def compute_ltcg_huf(equity_gains: float, eq_chunk: EquityTaxChunk,
                      debt_income: float, debt_chunk: TaxChunk) -> float:
+    if equity_gains <= 0 or eq_chunk is None or debt_chunk is None:
+        return 0.0
     nil_upper = _nil_slab_upper(debt_chunk)
     unused_basic = max(0.0, nil_upper - debt_income)
     taxable = max(0.0, equity_gains - eq_chunk.exempt_limit - unused_basic)
@@ -103,7 +109,7 @@ def compute_ltcg_other_huf(other_gains: float, oc,
                            debt_income: float, debt_chunk: TaxChunk) -> float:
     """HUF 'other' fund LTCG: 12.5% flat, no exemption.
     Can still absorb unused basic exemption from debt slab."""
-    if oc is None or other_gains <= 0:
+    if oc is None or other_gains <= 0 or debt_chunk is None:
         return 0.0
     nil_upper = _nil_slab_upper(debt_chunk)
     unused_basic = max(0.0, nil_upper - debt_income)
@@ -544,6 +550,10 @@ class YearSummary:
     net_cash_total: float
     fd_tax_benchmark: float
     tax_saved: float
+    # SWP-only cash from mutual fund withdrawals (excludes other income/tax).
+    # = ann_wd_p + ann_topup_p  (pure portfolio redemption cash before tax).
+    # Useful for distinguishing MF withdrawals from pension/rental/interest.
+    swp_cash_personal: float = 0.0
     # Tax paid specifically due to chunk-boundary rebalancing (a subset of tax_personal).
     # Shown separately in the KPI strip so users can see the "switching cost".
     rebalance_tax_paid: float = 0.0
@@ -565,7 +575,7 @@ class Engine:
             minimum rolling CAGR minus STT cost).  This gives a genuine
             stress-tested lower-bound projection.  Falls back to
             min(cagr_1, cagr_3, cagr_5, cagr_10) if ``worst_exp_ret`` is None.
-            In Historical mode (default), the 5Y CAGR is used.
+            In Historical mode (default), the 5Y CAGR is used; 10Y is the second preference
         glide_path : Optional GlidePath from the sticky-portfolio optimizer.
             When provided and not flat, triggers annual micro-rebalancing at
             glide-path transition years (Mode B — chunked_sticky).
@@ -608,7 +618,7 @@ class Engine:
         """Per-fund annual return from its own CAGR data.
 
         Historical mode (default):
-            Uses 5Y CAGR -> 3Y -> 1Y -> category average.
+            Uses 5Y CAGR -> 10Y -> 3Y -> 1Y -> category average.
 
         Conservative mode (stress-test):
             Uses fund.worst_exp_ret (Worst_Exp_Ret_% from fund analyser —
@@ -630,7 +640,9 @@ class Engine:
                 return min(cagrs) / 100.0
             return self._category_annual_return(fy, fund.fund_type)
         # Historical mode
-        cagr = _first_available(fund.cagr_5, fund.cagr_3, fund.cagr_1, default=None)
+        # cagr = _first_available(fund.cagr_5, fund.cagr_3, fund.cagr_1, default=None)
+        # Fix — include 10Y, keep 5Y as preferred for historical mode
+        cagr = _first_available(fund.cagr_5, fund.cagr_10, fund.cagr_3, fund.cagr_1, default=None)
         if cagr is not None and cagr > 0:
             return cagr / 100.0
         return self._category_annual_return(fy, fund.fund_type)
@@ -1002,11 +1014,27 @@ class Engine:
                     f"O={total_other:.2f}")
         _log.debug(f"  p_other_agg units after invest: {p_other_agg.current_value(1.0):.4f}")
 
-        # ── HUF buckets (aggregate, no per-fund breakdown needed) ─────────────
+        # ── HUF per-fund FIFO buckets ─────────────────────────────────────────
+        # HUF starts with empty buckets (no initial corpus).
+        # Corpus grows exclusively from annual tax-savings transfers and windfalls.
+        # Per-fund NAVs are shared with personal (same funds, same compounding rate).
+        # This ensures HUF follows the identical allocation, rebalancing, and
+        # glide-path transitions as the personal corpus.
+        h_fund_buckets: Dict[str, FIFOBucket] = {
+            f.name: FIFOBucket() for f in all_active
+        }
+
+        # HUF aggregate buckets — kept for backward-compat with h_acc and
+        # YearSummary fields (corpus_debt_huf etc.).  Rebuilt every April
+        # from per-fund sums, exactly as done for personal.
         h_debt   = FIFOBucket()
         h_equity = FIFOBucket()
         h_other  = FIFOBucket()
         h_nav_d  = h_nav_e = h_nav_o = 1.0
+
+        # Track which FYs we have already rebalanced the HUF portfolio
+        h_rebalanced_set:   set = set()
+        h_glide_rebalanced: set = set()
 
         # ── Accumulators ──────────────────────────────────────────────────────
         p_acc: Dict[int, dict] = {}
@@ -1029,7 +1057,8 @@ class Engine:
         pending_by_fy: Dict[int, dict] = {}
         # Track per-FY rebalancing gains separately so we can compute the
         # share of income tax attributable to chunk-boundary rebalancing.
-        rebal_gains_by_fy: Dict[int, dict] = {}  # fy -> {d, e, o}
+        rebal_gains_by_fy:   Dict[int, dict] = {}  # personal: fy -> {d, e, o}
+        h_rebal_gains_by_fy: Dict[int, dict] = {}  # HUF:      fy -> {d, e, o}
 
         # FD benchmark: corpus stays constant at the initial value.
         # Not a realistic assumption, but used as a simple benchmark.
@@ -1064,7 +1093,8 @@ class Engine:
         # weight shifts.  The two mechanisms work independently.
 
         total_months = 32 * 12
-        prev_fy = -1
+        prev_fy      = -1
+        _topup_needed = 0.0   # personal shortfall to top up from HUF each month
 
         for m in range(total_months):
             cy, cm = self._calendar_date_for_month(m)
@@ -1470,11 +1500,11 @@ class Engine:
             # ── Grow NAVs (per-fund and per-category rates) ────────────────
             safe_fy = min(fy, 30)
 
-            # Per-fund NAVs: each fund grows at its own CAGR
+            # Per-fund NAVs: each fund grows at its own CAGR (personal AND HUF share these)
             for fname, fentry in all_funds_map.items():
                 p_fund_navs[fname] *= self._fund_monthly_factor(fentry, safe_fy)
 
-            # Aggregate NAVs: grow at category-weighted rates
+            # Aggregate NAVs: grow at category-weighted rates (for aggregate bucket display)
             mf_d = self._category_monthly_factor(safe_fy, "debt")
             mf_e = self._category_monthly_factor(safe_fy, "equity")
             mf_o = self._category_monthly_factor(safe_fy, "other")
@@ -1519,13 +1549,57 @@ class Engine:
                     wf_p_this = amt
 
             # ── April tax event ───────────────────────────────────────────────
+            # Tax liabilities are bounded by available corpus.  If Personal
+            # cannot cover its own tax, the shortfall is drawn from HUF, and
+            # vice versa.  This prevents "phantom funding" where taxes are paid
+            # out of a zero-balance account.
             ind_tax_this = fd_tax_this = huf_xfer_this = 0.0
             if cm == 4 and fy >= 2:
                 pend = pending.get(fy, {})
                 if pend:
-                    ind_tax_this  = pend["ind_tax"]
+                    raw_ind_tax   = pend["ind_tax"]
                     fd_tax_this   = pend["fd_tax"]
                     huf_xfer_this = pend["tax_saved"]
+
+                    # ── Personal tax: bounded by personal corpus ──────────────
+                    _p_corpus_now = (p_debt_agg.current_value(p_nav_d)
+                                     + p_equity_agg.current_value(p_nav_e)
+                                     + p_other_agg.current_value(p_nav_o))
+                    _p_tax_payable  = min(raw_ind_tax, max(0.0, _p_corpus_now))
+                    _p_tax_shortfall = max(0.0, raw_ind_tax - _p_tax_payable)
+
+                    # If personal is short, draw the remainder from HUF corpus
+                    if _p_tax_shortfall > 1e-6:
+                        _h_corpus_now = (h_debt.current_value(h_nav_d)
+                                         + h_equity.current_value(h_nav_e)
+                                         + h_other.current_value(h_nav_o))
+                        _huf_covers = min(_p_tax_shortfall, max(0.0, _h_corpus_now))
+                        # Redeem from HUF aggregate proportionally across types
+                        if _huf_covers > 1e-6:
+                            _h_tot = max(_h_corpus_now, 1e-9)
+                            h_debt.redeem(_huf_covers * h_debt.current_value(h_nav_d) / _h_tot, h_nav_d)
+                            h_equity.redeem(_huf_covers * h_equity.current_value(h_nav_e) / _h_tot, h_nav_e)
+                            h_other.redeem(_huf_covers * h_other.current_value(h_nav_o) / _h_tot, h_nav_o)
+                            # Mirror in per-fund HUF buckets
+                            _h_pf_tot = sum(
+                                h_fund_buckets[fn].current_value(p_fund_navs.get(fn, 1.0))
+                                for fn in h_fund_buckets)
+                            if _h_pf_tot > 1e-9:
+                                for fn in list(h_fund_buckets.keys()):
+                                    _fn_val = h_fund_buckets[fn].current_value(p_fund_navs.get(fn, 1.0))
+                                    if _fn_val > 1e-6:
+                                        h_fund_buckets[fn].redeem(
+                                            _huf_covers * _fn_val / _h_pf_tot,
+                                            p_fund_navs.get(fn, 1.0))
+
+                    ind_tax_this = _p_tax_payable + (
+                        _huf_covers if _p_tax_shortfall > 1e-6 else 0.0)
+
+                    # ── HUF transfer: bounded by personal corpus ──────────────
+                    # The HUF transfer (tax saving) is a cash transfer OUT of
+                    # personal into HUF.  Cap it at available personal corpus.
+                    _p_corpus_after_tax = max(0.0, _p_corpus_now - _p_tax_payable)
+                    huf_xfer_this = min(huf_xfer_this, _p_corpus_after_tax)
 
             # ── Annual aggregate sync (every April) ─────────────────────────
             # The per-fund buckets grow at each fund's own CAGR; the aggregate
@@ -1750,10 +1824,21 @@ class Engine:
             p_ce_e = p_equity_agg.current_value(p_nav_e)
             p_co_e = p_other_agg.current_value(p_nav_o)
 
+            # ── Personal shortfall: topped up from HUF below ──────────────────
+            # If the personal corpus was insufficient for the full monthly
+            # requirement, record the gap so the HUF withdrawal block can fund it.
+            # _topup_needed is consumed inside the HUF WD section below.
+            if m >= SWP_START and fy <= 30:
+                _personal_actual = wd_d + wd_e + wd_o
+                _topup_needed    = max(0.0, req_monthly - _personal_actual - 1e-6)
+            else:
+                _topup_needed = 0.0
+
             a = acc_get(p_acc, fy)
             a["gain_d"] += gain_d;  a["gain_e"] += gain_e;  a["gain_o"] += gain_o
             a["wd_d"]   += wd_d;    a["wd_e"]   += wd_e;    a["wd_o"]   += wd_o
             a["corp_d"]  = p_cd_e;  a["corp_e"]  = p_ce_e;  a["corp_o"]  = p_co_e
+            # topup_from_huf added to p_acc below, after HUF top-up executes
 
             # ── Tax-free LTCG harvesting (March of each FY) ──────────────
             if cm == 3 and 1 <= fy <= 30:
@@ -1778,8 +1863,161 @@ class Engine:
             ))
 
             # ══════════════════════════════════════════════════════════════════
-            # HUF simulation (aggregate only, no per-fund breakdown)
+            # HUF simulation — per-fund buckets, same allocation and rebalancing
+            # as the personal corpus.
             # ══════════════════════════════════════════════════════════════════
+
+            # ── HUF chunk-boundary rebalancing ───────────────────────────────
+            # Mirror the personal chunk-boundary rebalancing exactly.
+            if fy in rebalance_years and fy not in h_rebalanced_set and not is_smooth_glide:
+                h_rebalanced_set.add(fy)
+                new_funds = state.get_funds_for_year(fy)
+                new_active_h = [f for f in new_funds if f.allocation > 0]
+                new_total_h  = sum(f.allocation for f in new_active_h)
+                if new_total_h > 0:
+                    old_chunk_fy_h = fy - 1
+                    old_funds_h    = state.get_funds_for_year(old_chunk_fy_h) if old_chunk_fy_h >= 1 else []
+                    old_names_h    = {f.name for f in old_funds_h if f.allocation > 0}
+                    new_names_h    = {f.name for f in new_active_h}
+                    retiring_h     = old_names_h - new_names_h
+
+                    curr_total_h = sum(
+                        h_fund_buckets[f.name].current_value(p_fund_navs[f.name])
+                        for f in new_active_h if f.name in h_fund_buckets
+                    )
+                    curr_total_h += sum(
+                        h_fund_buckets[n].current_value(p_fund_navs[n])
+                        for n in retiring_h if n in h_fund_buckets
+                    )
+
+                    if curr_total_h > 0.01:
+                        h_rebal_gd = h_rebal_ge = h_rebal_go = 0.0
+                        for rn in retiring_h:
+                            if rn not in h_fund_buckets:
+                                continue
+                            bk  = h_fund_buckets[rn]
+                            nav = p_fund_navs[rn]
+                            val = bk.current_value(nav)
+                            if val > 0.01:
+                                pr, gn = bk.redeem(val, nav)
+                                ftype  = all_funds_map[rn].fund_type if rn in all_funds_map else "debt"
+                                if ftype == "equity":   h_rebal_ge += gn
+                                elif ftype == "other":  h_rebal_go += gn
+                                else:                   h_rebal_gd += gn
+
+                        for f in new_active_h:
+                            target_val = curr_total_h * (f.allocation / new_total_h)
+                            if f.name not in h_fund_buckets:
+                                h_fund_buckets[f.name] = FIFOBucket()
+                                all_funds_map.setdefault(f.name, f)
+                            bk        = h_fund_buckets[f.name]
+                            nav       = p_fund_navs.get(f.name, 1.0)
+                            curr_val  = bk.current_value(nav)
+                            diff      = target_val - curr_val
+                            if diff < -0.01:
+                                pr, gn = bk.redeem(-diff, nav)
+                                if f.fund_type == "equity":   h_rebal_ge += gn
+                                elif f.fund_type == "other":  h_rebal_go += gn
+                                else:                         h_rebal_gd += gn
+                            elif diff > 0.01:
+                                bk.invest(diff, nav, m)
+
+                        a_h_rebal = acc_get(h_acc, fy)
+                        a_h_rebal["gain_d"] += h_rebal_gd
+                        a_h_rebal["gain_e"] += h_rebal_ge
+                        a_h_rebal["gain_o"] += h_rebal_go
+                        # Record HUF rebalancing gains for tax attribution
+                        existing_h = h_rebal_gains_by_fy.get(fy, {})
+                        h_rebal_gains_by_fy[fy] = {
+                            'd': existing_h.get('d', 0.0) + h_rebal_gd,
+                            'e': existing_h.get('e', 0.0) + h_rebal_ge,
+                            'o': existing_h.get('o', 0.0) + h_rebal_go,
+                        }
+
+                        # Sync HUF aggregate buckets after rebalancing
+                        _h_agg_d = sum(
+                            h_fund_buckets[fn].current_value(p_fund_navs[fn])
+                            for fn in h_fund_buckets
+                            if fn in p_fund_navs and all_funds_map.get(fn) is not None
+                            and all_funds_map[fn].fund_type == "debt"
+                        )
+                        _h_agg_e = sum(
+                            h_fund_buckets[fn].current_value(p_fund_navs[fn])
+                            for fn in h_fund_buckets
+                            if fn in p_fund_navs and all_funds_map.get(fn) is not None
+                            and all_funds_map[fn].fund_type == "equity"
+                        )
+                        _h_agg_o = sum(
+                            h_fund_buckets[fn].current_value(p_fund_navs[fn])
+                            for fn in h_fund_buckets
+                            if fn in p_fund_navs and all_funds_map.get(fn) is not None
+                            and all_funds_map[fn].fund_type == "other"
+                        )
+                        h_debt   = FIFOBucket(); h_debt.invest(_h_agg_d,   h_nav_d, m)
+                        h_equity = FIFOBucket(); h_equity.invest(_h_agg_e, h_nav_e, m)
+                        h_other  = FIFOBucket(); h_other.invest(_h_agg_o,  h_nav_o, m)
+
+            # ── HUF glide-path micro-rebalancing ──────────────────────────────
+            if (gp is not None and not gp.is_flat()
+                    and fy >= 2 and fy <= 30
+                    and fy not in h_glide_rebalanced
+                    and fy not in h_rebalanced_set):
+                target_w_h = gp.weights_for_year(fy)
+                prior_w_h  = gp.weights_for_year(fy - 1)
+                if target_w_h != prior_w_h:
+                    h_glide_rebalanced.add(fy)
+                    # Use the same annual_tax_budget computed for personal rebalancing
+                    annual_tax_budget_h = glide_tax_budget.get(
+                        min(k for k in glide_tax_budget if k <= fy) if glide_tax_budget else fy,
+                        float('inf')
+                    )
+                    h_cost, h_gp_gains, _ = _rebalance_portfolio(
+                        target_weights    = target_w_h,
+                        prior_weights     = prior_w_h,
+                        fund_buckets      = h_fund_buckets,
+                        fund_navs         = p_fund_navs,
+                        fund_types        = fund_types_map,
+                        state             = state,
+                        fy                = fy,
+                        month_idx         = m,
+                        swp_cash_needed   = 0.0,
+                        annual_tax_budget = annual_tax_budget_h,
+                    )
+                    a_h_gp = acc_get(h_acc, fy)
+                    a_h_gp["gain_d"] += h_gp_gains.get('d', 0.0)
+                    a_h_gp["gain_e"] += h_gp_gains.get('e', 0.0)
+                    a_h_gp["gain_o"] += h_gp_gains.get('o', 0.0)
+                    # Record HUF glide-path rebalancing gains for tax attribution
+                    existing_hg = h_rebal_gains_by_fy.get(fy, {})
+                    h_rebal_gains_by_fy[fy] = {
+                        'd': existing_hg.get('d', 0.0) + h_gp_gains.get('d', 0.0),
+                        'e': existing_hg.get('e', 0.0) + h_gp_gains.get('e', 0.0),
+                        'o': existing_hg.get('o', 0.0) + h_gp_gains.get('o', 0.0),
+                    }
+                    # Sync HUF aggregates
+                    _h2_d = sum(
+                        h_fund_buckets[fn].current_value(p_fund_navs[fn])
+                        for fn in h_fund_buckets
+                        if fn in p_fund_navs and all_funds_map.get(fn) is not None
+                        and all_funds_map[fn].fund_type == "debt"
+                    )
+                    _h2_e = sum(
+                        h_fund_buckets[fn].current_value(p_fund_navs[fn])
+                        for fn in h_fund_buckets
+                        if fn in p_fund_navs and all_funds_map.get(fn) is not None
+                        and all_funds_map[fn].fund_type == "equity"
+                    )
+                    _h2_o = sum(
+                        h_fund_buckets[fn].current_value(p_fund_navs[fn])
+                        for fn in h_fund_buckets
+                        if fn in p_fund_navs and all_funds_map.get(fn) is not None
+                        and all_funds_map[fn].fund_type == "other"
+                    )
+                    h_debt   = FIFOBucket(); h_debt.invest(_h2_d,   h_nav_d, m)
+                    h_equity = FIFOBucket(); h_equity.invest(_h2_e, h_nav_e, m)
+                    h_other  = FIFOBucket(); h_other.invest(_h2_o,  h_nav_o, m)
+
+            # ── HUF inflows (April transfer + windfall) ───────────────────────
             huf_inflow = 0.0
             if cm == 4 and fy >= 2:
                 huf_inflow += huf_xfer_this
@@ -1790,56 +2028,124 @@ class Engine:
                 amt_h = wf_h.get(fy, 0.0)
                 if amt_h > 0:
                     huf_inflow += amt_h
-                    wf_h_this = amt_h
+                    wf_h_this   = amt_h
 
-            if huf_inflow > 0:
+            if huf_inflow > 0.001:
+                # Invest at target weights (same as personal no-drift rule).
+                fy_funds_h   = state.get_funds_for_year(fy)
+                fy_alloc_h   = {f.name: f.allocation for f in fy_funds_h if f.allocation > 0}
+                fy_total_h   = sum(fy_alloc_h.values())
+                for fn, alloc_h in fy_alloc_h.items():
+                    share_h = alloc_h / fy_total_h if fy_total_h > 0 else 0.0
+                    if fn not in h_fund_buckets:
+                        h_fund_buckets[fn] = FIFOBucket()
+                    h_fund_buckets[fn].invest(huf_inflow * share_h, p_fund_navs.get(fn, 1.0), m)
+                # Sync aggregates
                 sd, se, so = state.get_split_3way(safe_fy)
                 h_debt.invest(huf_inflow * sd,   h_nav_d, m)
                 h_equity.invest(huf_inflow * se,  h_nav_e, m)
                 h_other.invest(huf_inflow * so,   h_nav_o, m)
 
+            # ── HUF annual aggregate sync (every April) ───────────────────────
+            if cm == 4 and fy >= 1:
+                _h_sync_d = sum(
+                    h_fund_buckets[fn].current_value(p_fund_navs[fn])
+                    for fn in h_fund_buckets
+                    if fn in p_fund_navs and all_funds_map.get(fn) is not None
+                    and all_funds_map[fn].fund_type == "debt"
+                )
+                _h_sync_e = sum(
+                    h_fund_buckets[fn].current_value(p_fund_navs[fn])
+                    for fn in h_fund_buckets
+                    if fn in p_fund_navs and all_funds_map.get(fn) is not None
+                    and all_funds_map[fn].fund_type == "equity"
+                )
+                _h_sync_o = sum(
+                    h_fund_buckets[fn].current_value(p_fund_navs[fn])
+                    for fn in h_fund_buckets
+                    if fn in p_fund_navs and all_funds_map.get(fn) is not None
+                    and all_funds_map[fn].fund_type == "other"
+                )
+                h_debt   = FIFOBucket(); h_debt.invest(_h_sync_d,   h_nav_d, m)
+                h_equity = FIFOBucket(); h_equity.invest(_h_sync_e, h_nav_e, m)
+                h_other  = FIFOBucket(); h_other.invest(_h_sync_o,  h_nav_o, m)
+
             h_cd_s = h_debt.current_value(h_nav_d)
             h_ce_s = h_equity.current_value(h_nav_e)
             h_co_s = h_other.current_value(h_nav_o)
 
+            # ── HUF SWP withdrawal + personal shortfall top-up ───────────────
             h_wd_d = h_wd_e = h_wd_o = 0.0
             h_prin_d = h_gain_d = h_prin_e = h_gain_e = h_prin_o = h_gain_o = 0.0
+            h_topup_this = 0.0   # amount topped up to personal this month
+            h_fund_details: List[FundWithdrawalDetail] = []
             if fy <= 30:
                 huf_req = self._huf_annual_wd(fy) / 12
-                # Smart withdrawal for HUF (0.50% cap) from mid-year-2.
-                # HUF uses aggregate buckets (no per-fund breakdown), so we
-                # treat the 3 categories as pseudo-funds for the waterfall.
-                CORPUS_SPLIT_START_H = config.smart_withdrawal_start_month
-                h_total = h_cd_s + h_ce_s + h_co_s
-                if m >= CORPUS_SPLIT_START_H and h_total > 0:
-                    # Build category-level value/return/target maps
-                    _hfv = {"_h_debt": h_cd_s, "_h_equity": h_ce_s, "_h_other": h_co_s}
-                    _hfr = {
-                        "_h_debt":   self._category_annual_return(fy, "debt"),
-                        "_h_equity": self._category_annual_return(fy, "equity"),
-                        "_h_other":  self._category_annual_return(fy, "other"),
-                    }
-                    _htd, _hte, _hto = state.get_split_3way(safe_fy)
-                    _htw = {"_h_debt": _htd, "_h_equity": _hte, "_h_other": _hto}
+                # Add any personal shortfall (personal corpus insufficient).
+                # _topup_needed is zero unless the personal SWP block raised less
+                # than req_monthly this month.
+                huf_total_req = huf_req + _topup_needed
+                if huf_total_req > 0.001:
+                    h_total = h_cd_s + h_ce_s + h_co_s
+                    if h_total > 0.01:
+                        # Build per-fund value / target-weight maps for HUF
+                        _h_all_funds = [
+                            f for f in all_active
+                            if h_fund_buckets.get(f.name) is not None
+                            and h_fund_buckets[f.name].current_value(
+                                p_fund_navs.get(f.name, 1.0)) > 0.01
+                        ]
+                        _hfv = {f.name: h_fund_buckets[f.name].current_value(
+                                    p_fund_navs.get(f.name, 1.0))
+                                for f in _h_all_funds}
+                        _hfr = {f.name: self._fund_annual_return(f, fy)
+                                for f in _h_all_funds}
+                        # Target weights: glide path or chunk allocations
+                        if gp is not None and not gp.is_flat():
+                            _htw = gp.weights_for_year(fy)
+                        else:
+                            fy_funds_tw   = state.get_funds_for_year(fy)
+                            _alloc_tw_tot = sum(f.allocation for f in fy_funds_tw
+                                                if f.allocation > 0)
+                            _htw = ({f.name: f.allocation / _alloc_tw_tot
+                                     for f in fy_funds_tw if f.allocation > 0}
+                                    if _alloc_tw_tot > 0
+                                    else {fn: v / h_total for fn, v in _hfv.items()})
 
-                    _hwd_map = self._compute_smart_withdrawal(
-                        fund_values=_hfv, fund_returns=_hfr,
-                        target_weights=_htw, withdrawal_amt=huf_req,
-                        entity="huf")
-                    split_hd_amt = _hwd_map.get("_h_debt", 0.0)
-                    split_he_amt = _hwd_map.get("_h_equity", 0.0)
-                    split_ho_amt = _hwd_map.get("_h_other", 0.0)
-                    h_prin_d, h_gain_d = h_debt.redeem(split_hd_amt, h_nav_d)
-                    h_prin_e, h_gain_e = h_equity.redeem(split_he_amt, h_nav_e)
-                    h_prin_o, h_gain_o = h_other.redeem(split_ho_amt, h_nav_o)
-                else:
-                    split_hd, split_he, split_ho = state.get_split_3way(safe_fy)
-                    h_prin_d, h_gain_d = h_debt.redeem(huf_req * split_hd,   h_nav_d)
-                    h_prin_e, h_gain_e = h_equity.redeem(huf_req * split_he, h_nav_e)
-                    h_prin_o, h_gain_o = h_other.redeem(huf_req * split_ho,  h_nav_o)
-                h_wd_d = h_prin_d + h_gain_d
-                h_wd_e = h_prin_e + h_gain_e
-                h_wd_o = h_prin_o + h_gain_o
+                        _hwd_map = self._compute_smart_withdrawal(
+                            fund_values=_hfv, fund_returns=_hfr,
+                            target_weights=_htw, withdrawal_amt=huf_total_req,
+                            entity="huf")
+
+                        for f in _h_all_funds:
+                            amt_hf = _hwd_map.get(f.name, 0.0)
+                            if amt_hf < 0.001:
+                                continue
+                            nav_hf = p_fund_navs.get(f.name, 1.0)
+                            corp_s_hf = h_fund_buckets[f.name].current_value(nav_hf)
+                            pr_hf, gn_hf = h_fund_buckets[f.name].redeem(amt_hf, nav_hf)
+                            corp_e_hf = h_fund_buckets[f.name].current_value(nav_hf)
+                            wd_hf = pr_hf + gn_hf
+                            if f.fund_type == "equity":
+                                h_prin_e += pr_hf; h_gain_e += gn_hf; h_wd_e += wd_hf
+                            elif f.fund_type == "other":
+                                h_prin_o += pr_hf; h_gain_o += gn_hf; h_wd_o += wd_hf
+                            else:
+                                h_prin_d += pr_hf; h_gain_d += gn_hf; h_wd_d += wd_hf
+                            h_fund_details.append(FundWithdrawalDetail(
+                                fund_name=f.name, fund_type=f.fund_type,
+                                corpus_start=corp_s_hf, withdrawal=wd_hf,
+                                principal=pr_hf, gain=gn_hf,
+                                corpus_end=corp_e_hf))
+
+                        # Keep aggregate buckets in sync after redemptions
+                        total_h_wd = h_wd_d + h_wd_e + h_wd_o
+                        # Actual topup delivered (capped by what HUF could raise)
+                        h_topup_this = min(_topup_needed,
+                                           max(0.0, total_h_wd - huf_req))
+                        if h_wd_d > 0.001: h_debt.redeem(h_wd_d,   h_nav_d)
+                        if h_wd_e > 0.001: h_equity.redeem(h_wd_e, h_nav_e)
+                        if h_wd_o > 0.001: h_other.redeem(h_wd_o,  h_nav_o)
 
             h_cd_e = h_debt.current_value(h_nav_d)
             h_ce_e = h_equity.current_value(h_nav_e)
@@ -1849,6 +2155,25 @@ class Engine:
             ha["gain_d"] += h_gain_d;  ha["gain_e"] += h_gain_e;  ha["gain_o"] += h_gain_o
             ha["wd_d"]   += h_wd_d;    ha["wd_e"]   += h_wd_e;    ha["wd_o"]   += h_wd_o
             ha["corp_d"]  = h_cd_e;    ha["corp_e"]  = h_ce_e;    ha["corp_o"]  = h_co_e
+
+            # ── Book HUF top-up as personal income ────────────────────────────
+            # The top-up amount was withdrawn from the HUF corpus; it now arrives
+            # in the personal portfolio as additional monthly cash income.
+            # We record it in p_acc["topup_from_huf"] so net_cash_personal includes it.
+            # We also track topup's proportional share of the HUF gains so those
+            # gains can be excluded from HUF's own swp_only_tax (topup gains belong
+            # to the transfer, not to HUF's disposable income).
+            if h_topup_this > 0.001:
+                a_p = acc_get(p_acc, fy)
+                a_p["topup_from_huf"] = a_p.get("topup_from_huf", 0.0) + h_topup_this
+                # Attribute topup's share of gains to a separate bucket for exclusion
+                _total_h_wd_this = h_wd_d + h_wd_e + h_wd_o
+                if _total_h_wd_this > 1e-6:
+                    _topup_frac = min(1.0, h_topup_this / _total_h_wd_this)
+                    ha_this = acc_get(h_acc, fy)
+                    ha_this["topup_gain_d"] = ha_this.get("topup_gain_d", 0.0) + h_gain_d * _topup_frac
+                    ha_this["topup_gain_e"] = ha_this.get("topup_gain_e", 0.0) + h_gain_e * _topup_frac
+                    ha_this["topup_gain_o"] = ha_this.get("topup_gain_o", 0.0) + h_gain_o * _topup_frac
 
             h_rows.append(MonthlyRow(
                 month_idx=m, calendar_month=cm, calendar_year=cy, fy_year=fy,
@@ -1862,6 +2187,7 @@ class Engine:
                 corpus_other_end=h_co_e,
                 windfall_huf=wf_h_this,
                 huf_transfer_in=huf_xfer_this if (cm == 4 and fy >= 2) else 0.0,
+                fund_withdrawals=h_fund_details,
             ))
 
         # ── Filter ────────────────────────────────────────────────────────────
@@ -1871,10 +2197,11 @@ class Engine:
         # ── Yearly summaries ──────────────────────────────────────────────────
         yearly = self._build_yearly_summaries(
             p_acc, h_acc, pending_by_fy, rebal_gains_by_fy,
-            glide_costs_by_fy, acc_get,
+            h_rebal_gains_by_fy, glide_costs_by_fy, acc_get,
         )
 
-        return p_rows, yearly, h_rows, yearly
+        h_yearly = yearly   # same combined YearSummary list; named separately for clarity
+        return p_rows, yearly, h_rows, h_yearly
 
     # ── Extracted from run(): LTCG harvesting ───────────────────────────
 
@@ -1957,6 +2284,7 @@ class Engine:
         h_acc: Dict,
         pending_by_fy: Dict,
         rebal_gains_by_fy: Dict,
+        h_rebal_gains_by_fy: Dict,
         glide_costs_by_fy: Dict,
         acc_get,
     ) -> List[YearSummary]:
@@ -1978,7 +2306,7 @@ class Engine:
             this_fy_tax   = this_fy_pend.get("ind_tax",   0.0)
             this_fy_saved = this_fy_pend.get("tax_saved", 0.0)
 
-            # ── Rebalancing tax attribution ────────────────────────────────
+            # ── Personal rebalancing tax attribution ──────────────────────────
             rebal_tax_fy = 0.0
             rg = rebal_gains_by_fy.get(fy, {})
             if rg and this_fy_tax > 0:
@@ -1988,15 +2316,23 @@ class Engine:
                     rebal_frac = min(1.0, rebal_gains / total_gains)
                     rebal_tax_fy = this_fy_tax * rebal_frac
 
-            ann_wd_p = a["wd_d"]  + a["wd_e"]  + a["wd_o"]
-            ann_wd_h = ha["wd_d"] + ha["wd_e"] + ha["wd_o"]
+            ann_wd_p      = a["wd_d"]  + a["wd_e"]  + a["wd_o"]
+            ann_topup_p   = a.get("topup_from_huf", 0.0)
+            # HUF total WD includes both scheduled and any personal top-up.
+            # For net_cash_huf we use total WD (top-up reduces HUF available cash too).
+            ann_wd_h      = ha["wd_d"] + ha["wd_e"] + ha["wd_o"]
 
             glide_cost = glide_costs_by_fy.get(fy)
             glide_exit_loads = glide_cost.exit_loads_paid if glide_cost else 0.0
 
             swp_only_tax = this_fy_tax - rebal_tax_fy
-            net_p = ann_wd_p + taxable_other + non_taxable_other - this_fy_saved - swp_only_tax
+            # ann_topup_p: cash received from HUF when personal corpus was exhausted.
+            # Included in personal net_cash as it supplements the monthly income.
+            net_p = (ann_wd_p + ann_topup_p
+                     + taxable_other + non_taxable_other
+                     - this_fy_saved - swp_only_tax)
 
+            # ── HUF tax ───────────────────────────────────────────────────────
             huf_debt_income = huf_taxable_other + ha["gain_d"]
             hdc = state.get_debt_tax_chunk(fy, "huf")
             hec = state.get_equity_tax_chunk(fy, "huf")
@@ -2007,7 +2343,34 @@ class Engine:
             huf_other_tax = (compute_ltcg_other_huf(ha["gain_o"], hoc, huf_debt_income, hdc)
                              if (hoc and hdc) else 0.0)
             huf_total_tax = huf_debt_tax + huf_eq_tax + huf_other_tax
-            net_h = ann_wd_h + huf_taxable_other + huf_nontax_other - huf_total_tax
+
+            # ── HUF rebalancing tax exclusion ─────────────────────────────────
+            # Rebalancing tax is portfolio-self-funded; exclude it from net_cash_huf
+            # exactly as done for personal.  We compute the SWP-only tax DIRECTLY
+            # (not via a linear fraction) to handle progressive slabs correctly:
+            # SWP gains may fall entirely below the exemption even when the combined
+            # SWP+rebalancing gain is large and highly taxed.
+            h_rg = h_rebal_gains_by_fy.get(fy, {})
+            # Also exclude topup redemption gains — those belong to the personal
+            # transfer, not to HUF's own scheduled withdrawal income.
+            h_swp_gd = max(0.0, ha["gain_d"] - h_rg.get("d", 0.0)
+                                              - ha.get("topup_gain_d", 0.0))
+            h_swp_ge = max(0.0, ha["gain_e"] - h_rg.get("e", 0.0)
+                                              - ha.get("topup_gain_e", 0.0))
+            h_swp_go = max(0.0, ha["gain_o"] - h_rg.get("o", 0.0)
+                                              - ha.get("topup_gain_o", 0.0))
+
+            h_swp_debt_income = huf_taxable_other + h_swp_gd
+            huf_swp_debt_tax  = compute_slab_tax(h_swp_debt_income, hdc, "huf") if hdc else 0.0
+            huf_swp_eq_tax    = (compute_ltcg_huf(h_swp_ge, hec, h_swp_debt_income, hdc)
+                                  if (hec and hdc) else 0.0)
+            huf_swp_oth_tax   = (compute_ltcg_other_huf(h_swp_go, hoc, h_swp_debt_income, hdc)
+                                  if (hoc and hdc) else 0.0)
+            huf_swp_only_tax  = huf_swp_debt_tax + huf_swp_eq_tax + huf_swp_oth_tax
+
+            # Subtract top-up transferred to personal — that is not HUF's own income.
+            ann_topup_h = a.get("topup_from_huf", 0.0)  # same FY's topup
+            net_h = (ann_wd_h - ann_topup_h) + huf_taxable_other + huf_nontax_other - huf_swp_only_tax
 
             yearly.append(YearSummary(
                 year=fy,
@@ -2026,6 +2389,7 @@ class Engine:
                 tax_saved=this_fy_saved,
                 rebalance_tax_paid=rebal_tax_fy,
                 rebalance_exit_loads=glide_exit_loads,
+                swp_cash_personal=ann_wd_p + ann_topup_p,
             ))
 
         return yearly
@@ -2257,4 +2621,5 @@ def optimize_withdrawal_split(
             glide_path=glide_path,
         ).run()
 
-    return p_monthly, p_yearly, h_monthly, p_yearly
+    h_yearly = p_yearly   # same combined YearSummary list; named separately for clarity
+    return p_monthly, p_yearly, h_monthly, h_yearly

@@ -143,27 +143,58 @@ def load_and_filter(csv_path: str, min_history_months: int) -> pd.DataFrame:
 
     # Working columns: expected return = min of 10Y/5Y/3Y CAGRs (excludes 1Y as too short-term)
     _ret_cols = [c for c in ["10Y_CAGR", "5Y_CAGR", "3Y_CAGR"] if c in df.columns]
-    for c in _ret_cols:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-    df["adj_ret"] = df[_ret_cols].min(axis=1)
+    # Prefer rolling Avg_CAGR columns (pessimistic, stable) over point-in-time CAGRs
+    _avg_cagr_cols = [c for c in
+                      ["Avg_CAGR_3Y", "Avg_CAGR_5Y", "Avg_CAGR_7Y", "Avg_CAGR_10Y"]
+                      if c in df.columns]
+    if _avg_cagr_cols:
+        _ac = df[_avg_cagr_cols].apply(pd.to_numeric, errors="coerce")
+        df["adj_ret"] = _ac.min(axis=1)
+    else:
+        for c in _ret_cols:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+        df["adj_ret"] = df[_ret_cols].min(axis=1)
 
-    # adj_std: use the WORST (highest) std dev across available periods.
-    # Philosophy: pessimistic on risk — if the fund was more volatile over
-    # 10 years than over 5 years, the solver should see the worse number.
-    sd3 = pd.to_numeric(df.get("Std_Dev_3Y", np.nan), errors="coerce")
-    sd5 = pd.to_numeric(df.get("Std_Dev_5Y", np.nan), errors="coerce")
-    sd10 = pd.to_numeric(df.get("Std_Dev_10Y", np.nan), errors="coerce")
-    # Take the max of available values (worst-case std); NaN cells are skipped by max(axis=1)
-    _sd_all = pd.concat([sd3, sd5, sd10], axis=1)
-    df["adj_std"] = _sd_all.max(axis=1)  # max = worst-case std
+    # adj_std: worst-case std dev = max of Max_Std_Dev rolling columns (3Y/5Y/7Y/10Y).
+    # Max_Std_Dev_XY is the highest std dev seen in any rolling XY window,
+    # giving the most pessimistic (conservative) volatility estimate.
+    # Falls back to max of point-in-time Std_Dev columns if rolling not available.
+    _rolling_std_cols = [c for c in
+                         ["Max_Std_Dev_3Y", "Max_Std_Dev_5Y",
+                          "Max_Std_Dev_7Y", "Max_Std_Dev_10Y"]
+                         if c in df.columns]
+    if _rolling_std_cols:
+        _rs = df[_rolling_std_cols].apply(pd.to_numeric, errors="coerce")
+        df["adj_std"] = _rs.max(axis=1)
+    else:
+        _sd_series = []
+        for _col in ["Std_Dev_3Y", "Std_Dev_5Y", "Std_Dev_7Y", "Std_Dev_10Y"]:
+            if _col in df.columns:
+                _sd_series.append(pd.to_numeric(df[_col], errors="coerce"))
+        if _sd_series:
+            df["adj_std"] = pd.concat(_sd_series, axis=1).max(axis=1)
+        else:
+            df["adj_std"] = np.nan
 
-    # adj_dd: use the WORST (most negative) drawdown across available periods.
-    # Max_DD values are typically negative or zero (worst = most negative).
-    dd3 = pd.to_numeric(df.get("Max_DD_3Y", np.nan), errors="coerce")
-    dd5 = pd.to_numeric(df.get("Max_DD_5Y", np.nan), errors="coerce")
-    dd10 = pd.to_numeric(df.get("Max_DD_10Y", np.nan), errors="coerce")
-    _dd_all = pd.concat([dd3, dd5, dd10], axis=1)
-    df["adj_dd"] = _dd_all.min(axis=1)  # min = most negative = worst-case dd
+    # adj_dd: worst-case drawdown = min of Worst_Max_DD rolling columns.
+    # Worst_Max_DD_XY is the most negative max DD seen in any rolling XY window.
+    # Falls back to min of point-in-time Max_DD columns if rolling not available.
+    _rolling_dd_cols = [c for c in
+                        ["Worst_Max_DD_3Y", "Worst_Max_DD_5Y",
+                         "Worst_Max_DD_7Y", "Worst_Max_DD_10Y"]
+                        if c in df.columns]
+    if _rolling_dd_cols:
+        _rd = df[_rolling_dd_cols].apply(pd.to_numeric, errors="coerce")
+        df["adj_dd"] = _rd.min(axis=1)   # min = most negative = worst-case
+    else:
+        _dd_series = []
+        for _col in ["Max_DD_3Y", "Max_DD_5Y", "Max_DD_7Y", "Max_DD_10Y"]:
+            if _col in df.columns:
+                _dd_series.append(pd.to_numeric(df[_col], errors="coerce"))
+        if _dd_series:
+            df["adj_dd"] = pd.concat(_dd_series, axis=1).min(axis=1)
+        else:
+            df["adj_dd"] = np.nan
 
     # Quality score: Combined_Ratio (prefer 5Y → 10Y → 3Y fallback)
     # Combined_Ratio = sqrt(Sortino × Calmar); higher = better risk-adjusted quality.
@@ -171,8 +202,12 @@ def load_and_filter(csv_path: str, min_history_months: int) -> pd.DataFrame:
     cr5  = pd.to_numeric(df.get("Combined_Ratio_5Y",  np.nan), errors="coerce")
     cr10 = pd.to_numeric(df.get("Combined_Ratio_10Y", np.nan), errors="coerce")
     cr3  = pd.to_numeric(df.get("Combined_Ratio_3Y",  np.nan), errors="coerce")
-    df["adj_quality"] = cr5.where(cr5.notna() & (cr5 > 0),
-                         cr10.where(cr10.notna() & (cr10 > 0), cr3))
+    # df["adj_quality"] = cr5.where(cr5.notna() & (cr5 > 0),
+    #                      cr10.where(cr10.notna() & (cr10 > 0), cr3))
+    # Fix: take the minimum (worst) combined ratio across all available periods
+    _cr_all = pd.concat([cr3, cr5, cr10], axis=1)
+    df["adj_quality"] = _cr_all.min(axis=1)
+    df["adj_quality"] = df["adj_quality"].where(df["adj_quality"] > 0, 0.0)
     # Fill any remaining NaN with 0 (no quality bonus for funds with no ratio)
     df["adj_quality"] = df["adj_quality"].fillna(0.0)
 
@@ -190,6 +225,11 @@ def load_and_filter(csv_path: str, min_history_months: int) -> pd.DataFrame:
         df["AMC"] = df["Fund Name"].apply(
             lambda n: extract_amc(str(n)) if pd.notna(n) else "Unknown"
         )
+
+    # Sort descending by combined_ratio so the universe is quality-ordered.
+    # The MILP solver sees higher-quality funds first; when weights are tied
+    # the solver naturally prefers earlier (higher-quality) entries.
+    df = df.sort_values("adj_quality", ascending=False).reset_index(drop=True)
 
     return df
 
@@ -268,6 +308,7 @@ def _solve(
     mode:         str = "fine",  # "coarse" = minimise risk, "fine" = maximise return
     blend_alpha:  float = -1.0,  # -1 = use mode; 0..1 = α×risk + (1-α)×(-return)
     max_per_amc:  float = 1.0,   # max total allocation fraction per AMC (1.0 = no limit)
+    min_equity_frac: float = 0.0,  # minimum equity fraction floor (0 = no constraint)
 ) -> tuple:
     """
     Find the globally optimal portfolio allocation using MILP.
@@ -350,16 +391,21 @@ def _solve(
         c = np.concatenate([blended, np.zeros(n)])
 
     elif mode == "coarse":
-        # ── COARSE: minimise risk with quality tiebreaker ─────────────────
-        # Primary: minimise weighted-avg std_dev + weighted-avg |max_dd|.
-        # Tiebreaker: prefer higher-quality funds when risk is comparable.
-        # We scale the quality tiebreaker to ~10% of the risk signal range
-        # so it nudges but never overrides the risk objective.
-        risk_obj = std + dd_abs   # both are positive fractions
-        risk_spread = risk_obj.max() - risk_obj.min() if n > 1 else 0.01
-        quality_lambda = 0.10 * risk_spread
-        # Minimise risk − λ·quality  (subtract quality to *prefer* higher quality)
-        c = np.concatenate([risk_obj - quality_lambda * quality_norm,
+        # -- COARSE: minimise linear risk, maximise combined_ratio --------
+        # Objective (three-goal, milp MINIMISES):
+        #   (a) return >= target              -- hard constraint C2
+        #   (b) minimise dot(w, std)           -- primary objective term
+        #   (c) maximise dot(w, combined_ratio) -- quality term (subtract)
+        #
+        # lambda_quality = 30% of std spread.  Strong enough to genuinely
+        # prefer higher-quality funds among solutions with similar risk,
+        # without overriding risk minimisation (quality spread << std spread).
+        #
+        # |max_dd| is NOT in objective -- already constrained by C4.
+        std_spread = std.max() - std.min() if n > 1 else 0.01
+        quality_lambda = 0.30 * std_spread
+        # Minimise std - lambda*quality  (subtract quality to prefer higher)
+        c = np.concatenate([std - quality_lambda * quality_norm,
                             np.zeros(n)])
     else:
         # ── FINE: maximise return with quality tiebreaker ─────────────────
@@ -413,6 +459,16 @@ def _solve(
         A_rows.append(row_type)
         lb_vals.append(-np.inf)
         ub_vals.append(cap)
+
+    # C5e: min equity floor — sum(w[equity]) >= min_equity_frac
+    # Only added when the user sets a non-zero floor (default 0 = unconstrained).
+    if min_equity_frac > 1e-6:
+        eq_mask = (types == "equity").astype(float)
+        if eq_mask.sum() > 0:
+            row_eq_floor = np.concatenate([eq_mask, np.zeros(n)])
+            A_rows.append(row_eq_floor)
+            lb_vals.append(min_equity_frac)
+            ub_vals.append(np.inf)
 
     # C8+: per-AMC concentration caps  sum(w_i for i in AMC_k) <= max_per_amc
     # Only added when max_per_amc < 1.0 (i.e. the user specified a real limit).
@@ -498,6 +554,13 @@ def _solve(
                 ok = False
                 break
 
+    # FIX: check equity floor — was missing; a solution with 0% equity was
+    # accepted as feasible even when min_equity_frac > 0.
+    if ok and min_equity_frac > 1e-6:
+        eq_alloc = weights[types == "equity"].sum()
+        if eq_alloc < min_equity_frac - tol:
+            ok = False
+
     # Check min_per_fund compliance
     if ok and min_per_fund > 1e-6:
         active = weights > 1e-5
@@ -513,10 +576,12 @@ def _solve(
             weights[active & (weights < min_per_fund * 0.5)] = 0.0
             if weights.sum() > 1e-10:
                 weights /= weights.sum()
-                # Re-check after cleanup
+                # Re-check after cleanup — include equity floor
+                eq_alloc_post = weights[types == "equity"].sum()
                 ok = (
                     np.dot(weights, ret) >= min_return - tol
                     and np.dot(weights, std) <= max_std_dev + tol
+                    and (min_equity_frac <= 1e-6 or eq_alloc_post >= min_equity_frac - tol)
                 )
             else:
                 ok = False
@@ -537,6 +602,7 @@ def _solve_with_min_alloc(
     mode:    str = "fine",
     blend_alpha: float = -1.0,
     max_per_amc:  float = 1.0,   # max total allocation fraction per AMC (1.0 = no limit)
+    min_equity_frac: float = 0.0,
 ) -> tuple:
     """
     MILP-native enforcement of minimum-per-fund allocation.
@@ -549,8 +615,9 @@ def _solve_with_min_alloc(
     """
     if verbose:
         alpha_str = f", α={blend_alpha:.3f}" if blend_alpha >= 0 else ""
+        eq_str = f", min_eq={min_equity_frac*100:.0f}%" if min_equity_frac > 1e-6 else ""
         print(f"    MILP solving ({len(df)} funds, min_alloc={min_per_fund*100:.1f}%"
-              f", mode={mode}{alpha_str}) ...",
+              f", mode={mode}{alpha_str}{eq_str}) ...",
               end=" ", flush=True)
 
     w, ok = _solve(
@@ -560,6 +627,7 @@ def _solve_with_min_alloc(
         mode=mode,
         blend_alpha=blend_alpha,
         max_per_amc=max_per_amc,
+        min_equity_frac=min_equity_frac,
     )
 
     if verbose:
@@ -623,6 +691,7 @@ def optimise_with_relaxation(
     mode:          str = "fine",   # "coarse" = minimise risk, "fine" = maximise return
     blend_alpha:   float = -1.0,   # -1 = use mode; 0..1 = blended objective
     max_per_amc:   float = 1.0,    # max total allocation fraction per AMC (1.0 = no limit)
+    min_equity_frac: float = 0.0,  # minimum equity fraction (0 = no floor, user-configurable)
 ) -> tuple:
     """
     Find a feasible allocation with two levels of relaxation.
@@ -658,10 +727,12 @@ def optimise_with_relaxation(
             return _solve_with_min_alloc(df_, mr, ms, md, mf, tc, min_per_fund,
                                          verbose=verbose, mode=mode,
                                          blend_alpha=blend_alpha,
-                                         max_per_amc=max_per_amc)
+                                         max_per_amc=max_per_amc,
+                                         min_equity_frac=min_equity_frac)
         else:
             w, ok = _solve(df_, mr, ms, md, mf, tc, min_per_fund=0.0, mode=mode,
-                           blend_alpha=blend_alpha, max_per_amc=max_per_amc)
+                           blend_alpha=blend_alpha, max_per_amc=max_per_amc,
+                           min_equity_frac=min_equity_frac)
             return (w, True) if ok else (None, False)
 
     def _try_inner(df_filtered, relaxations_so_far):
@@ -970,18 +1041,19 @@ def _info(relaxations, min_return, max_std_dev, max_dd,
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def fine_tune(
-    df:           pd.DataFrame,
-    weights:      np.ndarray,
-    min_return:   float,
-    max_std_dev:  float,
-    max_dd:       float,
-    max_per_fund: float,
-    min_per_fund: float,
-    max_per_type: float = 0.0,
-    tol:          float = 1e-6,
-    mode:         str   = "coarse",
-    max_fund_std: float = 0.0,   # 0 = no per-fund std filter
-    max_fund_dd:  float = 0.0,   # 0 = no per-fund dd filter
+    df:              pd.DataFrame,
+    weights:         np.ndarray,
+    min_return:      float,
+    max_std_dev:     float,
+    max_dd:          float,
+    max_per_fund:    float,
+    min_per_fund:    float,
+    max_per_type:    float = 0.0,
+    tol:             float = 1e-6,
+    mode:            str   = "coarse",
+    max_fund_std:    float = 0.0,   # 0 = no per-fund std filter
+    max_fund_dd:     float = 0.0,   # 0 = no per-fund dd filter
+    min_equity_frac: float = 0.0,   # minimum equity fraction floor
 ) -> tuple:
     """
     After the main allocation is found, run a targeted re-optimisation on only
@@ -1116,8 +1188,11 @@ def fine_tune(
                    "fun":  lambda w, r=r_s, m=min_return: np.dot(w, r) - m,
                    "jac":  lambda w, r=r_s: r})
         cs.append({"type": "ineq",
-                   "fun":  lambda w, s=s_s, m=max_std_dev: m - np.sqrt(np.dot(w, s**2)),
-                   "jac":  lambda w, s=s_s: -s**2 / (2 * np.sqrt(np.dot(w, s**2)) + 1e-12)})
+                   # "fun":  lambda w, s=s_s, m=max_std_dev: m - np.sqrt(np.dot(w, s**2)),
+                   # "jac":  lambda w, s=s_s: -s**2 / (2 * np.sqrt(np.dot(w, s**2)) + 1e-12)})
+                   # Replace line 1133-1134 with:
+                   "fun": lambda w, s=s_s, m=max_std_dev: m - np.dot(w, s),
+                   "jac": lambda w, s=s_s: -s})
         cs.append({"type": "ineq",
                    "fun":  lambda w, d=d_s, m=max_dd: np.dot(w, d) + m,
                    "jac":  lambda w, d=d_s: d})
@@ -1129,6 +1204,14 @@ def fine_tune(
                 cs.append({"type": "ineq",
                            "fun":  lambda w, m=mask_ft, c=max_per_type: c - np.dot(w, m),
                            "jac":  lambda w, m=mask_ft: -m})
+
+        # Min equity floor on the selected-fund sub-problem
+        if min_equity_frac > 1e-6:
+            eq_mask_s = (t_s == "equity").astype(float)
+            if eq_mask_s.sum() > 0:
+                cs.append({"type": "ineq",
+                           "fun":  lambda w, m=eq_mask_s, f=min_equity_frac: np.dot(w, m) - f,
+                           "jac":  lambda w, m=eq_mask_s: m})
 
         bnd = ScipyBounds(lb=np.zeros(n_s), ub=ub_s)
         best_o, best_w = np.inf, None
@@ -1160,7 +1243,7 @@ def fine_tune(
             w_c /= w_c.sum()
             ok = (abs(w_c.sum() - 1.0) < 1e-4
                   and np.dot(w_c, r_s) >= min_return - 1e-4
-                  and np.sqrt(np.dot(w_c, s_s**2)) <= max_std_dev + 1e-4
+                  and np.dot(w_c, s_s) <= max_std_dev + 1e-4
                   and np.dot(w_c, d_s) >= -max_dd - 1e-4
                   and np.all(w_c >= -1e-4)
                   and np.all(w_c <= ub_s + 1e-4))
@@ -1200,7 +1283,11 @@ def fine_tune(
         q_norm_a = (q_a / q_max_a) if q_max_a > 1e-9 else np.zeros(n_a)
         rs_a = r_a.max() - r_a.min() if n_a > 1 else 0.01
         ql_a = 0.20 * rs_a
-        obj_a = -(r_a + ql_a * q_norm_a)
+        # obj_a = -(r_a + ql_a * q_norm_a)    # maximise return+quality
+        if mode == "coarse":
+            obj_a = s_a - 0.20 * (s_a.max() - s_a.min()) * q_norm_a  # minimise std, quality tiebreaker
+        else:
+            obj_a = -(r_a + ql_a * q_norm_a)  # maximise return+quality
 
         # Initial weights for this subset: re-normalise from w_sel
         w0_a = w_sel[a_idx].copy()
@@ -1580,6 +1667,7 @@ class _ChunkProxy:
         "max_per_fund", "min_per_fund", "max_per_type",
         "min_history", "max_fund_std", "max_fund_dd",
         "max_per_amc",
+        "min_equity_frac",                           # FIX: was missing — caused equity floor to be silently ignored
         "target_weights", "_type_ratios", "constraint_slack_used",
         "_orig_dict",
         "p0_max_fund_std", "p0_max_fund_dd",     # frontier-walk P0 reference
@@ -1599,6 +1687,10 @@ class _ChunkProxy:
         self.max_fund_std = d.get("max_fund_std", 1.5) / 100.0
         self.max_fund_dd  = d.get("max_fund_dd",  1.5) / 100.0
         self.max_per_amc  = d.get("max_per_amc",  16.0) / 100.0  # default 16%
+        # FIX: min_equity_frac was absent — getattr always returned 0.0, silently
+        # dropping the equity floor constraint from every solve.
+        _meq = d.get("min_equity_frac", 0.0)
+        self.min_equity_frac = (_meq / 100.0) if _meq > 1.0 else float(_meq)
         # Writeable by select_best_combination
         self.target_weights       = {}
         self._type_ratios         = {}
@@ -1889,17 +1981,18 @@ def allocate_chunks(
             ft_max_fund_std = getattr(proxy, "p0_max_fund_std", 0.0) or 0.0
             ft_max_fund_dd  = getattr(proxy, "p0_max_fund_dd",  0.0) or 0.0
             weights, _, ft_summary = fine_tune(
-                df           = df,
-                weights      = weights,
-                min_return   = proxy.min_return,
-                max_std_dev  = proxy.max_std_dev,
-                max_dd       = proxy.max_dd,
-                max_per_fund = proxy.max_per_fund,
-                min_per_fund = proxy.min_per_fund,
-                max_per_type = proxy.max_per_type,
-                mode         = mode,
-                max_fund_std = ft_max_fund_std,
-                max_fund_dd  = ft_max_fund_dd,
+                df              = df,
+                weights         = weights,
+                min_return      = proxy.min_return,
+                max_std_dev     = proxy.max_std_dev,
+                max_dd          = proxy.max_dd,
+                max_per_fund    = proxy.max_per_fund,
+                min_per_fund    = proxy.min_per_fund,
+                max_per_type    = proxy.max_per_type,
+                mode            = mode,
+                max_fund_std    = ft_max_fund_std,
+                max_fund_dd     = ft_max_fund_dd,
+                min_equity_frac = getattr(proxy, "min_equity_frac", 0.0),
             )
         else:
             ft_summary = "Fine-tuning: skipped in coarse mode (frontier walk handles optimisation)."
@@ -1988,6 +2081,17 @@ def allocate_chunks(
         sub_advice = _substitution_advisor(results, total_money)
     except Exception as e:
         print(f"\n  ⚠ Substitution advisor failed: {e}")
+
+    # ── Cross-AMC substitution report: near-equivalent funds from other AMCs ─
+    cross_amc_report = []
+    try:
+        cross_amc_report = _cross_amc_substitution_report(
+            results     = results,
+            universe_df = df,           # full universe loaded above
+            n_chunks    = len(chunks),
+        )
+    except Exception as e:
+        print(f"\n  ⚠ Cross-AMC substitution report failed: {e}")
 
     # ── Generate portfolio risk-return visualization ───────────────────────
     try:
@@ -2604,6 +2708,199 @@ def _substitution_advisor(
 
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# CROSS-AMC SUBSTITUTION REPORT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _cross_amc_substitution_report(
+    results:     list,
+    universe_df,           # full fund universe DataFrame (from load_and_filter)
+    n_chunks:    int,
+    max_per_amc: float = 0.20,    # AMC allocation cap (fraction of total)
+    ret_tol:     float = 0.001,   # ± 0.1% CAGR tolerance  (adj_ret fraction)
+    std_tol:     float = 0.0015,  # ± 0.15% std_dev tolerance (adj_std fraction)
+    dd_tol:      float = 0.001,   # ± 0.1% |max_dd| tolerance (adj_dd fraction)
+) -> list:
+    """
+    For every fund across all chunks, identify near-equivalent funds from AMCs
+    that are unused or underutilised relative to the target fund's AMC.
+
+    "Near-equivalent" means a universe fund with:
+        |adj_ret − fund.adj_ret|  ≤ ret_tol   (default ±0.1%)
+        |adj_std − fund.adj_std|  ≤ std_tol   (default ±0.15%)
+        |adj_dd  − fund.adj_dd|   ≤ dd_tol    (default ±0.1%)
+        fund type == target fund type
+        different AMC from the target fund
+
+    "Underutilised AMC" = AMC whose total allocation weight across all chunks
+    is strictly less than the target fund's AMC weight.
+
+    This is purely advisory — no changes are made to the allocation.
+
+    Returns a list of dicts, one per (chunk, fund) pair that has candidates:
+        {
+          "chunk_label":  str,
+          "fund_name":    str,
+          "fund_amc":     str,
+          "fund_wt":      float,          # current allocation weight (%)
+          "fund_ret":     float,          # adj_ret (%)
+          "fund_std":     float,          # adj_std (%)
+          "fund_dd":      float,          # |adj_dd| (%)
+          "candidates":   list[dict],     # up to 5 best matches
+        }
+    """
+    sep = "─" * 82
+
+    # ── Build AMC usage map: AMC → total weight across all selected chunks ──
+    amc_total_wt: dict = {}   # amc → sum of weights across all chunks
+    selected_funds: dict = {}  # (chunk_idx, fund_name) → {ret, std, dd, type, wt, amc}
+
+    for r in results:
+        if not r.get("success"):
+            continue
+        ci  = r["chunk_num"] - 1
+        wts = r["weights"]
+        df  = r["df_input"]
+        for idx in range(len(df)):
+            row = df.iloc[idx]
+            fn  = str(row["Fund Name"])
+            w   = float(wts[idx]) if idx < len(wts) else 0.0
+            if w < 1e-5:
+                continue
+            amc = extract_amc(fn)
+            amc_total_wt[amc] = amc_total_wt.get(amc, 0.0) + w / n_chunks
+            selected_funds[(ci, fn)] = {
+                "ret":  float(row["adj_ret"]),
+                "std":  float(row["adj_std"]),
+                "dd":   abs(float(row["adj_dd"])),
+                "type": str(row["Fund Type"]),
+                "wt":   w,
+                "amc":  amc,
+                "chunk_idx": ci,
+            }
+
+    if not selected_funds:
+        return []
+
+    # ── Build universe lookup by AMC ──────────────────────────────────────
+    uni = universe_df.copy()
+    uni["_amc"] = uni["Fund Name"].apply(
+        lambda n: extract_amc(str(n)) if pd.notna(n) else "Unknown"
+    )
+
+    print(f"\n{'═' * 82}")
+    print(f"  CROSS-AMC SUBSTITUTION REPORT")
+    print(f"  Tolerances: CAGR ±{ret_tol*100:.1f}%  Std ±{std_tol*100:.2f}%  |DD| ±{dd_tol*100:.1f}%")
+    print(f"{'═' * 82}")
+
+    report = []
+
+    for r in results:
+        if not r.get("success"):
+            continue
+        ci          = r["chunk_num"] - 1
+        chunk       = r["chunk"]
+        chunk_label = f"C{r['chunk_num']} (Yr {chunk['year_from']}–{chunk['year_to']})"
+        wts = r["weights"]
+        df  = r["df_input"]
+
+        chunk_printed = False
+        chunk_entries = []
+
+        for idx in range(len(df)):
+            row = df.iloc[idx]
+            fn  = str(row["Fund Name"])
+            w   = float(wts[idx]) if idx < len(wts) else 0.0
+            if w < 1e-5:
+                continue
+
+            finfo = selected_funds[(ci, fn)]
+            f_ret = finfo["ret"];  f_std = finfo["std"]
+            f_dd  = finfo["dd"];   f_type = finfo["type"]
+            f_amc = finfo["amc"]
+
+            # ── Find near-equivalent funds from OTHER AMCs ────────────────
+            mask = (
+                (uni["Fund Type"] == f_type) &
+                (uni["adj_ret"].between(f_ret - ret_tol, f_ret + ret_tol)) &
+                (uni["adj_std"].between(f_std - std_tol, f_std + std_tol)) &
+                (uni["adj_dd"].abs().between(f_dd - dd_tol, f_dd + dd_tol)) &
+                (uni["_amc"] != f_amc) &
+                (~uni["Fund Name"].isin([k[1] for k in selected_funds
+                                         if k[0] == ci]))
+            )
+            cands = uni[mask].copy()
+            if cands.empty:
+                continue
+
+            # ── Rank: prefer underutilised AMCs, then by return (desc) ────
+            cands["_amc_wt"] = cands["_amc"].apply(
+                lambda a: amc_total_wt.get(a, 0.0))
+            cands["_underutilised"] = cands["_amc_wt"] < amc_total_wt.get(f_amc, 0.0)
+            cands = cands.sort_values(
+                ["_underutilised", "adj_ret"],
+                ascending=[False, False]
+            ).head(5)
+
+            if not chunk_printed:
+                print(f"\n{sep}")
+                print(f"  {chunk_label}")
+                print(f"{sep}")
+                chunk_printed = True
+
+            print(f"\n  {fn}")
+            print(f"  AMC: {f_amc}  wt={w*100:.1f}%  "
+                  f"ret={f_ret*100:.2f}%  std={f_std*100:.2f}%  |dd|={f_dd*100:.2f}%")
+            print(f"  Near-equivalent candidates (±ret{ret_tol*100:.1f}% "
+                  f"±std{std_tol*100:.2f}% ±dd{dd_tol*100:.1f}%):")
+
+            cand_list = []
+            for _, crow in cands.iterrows():
+                c_amc    = str(crow["_amc"])
+                c_amc_wt = amc_total_wt.get(c_amc, 0.0)
+                under    = c_amc_wt < amc_total_wt.get(f_amc, 0.0)
+                tag      = "★ underutilised AMC" if under else ""
+                print(f"    → {str(crow['Fund Name'])[:52]:<52}  "
+                      f"AMC:{c_amc:<20}  "
+                      f"ret={float(crow['adj_ret'])*100:.2f}%  "
+                      f"std={float(crow['adj_std'])*100:.2f}%  "
+                      f"|dd|={abs(float(crow['adj_dd']))*100:.2f}%  {tag}")
+                cand_list.append({
+                    "name":   str(crow["Fund Name"]),
+                    "amc":    c_amc,
+                    "ret":    round(float(crow["adj_ret"]) * 100, 3),
+                    "std":    round(float(crow["adj_std"]) * 100, 3),
+                    "dd":     round(abs(float(crow["adj_dd"])) * 100, 3),
+                    "type":   str(crow["Fund Type"]),
+                    "underutilised_amc": under,
+                })
+
+            chunk_entries.append({
+                "chunk_label": chunk_label,
+                "fund_name":   fn,
+                "fund_amc":    f_amc,
+                "fund_wt":     round(w * 100, 2),
+                "fund_ret":    round(f_ret * 100, 3),
+                "fund_std":    round(f_std * 100, 3),
+                "fund_dd":     round(f_dd  * 100, 3),
+                "candidates":  cand_list,
+            })
+
+        if not chunk_entries:
+            if not chunk_printed:
+                print(f"\n{sep}")
+                print(f"  {chunk_label}")
+                print(f"{sep}")
+            print(f"  ✓ No near-equivalent substitutes found from other AMCs.")
+
+        report.extend(chunk_entries)
+
+    if not report:
+        print(f"\n  ✓ All funds: no near-equivalent substitutes from other AMCs found.")
+
+    return report
+
+
 def _generate_portfolio_viz(
     results: list,
     output_dir: str,
@@ -3094,11 +3391,13 @@ def _fund_list_to_df(funds: list) -> pd.DataFrame:
     from models import FundEntry, _first_available
     rows = []
     for f in funds:
-        # Return: prefer worst_exp_ret, fall back to best CAGR available
+        # Return: prefer worst_exp_ret, fall back to worst CAGR across all periods
         if f.worst_exp_ret is not None and f.worst_exp_ret > 0:
             ret = f.worst_exp_ret / 100.0
         else:
-            cagr = _first_available(f.cagr_5, f.cagr_3, f.cagr_1, default=7.0)
+            _cagrs = [c for c in (f.cagr_1, f.cagr_3, f.cagr_5, f.cagr_10)
+                      if c is not None and c > 0]
+            cagr = min(_cagrs) if _cagrs else 7.0
             ret  = cagr / 100.0
 
         # std_dev and max_dd stored as % in FundEntry
@@ -3179,27 +3478,29 @@ def run_aim_pass(
     for chunk_idx, chunk in enumerate(chunks):
         _emit(f"\n  [Aim] Chunk {chunk_idx + 1} (Yr {chunk.year_from}–{chunk.year_to})")
 
-        r_target  = getattr(chunk, "min_return",   0.0685)
-        s_limit   = getattr(chunk, "max_std_dev",  0.0097)
-        d_limit   = getattr(chunk, "max_dd",       0.0075)
-        mf_max    = getattr(chunk, "max_per_fund", 0.08)   # matches _DEFAULT_CHUNK 8%
-        mf_min    = getattr(chunk, "min_per_fund", 0.02)   # matches _DEFAULT_CHUNK 2%
-        mt_max    = getattr(chunk, "max_per_type", 0.24)   # matches _DEFAULT_CHUNK 24%
-        ma_max    = getattr(chunk, "max_per_amc",  0.16)   # matches _DEFAULT_CHUNK 16%
+        r_target  = getattr(chunk, "min_return",      0.0685)
+        s_limit   = getattr(chunk, "max_std_dev",     0.0097)
+        d_limit   = getattr(chunk, "max_dd",          0.0075)
+        mf_max    = getattr(chunk, "max_per_fund",    0.08)   # matches _DEFAULT_CHUNK 8%
+        mf_min    = getattr(chunk, "min_per_fund",    0.02)   # matches _DEFAULT_CHUNK 2%
+        mt_max    = getattr(chunk, "max_per_type",    0.24)   # matches _DEFAULT_CHUNK 24%
+        ma_max    = getattr(chunk, "max_per_amc",     0.16)   # matches _DEFAULT_CHUNK 16%
+        meq       = getattr(chunk, "min_equity_frac", 0.0)    # user-configurable floor
 
         # Full MILP solve — NO turnover penalty, pure return/risk optimisation
         w, info = optimise_with_relaxation(
-            df           = df_universe,
-            min_return   = r_target,
-            max_std_dev  = s_limit,
-            max_dd       = d_limit,
-            max_per_fund = mf_max,
-            max_per_type = mt_max,
-            min_per_fund = mf_min,
-            max_fund_std = 0.0,
-            max_fund_dd  = 0.0,
-            mode         = mode,
-            max_per_amc  = ma_max,
+            df             = df_universe,
+            min_return     = r_target,
+            max_std_dev    = s_limit,
+            max_dd         = d_limit,
+            max_per_fund   = mf_max,
+            max_per_type   = mt_max,
+            min_per_fund   = mf_min,
+            max_fund_std   = 0.0,
+            max_fund_dd    = 0.0,
+            mode           = mode,
+            max_per_amc    = ma_max,
+            min_equity_frac= meq,
         )
 
         if w is None:
@@ -3226,7 +3527,7 @@ def run_aim_pass(
                 ft = str(fund_types_col[i]).lower()
                 if ft in type_ratios:
                     type_ratios[ft] += float(w[i])
-        chunk._type_ratios = type_ratios
+        chunk._type_ratios = type_ratios   # informational only -- not used as constraints
 
         wtd_ret = float(np.dot(w, ret_vals))
         wtd_std = float(np.dot(w, std_vals))
@@ -3235,7 +3536,7 @@ def run_aim_pass(
             f"return={wtd_ret*100:.3f}% std={wtd_std*100:.3f}% | "
             f"D={type_ratios['debt']*100:.1f}% "
             f"E={type_ratios['equity']*100:.1f}% "
-            f"O={type_ratios['other']*100:.1f}%"
+            f"O={type_ratios['other']*100:.1f}% (informational, not locked)"
         )
 
 
@@ -3281,8 +3582,9 @@ def run_track_pass(
             if _f.worst_exp_ret is not None and _f.worst_exp_ret > 0:
                 _rets.append(_f.worst_exp_ret / 100.0)
             else:
-                _cagr = _first_available(_f.cagr_5, _f.cagr_3, _f.cagr_1, default=7.0)
-                _rets.append(_cagr / 100.0)
+                _cagrs = [c for c in (_f.cagr_1, _f.cagr_3, _f.cagr_5, _f.cagr_10)
+                          if c is not None and c > 0]
+                _rets.append(min(_cagrs) / 100.0 if _cagrs else 0.07)
         _spread = (max(_rets) - min(_rets)) if len(_rets) >= 2 else 0.05
         absence_penalty = max(0.5, 10.0 * _spread)
     else:
@@ -3339,15 +3641,17 @@ def run_track_pass(
         _emit(
             f"\n  [Track] Chunk {k+1} (Yr {chunk.year_from}–{chunk.year_to}) "
             f"← anchor Chunk {k+2} | "
-            f"locked D={t_debt*100:.1f}% E={t_equity*100:.1f}% O={t_other*100:.1f}%"
+            f"aim-pass D={t_debt*100:.1f}% E={t_equity*100:.1f}% O={t_other*100:.1f}%"
+            f" (not locked — free to optimise)"
         )
 
         # Relaxed risk/return bounds (soft tolerance)
-        r_target = getattr(chunk, "min_return",   0.0685) - tolerance["return"]
-        s_limit  = getattr(chunk, "max_std_dev",  0.0097) + tolerance["std_dev"]
-        d_limit  = getattr(chunk, "max_dd",       0.0075) + tolerance["max_dd"]
-        mf_max   = getattr(chunk, "max_per_fund", 0.08)   # matches _DEFAULT_CHUNK 8%
-        mf_min   = getattr(chunk, "min_per_fund", 0.02)   # matches _DEFAULT_CHUNK 2%
+        r_target = getattr(chunk, "min_return",      0.0685) - tolerance["return"]
+        s_limit  = getattr(chunk, "max_std_dev",     0.0097) + tolerance["std_dev"]
+        d_limit  = getattr(chunk, "max_dd",          0.0075) + tolerance["max_dd"]
+        mf_max   = getattr(chunk, "max_per_fund",    0.08)   # matches _DEFAULT_CHUNK 8%
+        mf_min   = getattr(chunk, "min_per_fund",    0.02)   # matches _DEFAULT_CHUNK 2%
+        meq      = getattr(chunk, "min_equity_frac", 0.0)    # user-configurable equity floor
 
         # Absence penalty: penalise funds not present in the anchor
         penalty = np.where(anchor < 1e-6, absence_penalty, 0.0)
@@ -3365,37 +3669,32 @@ def run_track_pass(
                                 penalty * np.where(w < anchor, -1.0, 0.0))
             return g_abs + g_abs2
 
-        # ── Constraints ──────────────────────────────────────────────────────
-        # Hard constraints:
-        #   [0] sum(w) = 1
-        #   [1] dot(w, mask_debt)   = t_debt    ← LOCKED asset-class ratio
-        #   [2] dot(w, mask_equity) = t_equity  ← LOCKED asset-class ratio
-        #   [3] dot(w, mask_other)  = t_other   ← LOCKED asset-class ratio
-        # Soft risk constraints:
-        #   [4] dot(w, ret) >= r_target
-        #   [5] dot(w, std) <= s_limit
-        #   [6] dot(w, |dd|) <= d_limit
+        # -- Constraints ------------------------------------------------------
+        # Hard constraint: sum(w) = 1  (only)
+        # Soft constraints: return floor, std ceiling, dd ceiling
+        #
+        # The type-ratio equality constraints (debt=t_debt, equity=t_equity,
+        # other=t_other) have been REMOVED.  The Track pass is no longer a
+        # two-step "fix ratios first" process.  It minimises turnover from
+        # the anchor while freely selecting any fund mix that satisfies the
+        # risk/return constraints.  Fund selection is guided by the
+        # combined_ratio ordering from load_and_filter.
 
-        TOL_EQ = 0.005   # ±0.5pp tolerance on type ratios (handles rounding)
+        A_hard = np.vstack([np.ones(n)])   # sum(w) = 1 only
+        lb_hard = [1.0]
+        ub_hard = [1.0]
 
-        A_hard = np.vstack([
-            np.ones(n),    # sum = 1
-            mask_debt,     # debt total
-            mask_equity,   # equity total
-            mask_other,    # other total
-        ])
-        lb_hard = [1.0,
-                   t_debt   - TOL_EQ,
-                   t_equity - TOL_EQ,
-                   t_other  - TOL_EQ]
-        ub_hard = [1.0,
-                   t_debt   + TOL_EQ,
-                   t_equity + TOL_EQ,
-                   t_other  + TOL_EQ]
-
-        A_soft = np.vstack([ret_vals, std_vals, dd_vals])
+        A_soft_rows = [ret_vals, std_vals, dd_vals]
         lb_soft = [r_target, -np.inf, -np.inf]
         ub_soft = [np.inf,   s_limit,  d_limit]
+
+        # Min equity floor: sum(w[equity]) >= meq  (only when user set > 0)
+        if meq > 1e-6 and mask_equity.sum() > 0:
+            A_soft_rows.append(mask_equity)
+            lb_soft.append(meq)
+            ub_soft.append(np.inf)
+
+        A_soft = np.vstack(A_soft_rows)
 
         con_hard = LinearConstraint(A_hard, lb_hard, ub_hard)
         con_soft = LinearConstraint(A_soft, lb_soft, ub_soft)
@@ -3466,7 +3765,7 @@ def run_track_pass(
         _emit(
             f"    → {len(chunk.target_weights)} funds | "
             f"turnover vs anchor = {turnover*100:.2f}pp | "
-            f"D={actual_d*100:.1f}% E={actual_e*100:.1f}% O={actual_o*100:.1f}% | "
+            f"D={actual_d*100:.1f}% E={actual_e*100:.1f}% O={actual_o*100:.1f}% (free) | "
             f"slack: ret={slack['return']*100:.3f}pp "
             f"std={slack['std_dev']*100:.3f}pp "
             f"dd={slack['max_dd']*100:.3f}pp"
@@ -3559,13 +3858,14 @@ def run_aim_pass_multi(
               f"(Yr {chunk.year_from}–{chunk.year_to})  "
               f"— generating up to {n_portfolios} candidates")
 
-        r_target = getattr(chunk, "min_return",   0.0685)
-        s_limit  = getattr(chunk, "max_std_dev",  0.0097)
-        d_limit  = getattr(chunk, "max_dd",       0.0075)
-        mf_max   = getattr(chunk, "max_per_fund", 0.08)
-        mf_min   = getattr(chunk, "min_per_fund", 0.02)
-        mt_max   = getattr(chunk, "max_per_type", 0.24)
-        ma_max   = getattr(chunk, "max_per_amc",  0.16)
+        r_target = getattr(chunk, "min_return",      0.0685)
+        s_limit  = getattr(chunk, "max_std_dev",     0.0097)
+        d_limit  = getattr(chunk, "max_dd",          0.0075)
+        mf_max   = getattr(chunk, "max_per_fund",    0.08)
+        mf_min   = getattr(chunk, "min_per_fund",    0.02)
+        mt_max   = getattr(chunk, "max_per_type",    0.24)
+        ma_max   = getattr(chunk, "max_per_amc",     0.16)
+        meq      = getattr(chunk, "min_equity_frac", 0.0)
 
         candidates = []
         seen_fund_sets = set()   # de-duplicate by fund selection
@@ -3582,18 +3882,19 @@ def run_aim_pass_multi(
             alpha_val_clamped = max(0.0, min(1.0, alpha_val))
 
             w, info = optimise_with_relaxation(
-                df           = df_universe,
-                min_return   = r_target,
-                max_std_dev  = s_limit,
-                max_dd       = d_limit,
-                max_per_fund = mf_max,
-                max_per_type = mt_max,
-                min_per_fund = mf_min,
-                max_fund_std = 0.0,
-                max_fund_dd  = 0.0,
-                mode         = mode,
-                blend_alpha  = alpha_val_clamped,
-                max_per_amc  = ma_max,
+                df             = df_universe,
+                min_return     = r_target,
+                max_std_dev    = s_limit,
+                max_dd         = d_limit,
+                max_per_fund   = mf_max,
+                max_per_type   = mt_max,
+                min_per_fund   = mf_min,
+                max_fund_std   = 0.0,
+                max_fund_dd    = 0.0,
+                mode           = mode,
+                blend_alpha    = alpha_val_clamped,
+                max_per_amc    = ma_max,
+                min_equity_frac= meq,
             )
 
             alpha_val -= alpha_step
@@ -3663,7 +3964,7 @@ def run_aim_pass_multi(
                 df=df_universe, min_return=r_target, max_std_dev=s_limit,
                 max_dd=d_limit, max_per_fund=mf_max, max_per_type=mt_max,
                 min_per_fund=mf_min, max_fund_std=0.0, max_fund_dd=0.0,
-                mode=mode, max_per_amc=ma_max,
+                mode=mode, max_per_amc=ma_max, min_equity_frac=meq,
             )
             if w is not None:
                 w[w < mf_min * 0.5] = 0.0
@@ -4713,6 +5014,18 @@ def run_pulp_commonality_walk(
         mt_max   = max_alloc_sub  if max_alloc_sub  is not None else getattr(chunk, "max_per_type", 0.24)
         mf_min   = min_alloc_fund if min_alloc_fund is not None else getattr(chunk, "min_per_fund", 0.02)
         ma_max   = getattr(chunk, "max_per_amc", 0.16)
+        meq      = getattr(chunk, "min_equity_frac", 0.0)  # FIX: equity floor
+
+        # FIX: build list of equity fund indices once per chunk using
+        # _classify_fund_type logic — the CSV stores raw AMFI strings like
+        # "Hybrid Scheme - Arbitrage Fund", NOT the bare string "equity".
+        # Using .lower() == "equity" would always produce an empty list.
+        import re as _re
+        def _is_equity(ft: str) -> bool:
+            t = _re.sub(r"\s+", " ", ft.lower().strip())
+            return any(k in t for k in ("equity scheme", "arbitrage",
+                                        "aggressive hybrid", "other etf")) or                    "index fund" in t
+        _equity_idx = [i for i in funds if _is_equity(str(df.loc[i, "Fund Type"]))]
 
         _emit(f"\n  [PuLP-CW] Chunk {chunk_idx + 1} "
               f"(Yr {chunk.year_from}–{chunk.year_to})  "
@@ -4720,7 +5033,51 @@ def run_pulp_commonality_walk(
               f"fund: [{mf_min*100:.0f}%, {mf_max*100:.0f}%] | "
               f"type≤{mt_max*100:.0f}% | "
               f"amc≤{ma_max*100:.0f}% | "
-              f"max_rms_std≤{max_overall_std*100:.1f}%")
+              f"max_rms_std≤{max_overall_std*100:.1f}%"
+              + (f" | min_eq≥{meq*100:.0f}% ({len(_equity_idx)} eq funds)" if meq > 1e-6 else ""))
+
+        # ── Calibration P0: derive per-chunk absolute fund std ceiling ────
+        # Run a quick unconstrained solve to find the minimum-risk P0.
+        # Set chunk_abs_std_cap = max(max_selected_std × 1.2, 2 × wtd_std_P0)
+        # This hard cap prevents corrupt/outlier funds entering P1+.
+        chunk_abs_std_cap = None
+        try:
+            _cp = pulp.LpProblem(f"Calib_C{chunk_idx+1}", pulp.LpMinimize)
+            _cw = pulp.LpVariable.dicts("cw", funds, lowBound=0, upBound=mf_max)
+            _cz = pulp.LpVariable.dicts("cz", funds, cat="Binary")
+            _cs = pulp.LpVariable("cps", lowBound=0)
+            _cp += _cs == pulp.lpSum([_cw[i] * std_avgs[i] for i in funds])
+            _cp += _cs
+            _cp += pulp.lpSum([_cw[i] for i in funds]) == 1.0
+            _cp += pulp.lpSum([_cw[i] * expected_returns[i] for i in funds]) >= r_target
+            for i in funds:
+                _cp += _cw[i] >= mf_min * _cz[i]
+                _cp += _cw[i] <= mf_max * _cz[i]
+            for ft, ff in fund_type_groups.items():
+                if ff: _cp += pulp.lpSum([_cw[i] for i in ff]) <= mt_max
+            if ma_max < 1.0 - 1e-6:
+                for amc, af in fund_amc_groups.items():
+                    if len(af) >= 2:
+                        _aid = "".join(c if c.isalnum() else "_" for c in amc)
+                        _cp += pulp.lpSum([_cw[i] for i in af]) <= ma_max, f"CA_{_aid}"
+            # FIX: apply equity floor to Calibration P0
+            if meq > 1e-6 and _equity_idx:
+                _cp += pulp.lpSum([_cw[i] for i in _equity_idx]) >= meq, "Calib_MinEquity"
+            _cp.solve(pulp.PULP_CBC_CMD(msg=0, gapRel=0.001, timeLimit=30, threads=1))
+            if pulp.LpStatus[_cp.status] == "Optimal":
+                _csel  = [i for i in funds if _cw[i].varValue is not None and _cw[i].varValue > 1e-4]
+                _cwts  = np.array([_cw[i].varValue for i in _csel])
+                _cstds = np.array([std_avgs[i] for i in _csel])
+                _wtd   = float(np.dot(_cwts, _cstds))
+                _maxs  = float(_cstds.max()) if len(_cstds) > 0 else _wtd
+                chunk_abs_std_cap = max(_maxs * 1.20, 2.0 * _wtd)
+                _emit(f"    Calibration P0: {len(_csel)} funds | "
+                      f"wtd_std={_wtd*100:.3f}% max_fund_std={_maxs*100:.3f}% "
+                      f"→ abs_fund_std_cap={chunk_abs_std_cap*100:.3f}%")
+            else:
+                _emit(f"    Calibration P0 infeasible — no hard ceiling applied")
+        except Exception as _ce:
+            _emit(f"    Calibration P0 error ({_ce}) — no hard ceiling applied")
 
         candidates = []
         previous_port_std = None
@@ -4765,6 +5122,11 @@ def run_pulp_commonality_walk(
                     [w[i] * expected_returns[i] for i in funds]
                 ) >= r_target, "Min_Return"
 
+                # C2b: return ceiling (floor + 0.15%)
+                prob += pulp.lpSum(
+                    [w[i] * expected_returns[i] for i in funds]
+                ) <= r_target + 0.0015, "Max_Return"
+
                 # C3+C4: semi-continuous linking (if selected, weight in [min, max])
                 for i in funds:
                     prob += w[i] >= mf_min * z[i], f"Min_Alloc_{i}"
@@ -4791,12 +5153,20 @@ def run_pulp_commonality_walk(
                                 [w[i] for i in amc_funds]
                             ) <= ma_max, f"AMC_Cap_{amc_id}"
 
+                # C9: min equity floor — FIX: was missing from run_pulp_commonality_walk
+                # Uses _equity_idx built above with proper _classify_fund_type logic.
+                if meq > 1e-6 and _equity_idx:
+                    prob += pulp.lpSum([w[i] for i in _equity_idx]) >= meq, "Min_Equity"
+
                 # C6: per-fund std ratio constraint
                 # Each selected fund's std ≤ multiplier × portfolio std
+                # PLUS hard absolute ceiling from calibration P0
                 for i in funds:
                     prob += (
                         std_avgs[i] * z[i] <= std_multiplier * port_std
                     ), f"Std_Ratio_{i}"
+                    if chunk_abs_std_cap is not None and std_avgs[i] > chunk_abs_std_cap:
+                        prob += z[i] == 0, f"Std_HardCap_{i}"
 
                 # C7: iterative floor — force higher std than previous
                 if previous_port_std is not None:
@@ -5172,12 +5542,18 @@ def _merge_chunks_strict(chunks: list, total_money: float) -> "AllocationChunk":
     # Clamp: if strictest-min exceeds strictest-max, solver would be infeasible
     min_per_fund = min(min_per_fund, max_per_fund)
 
+    # Max equity floor across chunks — if any chunk demands ≥X% equity,
+    # the merged chunk must honour it too (strictest = largest floor)
+    min_equity_frac = max(
+        (getattr(c, "min_equity_frac", 0.0) for c in chunks), default=0.0)
+
     merged = AllocationChunk(year_from=1, year_to=30, funds=list(funds_seen.values()))
-    merged.min_return   = min_return
-    merged.max_std_dev  = max_std_dev
-    merged.max_dd       = max_dd
-    merged.max_per_fund = max_per_fund
-    merged.min_per_fund = min_per_fund
+    merged.min_return      = min_return
+    merged.max_std_dev     = max_std_dev
+    merged.max_dd          = max_dd
+    merged.max_per_fund    = max_per_fund
+    merged.min_per_fund    = min_per_fund
+    merged.min_equity_frac = min_equity_frac
     return merged
 
 
@@ -5591,15 +5967,16 @@ def main():
 
     eff_max_per_type = info["final"].get("max_per_type") or 0.0
     weights, _, ft_summary = fine_tune(
-        df           = df,
-        weights      = weights,
-        min_return   = params["min_return"],
-        max_std_dev  = params["max_std_dev"],
-        max_dd       = params["max_dd"],
-        max_per_fund = params["max_per_fund"],
-        min_per_fund = params["min_per_fund"],
-        max_per_type = eff_max_per_type,
-        mode         = getattr(args, "mode", "coarse"),
+        df              = df,
+        weights         = weights,
+        min_return      = params["min_return"],
+        max_std_dev     = params["max_std_dev"],
+        max_dd          = params["max_dd"],
+        max_per_fund    = params["max_per_fund"],
+        min_per_fund    = params["min_per_fund"],
+        max_per_type    = eff_max_per_type,
+        mode            = getattr(args, "mode", "coarse"),
+        min_equity_frac = params.get("min_equity_frac", 0.0),
     )
 
     report(

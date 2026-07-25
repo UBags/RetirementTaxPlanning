@@ -1,0 +1,81 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# RetirementTaxPlanning.configuration
+# ═══════════════════════════════════════════════════════════════════════════════
+# All configurable constants for the SWP Financial Planner application.
+# Values are read once at startup by Configuration.py (singleton).
+#
+# Format: key = value
+#   - Lines starting with '#' are comments
+#   - Blank lines are ignored
+#   - Numeric values are auto-parsed (int, float)
+#   - Boolean values: true/false (case-insensitive)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ─── Tax Constants ────────────────────────────────────────────────────────────
+# Health & education cess rate applied on top of all tax computations
+cess_rate = 0.04
+
+# Fallback tax rates when user has not configured tax chunks
+fallback_equity_ltcg_rate = 0.125
+fallback_other_ltcg_rate  = 0.125
+fallback_debt_top_rate    = 0.30
+fallback_stcg_rate        = 0.15
+
+# ─── Fund / Portfolio Constants ───────────────────────────────────────────────
+# Months of holding below which Short-Term Capital Gains tax applies
+stcg_holding_months = 12
+
+# Exit load fraction for redemptions within stcg_holding_months
+exit_load_fraction = 0.01
+
+# Month index at which SWP withdrawals begin (month 3 = third month after investment)
+swp_start_month = 3
+
+# Month index at which Bounded Smart Withdrawal activates (corpus needs time to drift)
+smart_withdrawal_start_month = 18
+
+# Maximum simulation horizon in financial years
+max_simulation_years = 30
+
+# ─── Bounded Smart Withdrawal ────────────────────────────────────────────────
+# Maximum tolerated return drift (annualised fraction) before correction kicks in
+drift_cap_personal = 0.0015
+drift_cap_huf      = 0.0050
+
+# Maximum tolerated weight deviation (absolute fraction) per fund before
+# the SWP preferentially withdraws from overweighted funds
+weight_drift_threshold = 0.015
+
+# ─── Tax-Optimal Split Optimizer Defaults ─────────────────────────────────────
+# Maximum extra HUF withdrawal per FY (₹ lakhs)
+optimizer_default_user_cap = 7.5
+
+# Minimum fraction of personal SWP to retain
+optimizer_min_personal_fraction = 0.25
+
+# Maximum fraction of HUF corpus to withdraw per FY
+optimizer_max_huf_corpus_drain = 0.03
+
+# Grid search step size (₹ lakhs)
+optimizer_grid_step = 0.25
+
+# Number of optimise → re-run cycles
+optimizer_default_iterations = 2
+
+# ─── Rebalancing ──────────────────────────────────────────────────────────────
+# No-trade band: minimum absolute weight difference to trigger a sell/buy
+rebalance_no_trade_band = 0.005
+
+# ─── AMFI API ─────────────────────────────────────────────────────────────────
+# Seconds to sleep between consecutive AMFI API calls
+amfi_sleep_between_calls = 0.4
+
+# ─── File Paths (relative to project root) ────────────────────────────────────
+# Default input CSV for the fund allocator (relative to project root)
+allocator_default_input = Fund_Metrics_Output.csv
+
+# Default output CSV for the fund allocator (relative to project root)
+allocator_default_output = allocation_result.csv
+
+# Default CAGR fallback (%) when no CAGR data is available for a fund
+default_cagr_fallback = 7.0

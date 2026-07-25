@@ -142,6 +142,7 @@ RETRY_BACKOFF      = 1.5
 
 # Lookback windows
 WINDOW_5Y   = 60    # months for the 5-year window  (Sharpe, Sortino, Std_Dev)
+WINDOW_7Y   = 84    # months for the 7-year window
 WINDOW_10Y  = 120   # months for the 10-year window (Alpha, Beta, Treynor, Max_DD, Calmar)
 MIN_HISTORY = 36    # minimum months required to attempt any computation
 
@@ -1401,6 +1402,129 @@ def get_debt_benchmark_monthly(start_date: pd.Timestamp) -> pd.Series:
 # METRICS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _rolling_stats(nav: pd.Series, ret: pd.Series, window_months: int) -> dict:
+    """
+    Compute statistics across all overlapping rolling windows of `window_months`.
+
+    For each window of length window_months sliding one month at a time:
+      - CAGR   : annualised compounded return over the window
+      - Std    : annualised std dev of monthly returns within the window
+      - Max_DD : maximum drawdown of the NAV within the window
+
+    Returns a dict with keys:
+      avg_cagr     : mean of all rolling CAGRs  (expected return)
+      min_cagr     : worst (lowest) rolling CAGR  (worst-case return)
+      avg_std_dev  : mean of all rolling std devs
+      max_std_dev  : worst (highest) rolling std dev  (worst-case volatility)
+      worst_max_dd : worst (most negative) max DD across all windows
+
+    Returns an empty dict if the NAV series is shorter than window_months.
+    """
+    years = window_months / 12.0
+    if len(ret) < window_months or len(nav) < window_months:
+        return {}
+
+    cagrs    = []
+    std_devs = []
+    max_dds  = []
+
+    # Align nav onto the ret index so we can slice by integer position
+    nav_aligned = nav.reindex(ret.index, method="nearest").values
+    ret_arr     = ret.values
+    n           = len(ret_arr)
+
+    # Clip monthly returns to ±50% to eliminate NAV split/consolidation
+    # artefacts (e.g. a unit-consolidation makes NAV jump 100× in one month,
+    # producing a single +9900% monthly return that corrupts every rolling
+    # window containing that month).  Real maximum monthly returns:
+    #   debt ≈ ±5%,  equity ≈ ±35%,  gold ≈ ±20%
+    # ±50% is a safe universal ceiling that catches splits without
+    # clipping any genuine extreme market move.
+    CLIP = 0.50
+    ret_arr = np.clip(ret_arr, -CLIP, CLIP)
+
+    # Rebuild a clean nav from clipped returns so CAGR and drawdown
+    # are also free of the split artefact.
+    nav_clean = np.ones(n)
+    for _i in range(1, n):
+        nav_clean[_i] = nav_clean[_i - 1] * (1 + ret_arr[_i])
+    nav_aligned = nav_clean
+
+    # First pass: collect raw values
+    raw_cagrs = []
+    raw_stds  = []
+    raw_dds   = []
+
+    for start in range(0, n - window_months + 1):
+        end   = start + window_months      # exclusive
+        r_win = ret_arr[start:end]
+        n_win = nav_aligned[start:end]
+
+        # --- CAGR ---
+        nav_s = nav_aligned[start]
+        nav_e = nav_aligned[end - 1]
+        if nav_s > 0 and np.isfinite(nav_s) and np.isfinite(nav_e):
+            cagr = float((nav_e / nav_s) ** (1.0 / years) - 1)
+        else:
+            cagr = np.nan
+
+        # --- annualised std dev ---
+        sd = float(np.nanstd(r_win, ddof=1) * np.sqrt(12)) if len(r_win) >= 12 else np.nan
+
+        # --- max drawdown ---
+        if len(n_win) >= 2:
+            cum_max = np.maximum.accumulate(n_win)
+            safe    = np.where(cum_max > 0, cum_max, 1.0)
+            dd      = float(np.min(n_win / safe - 1))
+        else:
+            dd = np.nan
+
+        if np.isfinite(cagr): raw_cagrs.append(cagr)
+        if np.isfinite(sd):   raw_stds.append(sd)
+        if np.isfinite(dd):   raw_dds.append(dd)
+
+    # Second pass: remove outlier windows caused by NAV split artefacts.
+    # A single bad NAV data point inflates the std of every window
+    # containing that month.  We identify outlier windows as those with
+    # std > STD_OUTLIER_FACTOR x median(std) and discard them before
+    # computing aggregates.  This is the correct fix: the ±50% return
+    # clip (above) removes the artefact from nav/CAGR, but std is still
+    # inflated in windows where multiple nearby months show elevated
+    # volatility as the fund re-rated around the consolidation date.
+    STD_OUTLIER_FACTOR = 5.0
+    if len(raw_stds) >= 4:
+        med_std = float(np.median(raw_stds))
+        std_ceil = STD_OUTLIER_FACTOR * med_std if med_std > 1e-9 else 0.50
+        clean_idx = [i for i, s in enumerate(raw_stds) if s <= std_ceil]
+        cagrs   = [raw_cagrs[i] for i in clean_idx if i < len(raw_cagrs)]
+        std_devs = [raw_stds[i]  for i in clean_idx]
+        # Keep all DDs (drawdown less affected by the single bad point)
+        max_dds  = raw_dds
+    else:
+        cagrs    = raw_cagrs
+        std_devs = raw_stds
+        max_dds  = raw_dds
+
+    if not cagrs:
+        return {}
+
+    # Round series to 4dp and convert to % for compact JSON storage
+    cagrs_pct  = [round(v * 100, 4) for v in cagrs]
+    stds_pct   = [round(v * 100, 4) for v in std_devs]
+    dds_pct    = [round(v * 100, 4) for v in max_dds]
+    return {
+        "avg_cagr":     float(np.mean(cagrs)),
+        "min_cagr":     float(np.min(cagrs)),
+        "avg_std_dev":  float(np.mean(std_devs)) if std_devs else np.nan,
+        "max_std_dev":  float(np.max(std_devs)) if std_devs else np.nan,
+        "worst_max_dd": float(np.min(max_dds))  if max_dds  else np.nan,
+        # Raw series for chart popup (in %, stored in rolling_data.json only)
+        "_cagrs": cagrs_pct,
+        "_stds":  stds_pct,
+        "_dds":   dds_pct,
+    }
+
+
 def _cagr(nav: pd.Series, years: int) -> float:
     months = years * 12
     if len(nav) < months + 1:
@@ -1450,10 +1574,20 @@ def _metrics_for_window(
     sharpe = (ann_ret - ann_rf) / std_dev if std_dev > 1e-9 else np.nan
 
     # ── Sortino (downside = monthly returns below that month's Rf) ────────────
-    excess_monthly = ret - rf_w
-    downside = excess_monthly[excess_monthly < 0]
-    ds_std   = float(downside.std() * np.sqrt(12)) if len(downside) > 1 else np.nan
-    sortino  = (ann_ret - ann_rf) / ds_std if (ds_std and ds_std > 1e-9) else np.nan
+    # IMPORTANT: downside deviation is computed on raw returns that fall below
+    # their corresponding Rf, NOT on excess returns that are negative.
+    # Using excess_monthly < 0 as the threshold but computing std on the raw
+    # ret values in those months avoids the Sharpe > Sortino inversion that
+    # occurs for near-flat funds where excess_monthly has higher variance than
+    # raw returns (because Rf subtraction adds noise to a near-constant series).
+    # Epsilon floor of 0.01% annualised prevents hyper-inflation for funds with
+    # prolonged bull runs where downside variance approaches zero.
+    SORTINO_DS_STD_FLOOR = 0.0001   # 0.01% annualised
+    downside_mask = (ret - rf_w) < 0          # months where fund underperformed Rf
+    downside_ret  = ret[downside_mask]         # raw returns in those months
+    ds_std_raw = float(downside_ret.std() * np.sqrt(12)) if len(downside_ret) > 1 else np.nan
+    ds_std     = max(ds_std_raw, SORTINO_DS_STD_FLOOR) if (ds_std_raw is not None and np.isfinite(ds_std_raw)) else np.nan
+    sortino    = (ann_ret - ann_rf) / ds_std if (ds_std and np.isfinite(ds_std)) else np.nan
 
     # ── Beta & Alpha ──────────────────────────────────────────────────────────
     # Guard against degenerate benchmark (e.g. Rf used as proxy → near-constant)
@@ -1492,10 +1626,11 @@ def _metrics_for_window(
     # significantly, inflating Calmar.
     mdd = _max_drawdown(nav)
 
-    # Floor: if |Max_DD| < 0.0005 (0.05%), treat as -0.0005 for Calmar.
+    # Floor: if |Max_DD| < 0.0001 (0.01%), treat as -0.0001 for Calmar.
     # Near-zero drawdowns (e.g. -0.0001 for arbitrage funds) produce
     # extreme Calmar values (800+) that distort Combined_Ratio.
-    mdd_for_calmar = mdd if abs(mdd) >= 0.0005 else -0.0005
+    # 0.01% matches the Sortino denominator floor for consistency.
+    mdd_for_calmar = mdd if abs(mdd) >= 0.0001 else -0.0001
 
     n_years = len(nav) / 12.0
     if len(nav) >= 2 and nav.iloc[0] > 0 and n_years > 0:
@@ -1591,15 +1726,23 @@ def compute_metrics(eom: pd.DataFrame, fund_type: str) -> dict:
     WINDOW_3Y = 36
 
     windows = {}
-    for label, n_win in [("10Y", WINDOW_10Y), ("5Y", WINDOW_5Y), ("3Y", WINDOW_3Y)]:
+    for label, n_win in [("10Y", WINDOW_10Y), ("7Y", WINDOW_7Y),
+                         ("5Y", WINDOW_5Y),  ("3Y", WINDOW_3Y)]:
         ret_w = ret.iloc[-n_win:]
         nav_w = nav.loc[nav.index >= ret_w.index.min()]
         windows[label] = _metrics_for_window(ret_w, nav_w, rf_all, bm_raw)
+
+    # Rolling stats for worst-case scenario modelling
+    rolling = {}
+    for label, n_win in [("10Y", WINDOW_10Y), ("7Y", WINDOW_7Y),
+                         ("5Y", WINDOW_5Y),  ("3Y", WINDOW_3Y)]:
+        rolling[label] = _rolling_stats(nav, ret, n_win)
 
     # ── CAGR (always from full history) ──────────────────────────────────────
     cagr_1  = _cagr(nav, 1)
     cagr_3  = _cagr(nav, 3)
     cagr_5  = _cagr(nav, 5)
+    cagr_7  = _cagr(nav, 7)
     cagr_10 = _cagr(nav, 10)
 
     def _r(v):
@@ -1622,8 +1765,8 @@ def compute_metrics(eom: pd.DataFrame, fund_type: str) -> dict:
     # ── Assemble output dict ──────────────────────────────────────────────────
     out = {}
 
-    # 15 per-window metrics (5 metrics × 3 windows)
-    for label in ("10Y", "5Y", "3Y"):
+    # Per-window metrics (5 metrics x 4 windows: 10Y, 7Y, 5Y, 3Y)
+    for label in ("10Y", "7Y", "5Y", "3Y"):
         w = windows[label]
         out[f"Std_Dev_{label}"] = w.get("Std_Dev", np.nan)
         out[f"Sharpe_{label}"]  = w.get("Sharpe",  np.nan)
@@ -1631,18 +1774,36 @@ def compute_metrics(eom: pd.DataFrame, fund_type: str) -> dict:
         out[f"Max_DD_{label}"]  = w.get("Max_DD",  np.nan)
         out[f"Calmar_{label}"]  = w.get("Calmar",  np.nan)
 
-    # 3 Combined_Ratio columns
-    # Cross-window safety: if Sortino is negative in EITHER the 5Y or 10Y
-    # window, force Combined_Ratio to 0 for ALL windows.  A fund that
-    # underperformed risk-free in any major period gets no quality credit.
+    # Rolling worst-case columns (5 stats x 4 windows)
+    for label in ("10Y", "7Y", "5Y", "3Y"):
+        r = rolling[label]
+        out[f"Avg_CAGR_{label}"]     = _r(r.get("avg_cagr"))
+        out[f"Min_CAGR_{label}"]     = _r(r.get("min_cagr"))
+        out[f"Avg_Std_Dev_{label}"]  = _r(r.get("avg_std_dev"))
+        out[f"Max_Std_Dev_{label}"]  = _r(r.get("max_std_dev"))
+        out[f"Worst_Max_DD_{label}"] = _r(r.get("worst_max_dd"))
+
+    # Side-channel: raw rolling series for chart popup.
+    # Stored under "_rolling_series" key — stripped before CSV export.
+    out["_rolling_series"] = {
+        label: {
+            "cagrs": rolling[label].get("_cagrs", []),
+            "stds":  rolling[label].get("_stds",  []),
+            "dds":   rolling[label].get("_dds",   []),
+        }
+        for label in ("3Y", "5Y", "7Y", "10Y")
+        if rolling.get(label)
+    }
+
+    # Combined_Ratio columns (10Y, 7Y, 5Y, 3Y)
+    # Cross-window safety: negative Sortino in 5Y or 10Y zeroes all windows.
     sort_5  = windows["5Y"].get("Sortino", np.nan)
     sort_10 = windows["10Y"].get("Sortino", np.nan)
     any_negative_sortino = (
         (sort_5  is not None and np.isfinite(sort_5)  and sort_5  < 0) or
         (sort_10 is not None and np.isfinite(sort_10) and sort_10 < 0)
     )
-
-    for label in ("10Y", "5Y", "3Y"):
+    for label in ("10Y", "7Y", "5Y", "3Y"):
         if any_negative_sortino:
             out[f"Combined_Ratio_{label}"] = 0.0
         else:
@@ -1657,10 +1818,11 @@ def compute_metrics(eom: pd.DataFrame, fund_type: str) -> dict:
     # History metadata
     out["History_Months"] = n_months
 
-    # CAGR columns
+    # Point-in-time CAGR columns (trailing from today)
     out["1Y_CAGR"]  = _r(cagr_1)
     out["3Y_CAGR"]  = _r(cagr_3)
     out["5Y_CAGR"]  = _r(cagr_5)
+    out["7Y_CAGR"]  = _r(cagr_7)
     out["10Y_CAGR"] = _r(cagr_10)
 
     return out
@@ -1721,6 +1883,16 @@ def main():
     parser.add_argument("--build-map-only", action="store_true",
                         help="Only build the AMFI code map, then exit")
     args = parser.parse_args()
+
+    # ── Ensure output directory exists ────────────────────────────────────────
+    # The --output path is supplied by main.py as an absolute path inside the
+    # per-user output_dir (e.g. .../Uddipan/Fund_Metrics_Output.csv).
+    # The module-level ERROR_FILE constant uses a relative '../Personal/' path
+    # that may not exist.  Derive error_file from the same directory as
+    # args.output so both files always land in the correct, existing folder.
+    output_path = Path(args.output).resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    error_file  = str(output_path.parent / "Fund_Metrics_Errors.csv")
 
     if not Path(args.input).exists():
         log.error("Input file not found: %s", args.input)
@@ -1807,34 +1979,24 @@ def main():
     #   Combined_Ratio (3 cols) → Alpha/Beta/Treynor → History → CAGR
     cols = [
         "Fund Type", "Fund Name", "Fund Size", "AMFI Code", "Match Quality",
-
-        # ── Portfolio allocation columns (after Match Quality) ────────────────
-        # Allocation_L    : always 0 – populate manually once funds are selected.
-        # Worst_Exp_Ret_% : min(1Y,3Y,5Y,10Y CAGR) − 0.40% STT for arb types.
         "Allocation_L", "Worst_Exp_Ret_%",
-
-        # ── 10-Year window (or full history when fund < 10Y old) ──────────────
         "Std_Dev_10Y", "Sharpe_10Y", "Sortino_10Y", "Max_DD_10Y", "Calmar_10Y",
-
-        # ── 5-Year window ─────────────────────────────────────────────────────
+        "Std_Dev_7Y",  "Sharpe_7Y",  "Sortino_7Y",  "Max_DD_7Y",  "Calmar_7Y",
         "Std_Dev_5Y",  "Sharpe_5Y",  "Sortino_5Y",  "Max_DD_5Y",  "Calmar_5Y",
-
-        # ── 3-Year window ─────────────────────────────────────────────────────
         "Std_Dev_3Y",  "Sharpe_3Y",  "Sortino_3Y",  "Max_DD_3Y",  "Calmar_3Y",
-
-        # ── Combined quality scores ───────────────────────────────────────────
-        # sqrt(Sortino_XY × Calmar_XY); NaN when either input ≤ 0.
-        # Sort key: 10Y desc → 5Y desc → 3Y desc.
-        "Combined_Ratio_10Y", "Combined_Ratio_5Y", "Combined_Ratio_3Y",
-
-        # ── Regression metrics (longest window, up to 10Y) ───────────────────
+        "Avg_CAGR_10Y",    "Min_CAGR_10Y",    "Avg_Std_Dev_10Y",
+        "Max_Std_Dev_10Y", "Worst_Max_DD_10Y",
+        "Avg_CAGR_7Y",     "Min_CAGR_7Y",     "Avg_Std_Dev_7Y",
+        "Max_Std_Dev_7Y",  "Worst_Max_DD_7Y",
+        "Avg_CAGR_5Y",     "Min_CAGR_5Y",     "Avg_Std_Dev_5Y",
+        "Max_Std_Dev_5Y",  "Worst_Max_DD_5Y",
+        "Avg_CAGR_3Y",     "Min_CAGR_3Y",     "Avg_Std_Dev_3Y",
+        "Max_Std_Dev_3Y",  "Worst_Max_DD_3Y",
+        "Combined_Ratio_10Y", "Combined_Ratio_7Y",
+        "Combined_Ratio_5Y",  "Combined_Ratio_3Y",
         "Alpha_10Y", "Beta_10Y", "Treynor_10Y",
-
-        # ── Metadata ─────────────────────────────────────────────────────────
         "History_Months",
-
-        # ── CAGR (always from full history) ───────────────────────────────────
-        "1Y_CAGR", "3Y_CAGR", "5Y_CAGR", "10Y_CAGR",
+        "1Y_CAGR", "3Y_CAGR", "5Y_CAGR", "7Y_CAGR", "10Y_CAGR",
     ]
 
     if results:
@@ -1860,15 +2022,25 @@ def main():
         # ── Worst_Exp_Ret_% ───────────────────────────────────────────────────
         # Minimum of all available positive CAGR columns, then subtract 0.40%
         # STT hit for Arbitrage / Tax Efficient Income fund types.
-        cagr_cols = ["1Y_CAGR", "3Y_CAGR", "5Y_CAGR", "10Y_CAGR"]
-        df_out["_min_cagr"] = df_out[cagr_cols].apply(
-            lambda row: row[row > 0].min() if (row > 0).any() else np.nan, axis=1
-        )
+        # Use rolling Avg_CAGR columns (no 1Y) for a stable pessimistic estimate.
+        avg_cagr_cols = [c for c in
+                         ["Avg_CAGR_3Y", "Avg_CAGR_5Y", "Avg_CAGR_7Y", "Avg_CAGR_10Y"]
+                         if c in df_out.columns]
+        if avg_cagr_cols:
+            df_out["_min_avg_cagr"] = df_out[avg_cagr_cols].apply(
+                lambda row: row[row > 0].min() if (row > 0).any() else np.nan, axis=1
+            )
+        else:
+            fallback_cols = [c for c in ["3Y_CAGR", "5Y_CAGR", "7Y_CAGR", "10Y_CAGR"]
+                             if c in df_out.columns]
+            df_out["_min_avg_cagr"] = df_out[fallback_cols].apply(
+                lambda row: row[row > 0].min() if (row > 0).any() else np.nan, axis=1
+            )
         stt_mask = df_out["Fund Type"].str.lower().isin(STT_HIT_TYPES)
         df_out["Worst_Exp_Ret_%"] = (
-            df_out["_min_cagr"] - stt_mask.astype(float) * 0.004
+            df_out["_min_avg_cagr"] - stt_mask.astype(float) * 0.004
         ).round(4)
-        df_out.drop(columns=["_min_cagr"], inplace=True)
+        df_out.drop(columns=["_min_avg_cagr"], inplace=True)
 
         n_10y = df_out["Combined_Ratio_10Y"].notna().sum()
         n_5y  = df_out["Combined_Ratio_5Y"].notna().sum()
@@ -1878,12 +2050,36 @@ def main():
             n_10y, n_5y, n_3y, len(df_out),
         )
 
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+
+        # ── Write rolling_data.json (raw series for chart popups) ─────────
+        # Collect _rolling_series from results before stripping from df_out
+        rolling_json: dict = {}
+        for rec in results:
+            fname = rec.get("Fund Name", "")
+            series = rec.get("_rolling_series")
+            if fname and series:
+                rolling_json[fname] = series
+        rolling_path = Path(args.output).parent / "rolling_data.json"
+        try:
+            import json as _json
+            with open(rolling_path, "w", encoding="utf-8") as _jf:
+                _json.dump(rolling_json, _jf, separators=(',', ':'))
+            log.info("Rolling data saved -> %s (%d funds)",
+                     rolling_path, len(rolling_json))
+        except Exception as _je:
+            log.warning("Could not write rolling_data.json: %s", _je)
+
+        # Strip _rolling_series from df_out before CSV export
+        if "_rolling_series" in df_out.columns:
+            df_out = df_out.drop(columns=["_rolling_series"])
+
         df_out.to_csv(args.output, index=False)
         log.info("Saved %d results -> %s", len(df_out), args.output)
 
     if errors:
-        pd.DataFrame(errors).to_csv(ERROR_FILE, index=False)
-        log.warning("Saved %d errors -> %s", len(errors), ERROR_FILE)
+        pd.DataFrame(errors).to_csv(error_file, index=False)
+        log.warning("Saved %d errors -> %s", len(errors), error_file)
 
     log.info("Done.  Success: %d / %d  |  Failed: %d / %d",
              len(results), len(funds), len(errors), len(funds))

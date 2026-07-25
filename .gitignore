@@ -95,3 +95,6 @@ Thumbs.db
 #   Uddipan/allocation_params.json        hand-tuned allocator settings
 #   *.docx, *.odt, *.xlsx                 authored design documents
 # ==============================================================================
+
+# ── LibreOffice lock files ───────────────────────────────────────────────────
+.~lock.*#

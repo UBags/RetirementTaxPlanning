@@ -175,9 +175,14 @@ class DebtTaxEditor(QWidget):
         # Also read year_from, year_to, exempt_limit from chunk table
         row = self._current_chunk_idx
         try:
-            yf = int(self.chunk_table.item(row, 0).text())
-            yt = int(self.chunk_table.item(row, 1).text())
-            ex = float(self.chunk_table.item(row, 2).text())
+            item0 = self.chunk_table.item(row, 0)
+            item1 = self.chunk_table.item(row, 1)
+            item2 = self.chunk_table.item(row, 2)
+            if item0 is None or item1 is None or item2 is None:
+                raise ValueError("Table cell not initialised yet")
+            yf = int(item0.text())
+            yt = int(item1.text())
+            ex = float(item2.text())
         except Exception:
             yf = self.chunks[row].year_from
             yt = self.chunks[row].year_to
@@ -277,7 +282,9 @@ class EquityTaxEditor(QWidget):
                     self.chunks[row+1] = EquityTaxChunk(int(val)+1, self.chunks[row+1].year_to,
                                                          self.chunks[row+1].tax_rate, self.chunks[row+1].exempt_limit)
                     self.table.blockSignals(True)
-                    self.table.item(row+1, 0).setText(str(int(val)+1))
+                    next_item = self.table.item(row+1, 0)
+                    if next_item is not None:
+                        next_item.setText(str(int(val)+1))
                     self.table.blockSignals(False)
             elif col == 2:
                 self.chunks[row] = EquityTaxChunk(c.year_from, c.year_to, val, c.exempt_limit)

@@ -146,6 +146,14 @@ HUF_MONTHLY_COLS = [
     "HUF Transfer In", "Windfall HUF",
 ]
 
+# Per-fund breakdown CSV — written as a companion to Personal_Monthly.csv.
+# Each month that has per-fund data produces one row per fund here.
+FUND_DETAIL_COLS = [
+    "Month#", "Cal Month", "FY Year",
+    "Fund Name", "Fund Type",
+    "Corpus Start", "Withdrawal", "Principal", "Gain", "Corpus End",
+]
+
 YEARLY_COLS = [
     "FY Year",
     "Corpus Debt (Personal)", "Corpus Equity (Personal)", "Corpus Other (Personal)",
@@ -314,6 +322,36 @@ def _huf_monthly_rows(h_monthly):
     return out
 
 
+def _fund_detail_rows(p_monthly):
+    """
+    Build per-fund withdrawal detail rows for the companion Fund Detail CSV.
+
+    For every MonthlyRow that has per-fund breakdown data (fund_withdrawals),
+    emit one row per FundWithdrawalDetail.  Months with no fund detail (e.g.
+    pre-SWP months) produce no output rows — the companion CSV is sparse by
+    design.
+    """
+    out = []
+    for r in p_monthly:
+        if not r.fund_withdrawals:
+            continue
+        cal = f"{r.calendar_year}-{r.calendar_month:02d}"
+        for fd in r.fund_withdrawals:
+            out.append([
+                r.month_idx + 1,
+                cal,
+                r.fy_year,
+                fd.fund_name,
+                fd.fund_type,
+                _fmt(fd.corpus_start),
+                _fmt(fd.withdrawal),
+                _fmt(fd.principal),
+                _fmt(fd.gain),
+                _fmt(fd.corpus_end),
+            ])
+    return out
+
+
 def _yearly_rows(p_yearly):
     out = []
     for r in p_yearly:
@@ -391,6 +429,7 @@ CLR_FUND_DEBT   = QColor("#eaf4fb")   # light blue for debt fund sub-rows
 CLR_FUND_EQUITY = QColor("#eafaf1")   # light green for equity fund sub-rows
 CLR_FUND_OTHER  = QColor("#fdf5e6")   # light gold for other fund sub-rows (Gold/Intl ETFs)
 CLR_EXPAND_BTN  = QColor("#d6eaf8")   # button cell highlight
+CLR_CHUNK_BOUND = QColor("#f5cba7")   # amber: chunk-boundary separator row
 
 FUND_SUB_COLS = [
     "Fund Name", "Type",
@@ -407,14 +446,17 @@ class ExpandableMonthlyTable(QTableWidget):
     _PARENT_COLS_PERSONAL = PERSONAL_MONTHLY_COLS
     _PARENT_COLS_HUF      = HUF_MONTHLY_COLS
 
-    def __init__(self, rows: List[MonthlyRow], entity: str = "personal", parent=None):
+    def __init__(self, rows: List[MonthlyRow], entity: str = "personal",
+                 chunk_boundary_fys: Optional[List[int]] = None, parent=None):
         self.entity   = entity
         self.src_rows = rows          # original MonthlyRow list
         self._expanded: set = set()   # set of parent logical indices (0-based)
+        # Set of FY numbers where a new chunk begins — used to insert separator rows.
+        self._chunk_boundary_fys: set = set(chunk_boundary_fys or [])
 
         # Map: table row index -> (kind, data)
-        # kind = "parent" | "child"
-        # data = (logical_idx, MonthlyRow) | (logical_idx, FundWithdrawalDetail)
+        # kind = "parent" | "child" | "boundary"
+        # data = logical_idx (int) for parent/child; chunk_fy (int) for boundary
         self._row_map: List[tuple] = []
 
         cols = PERSONAL_MONTHLY_COLS if entity == "personal" else HUF_MONTHLY_COLS
@@ -446,8 +488,18 @@ class ExpandableMonthlyTable(QTableWidget):
         self.clearContents()
         self._row_map = []
 
+        # Pre-compute which logical indices are the FIRST month of a new chunk.
+        # A boundary separator is inserted immediately above that row.
+        _boundary_at: dict = {}  # logical_idx → chunk_fy
+        if self._chunk_boundary_fys:
+            _seen_fys: set = set()
+            for li, row in enumerate(self.src_rows):
+                if row.fy_year in self._chunk_boundary_fys and row.fy_year not in _seen_fys:
+                    _seen_fys.add(row.fy_year)
+                    _boundary_at[li] = row.fy_year
+
         # Count total rows needed
-        total = 0
+        total = len(_boundary_at)  # one separator per boundary
         for li, row in enumerate(self.src_rows):
             total += 1  # parent
             if li in self._expanded:
@@ -457,6 +509,12 @@ class ExpandableMonthlyTable(QTableWidget):
 
         tr = 0  # table row index
         for li, row in enumerate(self.src_rows):
+            # Insert chunk-boundary separator before the first row of a new chunk
+            if li in _boundary_at:
+                self._fill_boundary_row(tr, _boundary_at[li])
+                self._row_map.append(("boundary", _boundary_at[li]))
+                tr += 1
+
             self._fill_parent_row(tr, li, row)
             self._row_map.append(("parent", li))
             tr += 1
@@ -467,6 +525,21 @@ class ExpandableMonthlyTable(QTableWidget):
                     tr += 1
 
         self.setUpdatesEnabled(True)
+
+    def _fill_boundary_row(self, tr: int, chunk_fy: int):
+        """Insert a full-width amber separator row at chunk boundaries."""
+        n_cols  = self.columnCount()
+        bg      = CLR_CHUNK_BOUND
+        label   = (f"  ── Chunk boundary: FY {chunk_fy} starts here  "
+                   f"(allocation rebalanced to new fund set) ──")
+        item = QTableWidgetItem(label)
+        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        item.setBackground(bg)
+        f = QFont(); f.setBold(True); f.setItalic(True)
+        item.setFont(f)
+        item.setForeground(QColor("#784212"))
+        self.setItem(tr, 0, item)
+        self.setSpan(tr, 0, 1, n_cols)   # span all columns
 
     def _fill_parent_row(self, tr: int, li: int, row: MonthlyRow):
         entity  = self.entity
@@ -622,14 +695,30 @@ class ExpandableMonthlyTable(QTableWidget):
             tr = idx.row()
             if tr < len(self._row_map):
                 kind, li = self._row_map[tr]
+                # Boundary rows are not interactive; skip them
+                if kind == "boundary":
+                    super().mousePressEvent(event)
+                    return
                 if kind == "parent" and self.src_rows[li].fund_withdrawals:
                     self.toggle_expand(li)
                     return
         super().mousePressEvent(event)
 
 
-def build_monthly_table(rows: List[MonthlyRow], entity: str = "personal") -> ExpandableMonthlyTable:
-    return ExpandableMonthlyTable(rows, entity)
+def build_monthly_table(
+    rows: List[MonthlyRow],
+    entity: str = "personal",
+    chunk_boundary_fys: Optional[List[int]] = None,
+) -> ExpandableMonthlyTable:
+    """
+    Build an ExpandableMonthlyTable.
+
+    chunk_boundary_fys : list of FY numbers where a new allocation chunk begins
+        (e.g. [11, 21] for a 3-chunk 10/10/10-yr plan).  A highlighted separator
+        row is inserted immediately before the first month of each such FY so the
+        user can see exactly when the fund set changes.
+    """
+    return ExpandableMonthlyTable(rows, entity, chunk_boundary_fys=chunk_boundary_fys)
 
 
 def build_yearly_table(rows: List[YearSummary]) -> QTableWidget:
@@ -1363,7 +1452,7 @@ class MainWindow(QMainWindow):
             o = sum(f.allocation for f in ac.funds if f.fund_type == 'other')
             _log.debug(f"    chunk[{i}] yr{ac.year_from}-{ac.year_to}: D={d:.2f} E={e:.2f} O={o:.2f}")
 
-        if FundAllocationDialog(self.state, self).exec():
+        if FundAllocationDialog(self.state, self, output_dir=self.output_dir).exec():
             _log.debug("  Fund Dialog ACCEPTED (OK clicked)")
             _log.debug(f"  chunks after dialog: {len(self.state.allocation_chunks)}")
             for i, ac in enumerate(self.state.allocation_chunks):
@@ -1569,7 +1658,9 @@ class MainWindow(QMainWindow):
         hdr.addWidget(_chart_btn("Show Chart", lambda: self._show_chart_pm(p_monthly)))
         hdr_w = QWidget(); hdr_w.setLayout(hdr)
         self.tab_pm_l.addWidget(hdr_w)
-        self.tab_pm_l.addWidget(build_monthly_table(p_monthly, "personal"))
+        _p_chunk_bfys = [ac.year_from for ac in self.state.allocation_chunks[1:]]             if len(getattr(self.state, "allocation_chunks", [])) > 1 else []
+        self.tab_pm_l.addWidget(build_monthly_table(p_monthly, "personal",
+                                                    chunk_boundary_fys=_p_chunk_bfys))
 
         # ── Personal Annual ──
         hdr2 = QHBoxLayout()
@@ -1589,7 +1680,9 @@ class MainWindow(QMainWindow):
         hdr3.addWidget(_chart_btn("Show Chart", lambda: self._show_chart_hm(h_monthly)))
         hdr3_w = QWidget(); hdr3_w.setLayout(hdr3)
         self.tab_hm_l.addWidget(hdr3_w)
-        self.tab_hm_l.addWidget(build_monthly_table(h_monthly, "huf"))
+        _h_chunk_bfys = [ac.year_from for ac in self.state.allocation_chunks[1:]]             if len(getattr(self.state, "allocation_chunks", [])) > 1 else []
+        self.tab_hm_l.addWidget(build_monthly_table(h_monthly, "huf",
+                                                    chunk_boundary_fys=_h_chunk_bfys))
 
         # ── Combined Annual ──
         hdr4 = QHBoxLayout()
@@ -2177,7 +2270,9 @@ class MainWindow(QMainWindow):
                 f"Floor FY1–10: {res.floor_fy1_10*100:.2f}%  |  "
                 f"Floor FY11–30: {res.floor_fy11_30*100:.2f}%")
 
-            info = QLabel(
+            # Assemble the full info string then insert <br> every 128 plain-text chars
+            # so the QLabel wraps neatly regardless of window width.
+            _raw_info = (
                 f"{method_detail}  |  "
                 f"<b>{res.n_sims:,} simulations</b>  |  "
                 f"{floor_str}  |  "
@@ -2186,6 +2281,34 @@ class MainWindow(QMainWindow):
                 f"Median final corpus: <b>Rs {res.median_final_corpus:,.0f}L</b>  |  "
                 f"P5 final corpus: <b>Rs {res.p5_final_corpus:,.0f}L</b>"
             )
+            # Insert <br> at word boundaries past every 128 plain-text characters.
+            # We walk the HTML string counting only non-tag characters so that HTML
+            # tags themselves don't affect the break position.
+            def _wrap_html(html: str, limit: int = 128) -> str:
+                out, plain_count, in_tag = [], 0, False
+                i = 0
+                while i < len(html):
+                    ch = html[i]
+                    if ch == '<':
+                        in_tag = True
+                    elif ch == '>':
+                        in_tag = False
+                        out.append(ch)
+                        i += 1
+                        continue
+                    if not in_tag:
+                        plain_count += 1
+                        if plain_count > limit and ch == ' ':
+                            out.append('<br>')
+                            plain_count = 0
+                            i += 1
+                            continue
+                    out.append(ch)
+                    i += 1
+                return ''.join(out)
+
+            info = QLabel(_wrap_html(_raw_info))
+            info.setWordWrap(True)
             info.setStyleSheet("padding:4px;background:#ecf0f1;border-radius:4px;")
             hdr.addWidget(info)
             hdr.addStretch()
@@ -2810,6 +2933,13 @@ class MainWindow(QMainWindow):
                 _write_csv(p, PERSONAL_MONTHLY_COLS, _personal_monthly_rows(p_monthly))
                 files.append(p.name)
 
+                # 1b. Personal Monthly — per-fund breakdown companion CSV
+                fd_rows = _fund_detail_rows(p_monthly)
+                if fd_rows:
+                    p = folder / f"{prefix}_{opt_label}_Personal_Monthly_FundDetail.csv"
+                    _write_csv(p, FUND_DETAIL_COLS, fd_rows)
+                    files.append(p.name)
+
                 # 2. Personal Annual Summary
                 p = folder / f"{prefix}_{opt_label}_Personal_Annual_Summary.csv"
                 _write_csv(p, YEARLY_COLS, _yearly_rows(p_yearly))
@@ -2819,6 +2949,13 @@ class MainWindow(QMainWindow):
                 p = folder / f"{prefix}_{opt_label}_HUF_Monthly.csv"
                 _write_csv(p, HUF_MONTHLY_COLS, _huf_monthly_rows(h_monthly))
                 files.append(p.name)
+
+                # 3b. HUF Monthly — per-fund breakdown companion CSV
+                hfd_rows = _fund_detail_rows(h_monthly)
+                if hfd_rows:
+                    p = folder / f"{prefix}_{opt_label}_HUF_Monthly_FundDetail.csv"
+                    _write_csv(p, FUND_DETAIL_COLS, hfd_rows)
+                    files.append(p.name)
 
                 # 4. HUF Annual Summary
                 p = folder / f"{prefix}_{opt_label}_HUF_Annual_Summary.csv"
@@ -3156,6 +3293,11 @@ class FetchSchemeNamesDialog(QDialog):
         self._abort()
         super().reject()
 
+    # Add this missing method
+    def accept(self):
+        self._abort()
+        super().accept()
+
     # ── run ───────────────────────────────────────────────────────────────────
 
     def _run(self):
@@ -3190,6 +3332,7 @@ class FetchSchemeNamesDialog(QDialog):
         signals.log_line.connect(self._log)
         signals.finished.connect(self._on_finished)
         self._worker = _SubprocessWorker(cmd, signals)
+        self._worker.setParent(self)  # Tie thread lifecycle to the dialog
         self._worker.start()
 
     def _on_finished(self, returncode: int, err: str):
@@ -3357,6 +3500,7 @@ class FetchFundMetricsDialog(QDialog):
         signals.log_line.connect(self._log)
         signals.finished.connect(self._on_finished)
         self._worker = _SubprocessWorker(cmd, signals)
+        self._worker.setParent(self)  # Tie thread lifecycle to the dialog
         self._worker.start()
 
     def _on_finished(self, returncode: int, err: str):
@@ -3375,8 +3519,16 @@ class FetchFundMetricsDialog(QDialog):
 
     def _stop_worker(self):
         if self._worker and self._worker.isRunning():
-            self._worker.terminate()
+            # tell the worker to kill its subprocess, then wait gracefully
+            if hasattr(self._worker, "_proc") and self._worker._proc:
+                try:
+                    self._worker._proc.kill()
+                except Exception:
+                    pass
             self._worker.wait(3000)
+            if self._worker.isRunning():
+                self._worker.terminate()  # last resort
+                self._worker.wait(1000)
             self._worker = None
 
     def closeEvent(self, event):
@@ -3386,6 +3538,11 @@ class FetchFundMetricsDialog(QDialog):
     def reject(self):
         self._stop_worker()
         super().reject()
+
+    # Add this missing method
+    def accept(self):
+        self._stop_worker()
+        super().accept()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3404,58 +3561,62 @@ class AllocateCapitalDialog(QDialog):
     """
 
     _DEFAULT_CHUNK = staticmethod(lambda yf, yt: {
-        "year_from":    yf,
-        "year_to":      yt,
-        "min_return":   6.85,
-        "max_std_dev":  0.97,
-        "max_dd":       0.75,
-        "max_per_fund": 8.0,
-        "max_per_type": 24.0,
-        "min_per_fund": 2.0,
-        "min_history":  7,
-        "max_fund_std": 1.5,
-        "max_fund_dd":  1.5,
-        "max_per_amc":  16.0,
+        "year_from":       yf,
+        "year_to":         yt,
+        "min_return":      6.85,
+        "max_std_dev":     0.97,
+        "max_dd":          0.75,
+        "max_per_fund":    8.0,
+        "max_per_type":    24.0,
+        "min_per_fund":    2.0,
+        "min_history":     7,
+        "max_fund_std":    1.5,
+        "max_fund_dd":     1.5,
+        "max_per_amc":     16.0,
+        "min_equity_frac": 0.0,
     })
 
     # Columns shown in FINE mode (all parameters)
     _FINE_COLUMNS = [
-        ("min_return",   "Min Ret%",   "float", 0.1,  30.0,  2),
-        ("max_std_dev",  "Max Std%",   "float", 0.1,  10.0,  2),
-        ("max_dd",       "Max DD%",    "float", 0.1,  10.0,  2),
-        ("max_per_fund", "Max/Fund%",  "float", 1.0, 100.0,  1),
-        ("max_per_amc",  "Max/AMC%",   "float", 1.0, 100.0,  1),
-        ("max_per_type", "Max/Type%",  "float", 1.0, 100.0,  1),
-        ("min_per_fund", "Min/Fund%",  "float", 0.0,  50.0,  1),
-        ("min_history",  "Min Hist Y", "int",   1,    30,    0),
-        ("max_fund_std", "FStd%≤",     "float", 0.0,  10.0,  2),
-        ("max_fund_dd",  "FDD%≤",      "float", 0.0,  10.0,  2),
+        ("min_return",      "Min Ret%",    "float", 0.1,  30.0,  2),
+        ("max_std_dev",     "Max Std%",    "float", 0.1,  10.0,  2),
+        ("max_dd",          "Max DD%",     "float", 0.1,  10.0,  2),
+        ("max_per_fund",    "Max/Fund%",   "float", 1.0, 100.0,  1),
+        ("max_per_amc",     "Max/AMC%",    "float", 1.0, 100.0,  1),
+        ("max_per_type",    "Max/Type%",   "float", 1.0, 100.0,  1),
+        ("min_per_fund",    "Min/Fund%",   "float", 0.0,  50.0,  1),
+        ("min_equity_frac", "Min Eq%",     "float", 0.0, 100.0,  0),
+        ("min_history",     "Min Hist Y",  "int",   1,    30,    0),
+        ("max_fund_std",    "FStd%≤",      "float", 0.0,  10.0,  2),
+        ("max_fund_dd",     "FDD%≤",       "float", 0.0,  10.0,  2),
     ]
 
     # Columns shown in COARSE mode
     _COARSE_COLUMNS = [
-        ("min_return",   "Min Ret%",   "float", 0.1,  30.0,  2),
-        ("max_per_fund", "Max/Fund%",  "float", 1.0, 100.0,  1),
-        ("min_per_fund", "Min/Fund%",  "float", 0.0,  50.0,  1),
-        ("max_per_type", "Max/Type%",  "float", 1.0, 100.0,  1),
-        ("max_per_amc",  "Max/AMC%",   "float", 1.0, 100.0,  1),
-        ("min_history",  "Min Hist Y", "int",   1,    30,    0),
+        ("min_return",      "Min Ret%",    "float", 0.1,  30.0,  2),
+        ("max_per_fund",    "Max/Fund%",   "float", 1.0, 100.0,  1),
+        ("min_per_fund",    "Min/Fund%",   "float", 0.0,  50.0,  1),
+        ("max_per_type",    "Max/Type%",   "float", 1.0, 100.0,  1),
+        ("max_per_amc",     "Max/AMC%",    "float", 1.0, 100.0,  1),
+        ("min_equity_frac", "Min Eq%",     "float", 0.0, 100.0,  0),
+        ("min_history",     "Min Hist Y",  "int",   1,    30,    0),
     ]
 
     # Default values when switching to coarse mode (slightly different defaults)
     _COARSE_DEFAULT_CHUNK = staticmethod(lambda yf, yt: {
-        "year_from":    yf,
-        "year_to":      yt,
-        "min_return":   6.85,
-        "max_std_dev":  0.97,     # kept for JSON compat even though not shown
-        "max_dd":       0.75,     # kept for JSON compat
-        "max_per_fund": 8.0,
-        "max_per_type": 24.0,
-        "min_per_fund": 2.0,
-        "min_history":  7,
-        "max_fund_std": 1.5,      # kept for JSON compat
-        "max_fund_dd":  1.5,      # kept for JSON compat
-        "max_per_amc":  16.0,
+        "year_from":       yf,
+        "year_to":         yt,
+        "min_return":      6.85,
+        "max_std_dev":     0.97,     # kept for JSON compat even though not shown
+        "max_dd":          0.75,     # kept for JSON compat
+        "max_per_fund":    8.0,
+        "max_per_type":    24.0,
+        "min_per_fund":    2.0,
+        "min_history":     7,
+        "max_fund_std":    1.5,      # kept for JSON compat
+        "max_fund_dd":     1.5,      # kept for JSON compat
+        "max_per_amc":     16.0,
+        "min_equity_frac": 0.0,
     })
 
     def __init__(self, metrics_path: Path, output_dir: Path, state,
@@ -3927,6 +4088,7 @@ class AllocateCapitalDialog(QDialog):
         signals.log_line.connect(self._log)
         signals.finished.connect(self._on_finished)
         self._worker = _SubprocessWorker(cmd, signals)
+        self._worker.setParent(self)  # Tie thread lifecycle to the dialog
         self._worker.start()
 
     def _on_finished(self, returncode: int, err: str):
@@ -4373,9 +4535,13 @@ class AllocateCapitalDialog(QDialog):
         # Patch const C = [...]; in the HTML
         html_text = viz_path.read_text(encoding="utf-8")
         new_json = _json.dumps(chunks_data, indent=2)
+        replacement = f"const C = {new_json};"
+        # Use a lambda replacement to prevent re from interpreting
+        # backslash sequences inside the JSON (e.g. \u2013 en-dash)
+        # as regex escape codes, which raises re.error.
         patched = re.sub(
             r"const\s+C\s*=\s*\[.*?\]\s*;",
-            f"const C = {new_json};",
+            lambda _m: replacement,
             html_text,
             count=1,
             flags=re.DOTALL,
@@ -4385,10 +4551,17 @@ class AllocateCapitalDialog(QDialog):
             self._log("  Viz HTML updated with new chunk stats.")
 
     def _stop_worker(self):
-        """Terminate the subprocess worker if it's still running."""
         if self._worker and self._worker.isRunning():
-            self._worker.terminate()
-            self._worker.wait(3000)   # wait up to 3 s for thread to finish
+            # tell the worker to kill its subprocess, then wait gracefully
+            if hasattr(self._worker, "_proc") and self._worker._proc:
+                try:
+                    self._worker._proc.kill()
+                except Exception:
+                    pass
+            self._worker.wait(3000)
+            if self._worker.isRunning():
+                self._worker.terminate()  # last resort
+                self._worker.wait(1000)
             self._worker = None
 
     def closeEvent(self, event):
@@ -4398,6 +4571,11 @@ class AllocateCapitalDialog(QDialog):
     def reject(self):
         self._stop_worker()
         super().reject()
+
+    # Add this missing method to AllocateCapitalDialog
+    def accept(self):
+        self._stop_worker()
+        super().accept()
 
     def _build_allocation_chunks(self):
         """
@@ -4444,6 +4622,24 @@ class AllocateCapitalDialog(QDialog):
                         if v is not None:
                             return v
                     return 0.0
+                # Columns ending in "_used" are written by allocate_funds.report()
+                # as percentages (adj_std * 100, adj_dd * 100).  The raw fallback
+                # columns (Std_Dev_10Y, Max_DD_10Y, etc.) are stored as fractions.
+                # This helper reads the %_used column first; if absent it reads
+                # the fraction column and multiplies by 100 for consistency.
+                _FRAC_COLS = {
+                    "Std_Dev_10Y", "Std_Dev_5Y", "Std_Dev_3Y",
+                    "Max_Std_Dev_10Y", "Max_Std_Dev_5Y", "Max_Std_Dev_3Y",
+                    "Max_DD_10Y", "Max_DD_5Y", "Max_DD_3Y",
+                    "Worst_Max_DD_10Y", "Worst_Max_DD_5Y", "Worst_Max_DD_3Y",
+                }
+                def _fb_pct(row, *cols):
+                    """Like _fb but scales raw fraction columns to % form."""
+                    for c in cols:
+                        v = _fn(row, c)
+                        if v is not None:
+                            return v * 100.0 if c in _FRAC_COLS else v
+                    return 0.0
 
                 funds = []
                 for _, row in df.iterrows():
@@ -4456,8 +4652,8 @@ class AllocateCapitalDialog(QDialog):
                         amfi_ft = t.strip()
                         ftype = _classify_fund_type(t)
                         _log.debug(f"    {name[:40]:<40s} AMFI='{t[:35]}' → {ftype}  alloc={alloc:.2f}")
-                    std_used = _fb(row, "Std_Dev_used", "Std_Dev_10Y", "Std_Dev_5Y", "Std_Dev_3Y")
-                    dd_used  = _fb(row, "Max_DD_used",  "Max_DD_10Y",  "Max_DD_5Y",  "Max_DD_3Y")
+                    std_used = _fb_pct(row, "Std_Dev_used", "Std_Dev_10Y", "Std_Dev_5Y", "Std_Dev_3Y")
+                    dd_used  = _fb_pct(row, "Max_DD_used",  "Max_DD_10Y",  "Max_DD_5Y",  "Max_DD_3Y")
                     funds.append(FundEntry(
                         name=name, fund_type=ftype, allocation=alloc,
                         std_dev=std_used,
@@ -4480,13 +4676,14 @@ class AllocateCapitalDialog(QDialog):
                     funds=funds,
                 )
                 # Write optimiser constraints (fixes 10-fund cap bug)
-                ac.min_return   = float(chunk_def.get("min_return",   6.85)) / 100.0
-                ac.max_std_dev  = float(chunk_def.get("max_std_dev",  0.97)) / 100.0
-                ac.max_dd       = float(chunk_def.get("max_dd",       0.75)) / 100.0
-                ac.max_per_fund = float(chunk_def.get("max_per_fund", 8.0))  / 100.0
-                ac.min_per_fund = float(chunk_def.get("min_per_fund", 2.0))  / 100.0
-                ac.max_per_type = float(chunk_def.get("max_per_type", 24.0)) / 100.0
-                ac.max_per_amc  = float(chunk_def.get("max_per_amc",  16.0)) / 100.0
+                ac.min_return      = float(chunk_def.get("min_return",      6.85)) / 100.0
+                ac.max_std_dev     = float(chunk_def.get("max_std_dev",     0.97)) / 100.0
+                ac.max_dd          = float(chunk_def.get("max_dd",          0.75)) / 100.0
+                ac.max_per_fund    = float(chunk_def.get("max_per_fund",    8.0))  / 100.0
+                ac.min_per_fund    = float(chunk_def.get("min_per_fund",    2.0))  / 100.0
+                ac.max_per_type    = float(chunk_def.get("max_per_type",    24.0)) / 100.0
+                ac.max_per_amc     = float(chunk_def.get("max_per_amc",     16.0)) / 100.0
+                ac.min_equity_frac = float(chunk_def.get("min_equity_frac", 0.0))  / 100.0
 
                 # ── Seed target_weights from THIS chunk's CSV fund allocations ─
                 # Ground-truth weights come from the CSV, not from whatever was
@@ -4505,22 +4702,30 @@ class AllocateCapitalDialog(QDialog):
 
                 new_alloc_chunks.append(ac)
 
-                # Auto-derive return rate from portfolio yield
+            self.state.allocation_chunks = new_alloc_chunks
+
+            # ── Invalidate stale glide_path ───────────────────────────────
+            self.state.glide_path = None
+
+            # ── Import fund metrics BEFORE computing yield ────────────────
+            # avg_cagr_* fields on FundEntry are only populated after
+            # import_fund_metrics runs. Doing this before portfolio_yield()
+            # ensures the return rate uses rolling averages, not point-in-time.
+            _metrics_csv_early = self.output_dir / "Fund_Metrics_Output.csv"
+            if _metrics_csv_early.exists():
+                try:
+                    self.state.import_fund_metrics(str(_metrics_csv_early))
+                except Exception:
+                    pass
+
+            # ── Auto-derive return rate from portfolio yield ──────────────
+            # Now that avg_cagr_* are populated, portfolio_yield() returns
+            # the rolling-average-based yield (~7.4%) not point-in-time (~6.5%).
+            for ac in self.state.allocation_chunks:
                 rate = ac.portfolio_yield()
                 new_return_chunks.append(ReturnChunk(
                     year_from=ac.year_from, year_to=ac.year_to,
                     annual_return=round(rate, 5)))
-
-            self.state.allocation_chunks = new_alloc_chunks
-
-            # ── Invalidate stale glide_path ───────────────────────────────
-            # The glide path was computed for the PREVIOUS set of chunks/
-            # target_weights.  If the chunk structure has changed (different
-            # number of chunks, different funds), the old glide path would
-            # cause the engine to apply phantom rebalancing transitions.
-            # Clear it so the engine runs without glide-path rebalancing
-            # until the user explicitly re-runs Optimize Sticky Portfolio.
-            self.state.glide_path = None
 
             # Auto-populate return_chunks (user can override via Return Rate dialog)
             if new_return_chunks:
@@ -4601,6 +4806,22 @@ class AllocateCapitalDialog(QDialog):
                     if v is not None:
                         return v
                 return 0.0
+            # Columns ending in "_used" are written by allocate_funds.report()
+            # as percentages (adj_std * 100, adj_dd * 100).  The raw fallback
+            # columns (Std_Dev_10Y, Max_DD_10Y, etc.) are stored as fractions.
+            _FRAC_COLS_2 = {
+                "Std_Dev_10Y", "Std_Dev_5Y", "Std_Dev_3Y",
+                "Max_Std_Dev_10Y", "Max_Std_Dev_5Y", "Max_Std_Dev_3Y",
+                "Max_DD_10Y", "Max_DD_5Y", "Max_DD_3Y",
+                "Worst_Max_DD_10Y", "Worst_Max_DD_5Y", "Worst_Max_DD_3Y",
+            }
+            def _fb_pct(row, *cols):
+                """Like _fb but scales raw fraction columns to % form."""
+                for c in cols:
+                    v = _fn(row, c)
+                    if v is not None:
+                        return v * 100.0 if c in _FRAC_COLS_2 else v
+                return 0.0
 
             new_funds = []
             for _, row in df.iterrows():
@@ -4612,8 +4833,8 @@ class AllocateCapitalDialog(QDialog):
                     t = str(row.get(col_type, ""))
                     amfi_ft = t.strip()
                     ftype = _classify_fund_type(t)
-                std_used = _fb(row, "Std_Dev_used", "Std_Dev_10Y", "Std_Dev_5Y", "Std_Dev_3Y")
-                dd_used  = _fb(row, "Max_DD_used",  "Max_DD_10Y",  "Max_DD_5Y",  "Max_DD_3Y")
+                std_used = _fb_pct(row, "Std_Dev_used", "Std_Dev_10Y", "Std_Dev_5Y", "Std_Dev_3Y")
+                dd_used  = _fb_pct(row, "Max_DD_used",  "Max_DD_10Y",  "Max_DD_5Y",  "Max_DD_3Y")
                 new_funds.append(FundEntry(
                     name=name, fund_type=ftype, allocation=alloc,
                     std_dev=std_used,

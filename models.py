@@ -137,17 +137,25 @@ class AllocationChunk:
     constraint_slack_used: Dict[str, float] = field(default_factory=dict)
 
     def portfolio_yield(self) -> float:
-        """Weighted-average 5Y CAGR across allocated funds in this chunk."""
+        """Worst-case CAGR across 1/3/5/10Y across allocated funds in this chunk."""
         total = weight = 0.0
         for f in self.funds:
             if f.allocation > 0:
-                cagr = _first_available(f.cagr_5, f.cagr_3, f.cagr_1, default=7.0)
+                avg_cagrs = [c for c in (f.avg_cagr_3, f.avg_cagr_5,
+                                         f.avg_cagr_7, f.avg_cagr_10)
+                             if c is not None and c > 0]
+                if avg_cagrs:
+                    cagr = min(avg_cagrs)
+                else:
+                    cagrs = [c for c in (f.cagr_3, f.cagr_5, f.cagr_7, f.cagr_10)
+                             if c is not None and c > 0]
+                    cagr = min(cagrs) if cagrs else 7.0
                 total  += cagr * f.allocation
                 weight += f.allocation
         return (total / weight / 100) if weight > 0 else 0.07
 
     def optimized_yield(self) -> float:
-        """Weighted-average 5Y CAGR using target_weights (post-optimizer).
+        """Worst-case CAGR across 1/3/5/10Y using target_weights (post-optimizer).
 
         Falls back to portfolio_yield() if target_weights is empty.
         """
@@ -158,7 +166,15 @@ class AllocationChunk:
         for fname, w in self.target_weights.items():
             f = fund_map.get(fname)
             if f and w > 0:
-                cagr = _first_available(f.cagr_5, f.cagr_3, f.cagr_1, default=7.0)
+                avg_cagrs = [c for c in (f.avg_cagr_3, f.avg_cagr_5,
+                                         f.avg_cagr_7, f.avg_cagr_10)
+                             if c is not None and c > 0]
+                if avg_cagrs:
+                    cagr = min(avg_cagrs)
+                else:
+                    cagrs = [c for c in (f.cagr_3, f.cagr_5, f.cagr_7, f.cagr_10)
+                             if c is not None and c > 0]
+                    cagr = min(cagrs) if cagrs else 7.0
                 total  += cagr * w
                 weight += w
         return (total / weight / 100) if weight > 0 else self.portfolio_yield()
@@ -209,7 +225,15 @@ class AllocationChunk:
         total = weight = 0.0
         for f in self.funds:
             if f.allocation > 0 and f.fund_type == fund_type:
-                cagr = _first_available(f.cagr_5, f.cagr_3, f.cagr_1, default=7.0)
+                avg_cagrs = [c for c in (f.avg_cagr_3, f.avg_cagr_5,
+                                         f.avg_cagr_7, f.avg_cagr_10)
+                             if c is not None and c > 0]
+                if avg_cagrs:
+                    cagr = min(avg_cagrs)
+                else:
+                    cagrs = [c for c in (f.cagr_3, f.cagr_5, f.cagr_7, f.cagr_10)
+                             if c is not None and c > 0]
+                    cagr = min(cagrs) if cagrs else 7.0
                 total  += cagr * f.allocation
                 weight += f.allocation
         return (total / weight / 100) if weight > 0 else None
@@ -240,11 +264,17 @@ class FundEntry:
     cagr_1: Optional[float] = None
     cagr_3: Optional[float] = None
     cagr_5: Optional[float] = None
+    cagr_7: Optional[float] = None
     cagr_10: Optional[float] = None
+    # Rolling average CAGRs (mean of all overlapping windows of that length).
+    # More stable than point-in-time CAGRs; used for portfolio_yield().
+    avg_cagr_3:  Optional[float] = None
+    avg_cagr_5:  Optional[float] = None
+    avg_cagr_7:  Optional[float] = None
+    avg_cagr_10: Optional[float] = None
     # Conservative-mode return: Worst_Exp_Ret_% from fund analyser
     # = min historical rolling CAGR minus STT adjustment (annualised %).
-    # None when fund metrics haven't been imported yet; engine falls back
-    # to min(cagr_1, cagr_3, cagr_5, cagr_10) in that case.
+    # None when fund metrics haven't been imported yet.
     worst_exp_ret: Optional[float] = None
     # AMFI sub-category (e.g. "Debt Scheme - Floater Fund",
     # "Equity Scheme - ELSS").  Carried through from Fund_Metrics_Output.csv
@@ -704,23 +734,38 @@ class AppState:
                     return float(v) if v else default
                 except ValueError:
                     return default
-            # Use 10Y scores if available, fallback to 5Y, then 3Y
+            # Use worst-case data
             # std_dev in CSV is a fraction (e.g. 0.0159); store as % (1.59)
-            fund.std_dev = _first_available(_f("Std_Dev_10Y"), _f("Std_Dev_5Y"), _f("Std_Dev_3Y"), default=0.0) * 100
+            # Current — best-available (10Y preferred)
+            # fund.std_dev = _first_available(_f("Std_Dev_10Y"), _f("Std_Dev_5Y"), _f("Std_Dev_3Y"), default=0.0) * 100
+            # Fix — worst-case across all periods
+            _std_vals = [v for v in [_f("Std_Dev_10Y"), _f("Std_Dev_5Y"), _f("Std_Dev_3Y")] if v is not None]
+            fund.std_dev = (max(_std_vals) if _std_vals else 0.0) * 100
             fund.sharpe = _first_available(_f("Sharpe_10Y"), _f("Sharpe_5Y"), _f("Sharpe_3Y"), default=0.0)
             fund.sortino = _first_available(_f("Sortino_10Y"), _f("Sortino_5Y"), _f("Sortino_3Y"), default=0.0)
             fund.calmar = _first_available(_f("Calmar_10Y"), _f("Calmar_5Y"), _f("Calmar_3Y"), default=0.0)
             # max_dd in CSV is already a fraction (e.g. -0.004); keep as-is
-            fund.max_dd = _first_available(_f("Max_DD_10Y"), _f("Max_DD_5Y"), _f("Max_DD_3Y"), default=0.0)
+            # fund.max_dd = _first_available(_f("Max_DD_10Y"), _f("Max_DD_5Y"), _f("Max_DD_3Y"), default=0.0)
+            # Fix — worst-case across all periods
+            _dd_vals = [v for v in [_f("Max_DD_10Y"), _f("Max_DD_5Y"), _f("Max_DD_3Y")] if v is not None]
+            fund.max_dd = min(_dd_vals) if _dd_vals else 0.0  # min = most negative = worst
             fund.alpha = (_f("Alpha_10Y") or 0.0) * 100     # fraction -> %
             fund.beta = _f("Beta_10Y") or 0.0
             fund.treynor = (_f("Treynor_10Y") or 0.0) * 100  # fraction -> %
-            fund.combined_ratio = _first_available(_f("Combined_Ratio_10Y"), _f("Combined_Ratio_5Y"), _f("Combined_Ratio_3Y"), default=0.0)
+            # fund.combined_ratio = _first_available(_f("Combined_Ratio_10Y"), _f("Combined_Ratio_5Y"), _f("Combined_Ratio_3Y"), default=0.0)
+            _cr_vals = [v for v in [_f("Combined_Ratio_10Y"), _f("Combined_Ratio_5Y"), _f("Combined_Ratio_3Y")]
+                        if v is not None and v > 0]
+            fund.combined_ratio = min(_cr_vals) if _cr_vals else 0.0
             # CAGRs in CSV are fractions (0.0808 = 8.08%); store as % (8.08)
-            c1 = _f("1Y_CAGR");  fund.cagr_1 = (c1 * 100) if c1 is not None else None
-            c3 = _f("3Y_CAGR");  fund.cagr_3 = (c3 * 100) if c3 is not None else None
-            c5 = _f("5Y_CAGR");  fund.cagr_5 = (c5 * 100) if c5 is not None else None
+            c1  = _f("1Y_CAGR");  fund.cagr_1  = (c1  * 100) if c1  is not None else None
+            c3  = _f("3Y_CAGR");  fund.cagr_3  = (c3  * 100) if c3  is not None else None
+            c5  = _f("5Y_CAGR");  fund.cagr_5  = (c5  * 100) if c5  is not None else None
+            c7  = _f("7Y_CAGR");  fund.cagr_7  = (c7  * 100) if c7  is not None else None
             c10 = _f("10Y_CAGR"); fund.cagr_10 = (c10 * 100) if c10 is not None else None
+            ac3  = _f("Avg_CAGR_3Y");  fund.avg_cagr_3  = (ac3  * 100) if ac3  is not None else None
+            ac5  = _f("Avg_CAGR_5Y");  fund.avg_cagr_5  = (ac5  * 100) if ac5  is not None else None
+            ac7  = _f("Avg_CAGR_7Y");  fund.avg_cagr_7  = (ac7  * 100) if ac7  is not None else None
+            ac10 = _f("Avg_CAGR_10Y"); fund.avg_cagr_10 = (ac10 * 100) if ac10 is not None else None
             # Worst_Exp_Ret_% in CSV is a fraction (e.g. 0.0612 = 6.12%); store as %
             wer = _f("Worst_Exp_Ret_%")
             fund.worst_exp_ret = (wer * 100) if wer is not None else None
@@ -771,7 +816,15 @@ class AppState:
             debt_alloc = eq_alloc = 0.0
             for f in active:
                 w = f.allocation / total_alloc
-                cagr = _first_available(f.cagr_5, f.cagr_3, f.cagr_1, default=7.0)  # percentages
+                avg_cagrs = [c for c in (f.avg_cagr_3, f.avg_cagr_5,
+                                         f.avg_cagr_7, f.avg_cagr_10)
+                             if c is not None and c > 0]
+                if avg_cagrs:
+                    cagr = min(avg_cagrs)
+                else:
+                    cagrs = [c for c in (f.cagr_3, f.cagr_5, f.cagr_7, f.cagr_10)
+                             if c is not None and c > 0]
+                    cagr = min(cagrs) if cagrs else 7.0  # percentages
                 w_return   += w * cagr
                 w_sharpe   += w * f.sharpe
                 w_combined += w * f.combined_ratio
@@ -875,12 +928,20 @@ class AppState:
         return best
 
     def portfolio_yield(self) -> float:
-        """Weighted average of 5Y CAGR across all selected (allocation>0) funds."""
+        """Worst-case CAGR across 1/3/5/10Y across all selected (allocation>0) funds."""
         total = 0.0
         weight = 0.0
         for f in self.funds:
             if f.allocation > 0:
-                cagr = _first_available(f.cagr_5, f.cagr_3, f.cagr_1, default=7.0)
+                avg_cagrs = [c for c in (f.avg_cagr_3, f.avg_cagr_5,
+                                         f.avg_cagr_7, f.avg_cagr_10)
+                             if c is not None and c > 0]
+                if avg_cagrs:
+                    cagr = min(avg_cagrs)
+                else:
+                    cagrs = [c for c in (f.cagr_3, f.cagr_5, f.cagr_7, f.cagr_10)
+                             if c is not None and c > 0]
+                    cagr = min(cagrs) if cagrs else 7.0
                 total += cagr * f.allocation
                 weight += f.allocation
         return (total / weight / 100) if weight > 0 else 0.07
@@ -891,7 +952,15 @@ class AppState:
         total = weight = 0.0
         for f in self.funds:
             if f.allocation > 0 and f.fund_type == fund_type:
-                cagr = _first_available(f.cagr_5, f.cagr_3, f.cagr_1, default=7.0)
+                avg_cagrs = [c for c in (f.avg_cagr_3, f.avg_cagr_5,
+                                         f.avg_cagr_7, f.avg_cagr_10)
+                             if c is not None and c > 0]
+                if avg_cagrs:
+                    cagr = min(avg_cagrs)
+                else:
+                    cagrs = [c for c in (f.cagr_3, f.cagr_5, f.cagr_7, f.cagr_10)
+                             if c is not None and c > 0]
+                    cagr = min(cagrs) if cagrs else 7.0
                 total += cagr * f.allocation
                 weight += f.allocation
         return (total / weight / 100) if weight > 0 else None
