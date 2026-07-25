@@ -18,3 +18,7 @@
 *.zip   binary
 
 *.csv   text eol=lf -diff
+
+# Golden snapshots are reviewed by hand before every regeneration —
+# keep them textually diffable despite the blanket "*.csv -diff" above.
+tests/golden/snapshots/*.csv   text eol=lf diff
