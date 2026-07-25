@@ -1679,7 +1679,17 @@ class Engine:
             # rebalancing boundaries.  Syncing every April keeps the aggregate
             # accurate and eliminates those jumps.
             # Skip months where _rebalance_portfolio has already synced the agg.
-            if cm == 4 and fy >= 1:
+            #
+            # Re-derived EVERY month, not just in April. The aggregates are
+            # derived state -- all reported principal/gain come from the
+            # per-fund buckets, and the aggregate redeems below are explicitly
+            # labelled "keep aggregate buckets in sync". But the aggregates
+            # grow at a blended per-category rate while the per-fund buckets
+            # grow at each fund's own CAGR, so between annual syncs the two
+            # views drifted apart (~0.24L/month in scenario 0, 190 of 349
+            # months beyond a 0.1% tolerance) and snapped back each April.
+            # Syncing monthly bounds the divergence to zero.
+            if True:
                 _agg_sync_d = sum(
                     bk.current_value(p_fund_navs[fn])
                     for fn, bk in p_fund_buckets.items()
