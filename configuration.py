@@ -59,6 +59,7 @@ REQUIRED_KEYS = frozenset({
     "swp_start_month",
     "smart_withdrawal_start_month",
     "max_simulation_years",
+    "min_simulation_years",
     # Bounded smart withdrawal
     "drift_cap_personal",
     "drift_cap_huf",

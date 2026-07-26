@@ -37,6 +37,14 @@ smart_withdrawal_start_month = 18
 # Maximum simulation horizon in financial years
 max_simulation_years = 30
 
+# Minimum plan length in financial years. A retirement drawdown plan shorter
+# than this is not a plan the rest of the system is built to reason about:
+# the glide path needs room to transition, the default chunk structures
+# divide the horizon into as many as four parts, and the through-the-cycle
+# metrics are measured over rolling 3Y windows. Clamped by AppState.horizon,
+# and never allowed to exceed max_simulation_years.
+min_simulation_years = 10
+
 # ─── Bounded Smart Withdrawal ────────────────────────────────────────────────
 # Maximum tolerated return drift (annualised fraction) before correction kicks in
 drift_cap_personal = 0.0015

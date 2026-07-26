@@ -559,9 +559,17 @@ class AppState:
     def horizon(self) -> int:
         """THE single authority for how many financial years the plan runs.
 
-        Clamped to config.max_simulation_years, which is the ceiling the rest
-        of the system (notably the 30-element Monte Carlo arrays) is built
-        for.  Raising that ceiling is Phase D.
+        Clamped into [config.min_simulation_years, config.max_simulation_years].
+        The ceiling is what the rest of the system (notably the 30-element
+        Monte Carlo arrays) is built for; raising it is Phase D.  The floor is
+        a judgement about what counts as a plan at all -- a drawdown horizon
+        of two or three years is not one, and the glide path, the four-chunk
+        default structures and the rolling-window metrics all assume more
+        room than that.
+
+        The floor is itself capped at the ceiling, so a configuration with
+        min > max clamps to the ceiling rather than returning a horizon
+        longer than the arrays behind it.
 
         Read this rather than horizon_years: it is the value that has been
         validated, and it is defined for a state built by any route --
@@ -570,7 +578,8 @@ class AppState:
         """
         from configuration import config
         ceiling = int(config.max_simulation_years)
-        return max(1, min(int(self.horizon_years or ceiling), ceiling))
+        floor = min(int(config.min_simulation_years), ceiling)
+        return max(floor, min(int(self.horizon_years or ceiling), ceiling))
 
     def fy_range(self) -> range:
         """1..horizon inclusive.  Replaces range(1, 31)."""

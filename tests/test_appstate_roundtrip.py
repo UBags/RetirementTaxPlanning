@@ -92,12 +92,35 @@ def test_pre_horizon_save_file_loads_as_the_default():
 @pytest.mark.parametrize("stored,expected", [
     (30, 30),     # default
     (15, 15),     # a shorter plan is honoured
-    (99, 30),     # clamped to config.max_simulation_years
+    (10, 10),     # exactly the floor
+    (99, 30),     # clamped up to config.max_simulation_years
+    (9, 10),      # clamped down to config.min_simulation_years
+    (1, 10),      # ditto -- a one-year drawdown is not a plan
     (0, 30),      # unset / falsy falls back to the ceiling
-    (-5, 1),      # nonsense clamps to one year, never an empty range
+    (-5, 10),     # nonsense clamps to the floor, never an empty range
 ])
-def test_horizon_clamps_to_the_configured_ceiling(stored, expected):
+def test_horizon_clamps_into_the_configured_band(stored, expected):
     assert AppState(horizon_years=stored).horizon == expected
+
+
+def test_the_floor_can_never_exceed_the_ceiling():
+    """A config with min > max must not yield a horizon longer than the
+    30-element arrays behind it."""
+    import configuration
+    cfg = configuration.config
+    real = cfg._data["min_simulation_years"]
+    try:
+        cfg._data["min_simulation_years"] = 99
+        assert AppState(horizon_years=5).horizon == int(cfg.max_simulation_years)
+    finally:
+        cfg._data["min_simulation_years"] = real
+
+
+def test_the_horizon_band_is_self_consistent():
+    from configuration import config
+    assert 1 <= int(config.min_simulation_years) <= int(config.max_simulation_years), (
+        "min_simulation_years must be at least 1 and no greater than "
+        "max_simulation_years")
 
 
 def test_fy_range_is_one_to_horizon_inclusive():
