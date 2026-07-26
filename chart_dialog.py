@@ -581,7 +581,7 @@ class AnnualSummaryChart(ChartWindow):
         elif v == 4:
             # ── Personal vs HUF Wealth Shift ──────────────────────────────
             # Two-panel stacked area chart showing how wealth migrates from
-            # the Personal corpus to the HUF corpus over 30 years.
+            # the Personal corpus to the HUF corpus over the plan.
             # Top panel: absolute corpus values (stacked area, Personal on
             #            bottom, HUF on top — total = combined wealth).
             # Bottom panel: HUF share % of total combined corpus, showing
@@ -685,7 +685,10 @@ class SensitivityChart(ChartWindow):
         self._clear()
         ax = self.fig.add_subplot(111)
         v = self.combo.currentIndex()
-        yrs = list(range(1, 31))
+        # Derived from the data rather than assumed: the engine returns one
+        # row per financial year of the plan, whatever its length.
+        _n = max((len(rows) for rows in self.results.values()), default=0)
+        yrs = list(range(1, _n + 1))
 
         for i, (name, rows) in enumerate(self.results.items()):
             if v == 0:
@@ -912,7 +915,7 @@ class MonteCarloChart(ChartWindow):
         ax  = self.fig.add_subplot(111)
         res = self.results
         yrs = res.fy_labels
-        raw = res.corpus_raw   # (n_sims, 30)
+        raw = res.corpus_raw   # (n_sims, MC_FIXED_HORIZON)
 
         # 30 random background paths (thin, grey)
         rng = np.random.default_rng(7)
@@ -1009,7 +1012,10 @@ class MonteCarloChart(ChartWindow):
             tbl[0, j].set_text_props(color="white", fontweight="bold")
 
         # Alternating rows + highlight ruin milestones
-        for i in range(30):
+        # MC_FIXED_HORIZON, not the plan horizon: this table renders Monte
+        # Carlo output, which is 30-element until Phase D.
+        from monte_carlo import MC_FIXED_HORIZON
+        for i in range(MC_FIXED_HORIZON):
             bg = "#f9f9f9" if i % 2 == 0 else "white"
             if i in highlight_rows:
                 bg = "#fdecea"
@@ -1097,11 +1103,13 @@ class AllocationDriftChart(ChartWindow):
     def _weight_matrix(self):
         """
         Returns (years, fund_names, matrix).
-        years      : list[int] 1–30
+        years      : list[int] 1..horizon
         fund_names : sorted list of all fund names that appear in the glide path
         matrix     : dict{fund_name: list[float]} — weight per year (0 if absent)
         """
-        years = list(range(1, 31))
+        years = sorted(self.gp.schedule) if getattr(self, "gp", None) else []
+        if not years:
+            years = list(range(1, 31))
         all_names: set = set()
         yearly_weights = {}
         for y in years:
@@ -1200,7 +1208,7 @@ class AllocationDriftChart(ChartWindow):
                      fontweight="bold", fontsize=12)
         ax.set_xlabel("Financial Year")
         ax.set_ylabel("Portfolio Weight (fraction)")
-        ax.set_xlim(1, 30)
+        ax.set_xlim(years[0], max(years[-1], years[0] + 1))
         ax.set_ylim(0, 1.02)
         ax.yaxis.set_major_formatter(
             ticker.FuncFormatter(lambda v, _: f"{v*100:.0f}%"))
@@ -1239,7 +1247,7 @@ class AllocationDriftChart(ChartWindow):
                      fontweight="bold", fontsize=12)
         ax.set_xlabel("Financial Year")
         ax.set_ylabel("Weight (%)")
-        ax.set_xlim(1, 30)
+        ax.set_xlim(years[0], max(years[-1], years[0] + 1))
         ax.legend(fontsize=7.5, loc="upper right", ncol=2, framealpha=0.7)
         ax.grid(alpha=0.25)
         ax.yaxis.set_major_formatter(
@@ -1279,7 +1287,7 @@ class AllocationDriftChart(ChartWindow):
                      fontweight="bold", fontsize=12)
         ax.set_xlabel("Financial Year")
         ax.set_ylabel("Weight (%)")
-        ax.set_xlim(1, 30)
+        ax.set_xlim(years[0], max(years[-1], years[0] + 1))
         ax.set_ylim(0, 105)
         ax.legend(fontsize=9, loc="upper right")
         ax.grid(axis="y", alpha=0.25)
@@ -1350,7 +1358,7 @@ class RebalancingCostChart(ChartWindow):
         normal_tax  = [r.tax_personal - r.rebalance_tax_paid for r in self.rows]
 
         # Filter to years where something happened
-        # But still show all 30 years for context — just make non-event years transparent
+        # But still show every year for context — just make non-event years transparent
         x = np.arange(len(years))
         w = 0.6
 
@@ -1434,7 +1442,7 @@ class RebalancingCostChart(ChartWindow):
         """Show % weight change year-over-year derived from the glide path."""
         ax = self.fig.add_subplot(111)
 
-        years = list(range(1, 31))
+        years = sorted(self.gp.schedule) or list(range(1, 31))
         turnovers = []
         for y in years:
             curr = self.gp.weights_for_year(y)

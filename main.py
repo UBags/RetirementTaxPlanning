@@ -417,7 +417,8 @@ def _sensitivity_rows(sens_results: dict):
               [f"{n} - Net Cash (L)" for n in names] + \
               [f"{n} - Total Corpus (L)" for n in names]
     rows = []
-    for i in range(30):
+    _n = max((len(v) for v in sens_results.values()), default=0)
+    for i in range(_n):
         row = [i + 1]
         for name in names:
             ys = sens_results[name]
@@ -881,7 +882,7 @@ def build_sensitivity_table(results: dict) -> QTableWidget:
     t.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
     t.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
 
-    for i in range(30):
+    for i in range(t.rowCount()):
         t.setItem(i, 0, _ro_item(str(i + 1)))
         for j, name in enumerate(names):
             ys = results[name]
@@ -1126,7 +1127,7 @@ class MainWindow(QMainWindow):
             rb_a.setStyleSheet("border: none; background: transparent;")
             rb_a.setToolTip(
                 "<b>Mode A: Singular Lifetime Allocation</b><br>"
-                "One portfolio held for all 30 years — buy and hold, no rebalancing.<br>"
+                "One portfolio held for the whole plan — buy and hold, no rebalancing.<br>"
                 "Merges chunk constraints (strictest wins) into one allocation.")
             rb_b = QRadioButton("Mode B: Optimized Turnover")
             rb_b.setStyleSheet("border: none; background: transparent;")
@@ -1700,7 +1701,7 @@ class MainWindow(QMainWindow):
         # ── Personal Monthly ──
         hdr = QHBoxLayout()
         hdr.addWidget(QLabel(
-            f"Personal SWP - {len(p_monthly)} months (FY 1-30).  "
+            f"Personal SWP - {len(p_monthly)} months (FY 1-{self.state.horizon}).  "
             "April rows: red = tax paid, green = HUF transfer.  All amounts Rs Lakhs."))
         hdr.addStretch()
         hdr.addWidget(_chart_btn("Show Chart", lambda: self._show_chart_pm(p_monthly)))
@@ -1854,7 +1855,7 @@ class MainWindow(QMainWindow):
             "#d35400",
             tooltip=(
                 "Total income tax paid specifically due to chunk-boundary "
-                "rebalancing gains over 30 years (Rs Lakhs). "
+                "rebalancing gains over the plan (Rs Lakhs). "
                 "= portion of Total Tax Paid attributable to gains realised "
                 "when switching fund allocations at chunk boundaries. "
                 "This is the switching cost of your allocation strategy -- "
@@ -1868,7 +1869,7 @@ class MainWindow(QMainWindow):
                 "#8e44ad",
                 tooltip=(
                     "Total exit loads paid during glide-path micro-rebalancing "
-                    "over 30 years (Rs Lakhs). Applies to lots redeemed within "
+                    "over the plan (Rs Lakhs). Applies to lots redeemed within "
                     "12 months of purchase during an inter-chunk rebalancing step."
                 )
             ))
@@ -2106,7 +2107,11 @@ class MainWindow(QMainWindow):
         CLR_WARN  = QColor("#fef9e7")
         CLR_RUIN  = QColor("#c0392b")
 
-        for i in range(30):
+        # MC_FIXED_HORIZON, not the plan horizon: Monte Carlo output is
+        # 30-element until Phase D, and run_monte_carlo() refuses any other
+        # horizon rather than silently truncating.
+        from monte_carlo import MC_FIXED_HORIZON
+        for i in range(MC_FIXED_HORIZON):
             fy       = i + 1
             ret_pct  = res.marginal_ruin_returns[i] * 100
             corpus   = res.marginal_ruin_corpus[i]
@@ -2306,7 +2311,8 @@ class MainWindow(QMainWindow):
             _caps = getattr(res, 'caps', None)
             if hasattr(res, 'floors') and hasattr(res, 'sigmas'):
                 seen = {}
-                for fy in range(30):
+                from monte_carlo import MC_FIXED_HORIZON
+                for fy in range(MC_FIXED_HORIZON):
                     fl = res.floors[fy]
                     cp = _caps[fy] if _caps is not None else None
                     sig = res.sigmas[fy]
@@ -2760,7 +2766,7 @@ class MainWindow(QMainWindow):
             "<b>Robustness Ranking</b> — select the allocation to apply for Years 1–30.<br>"
             "Rank #1 is the highest-scoring option. Lower ranks may offer different "
             "risk/return trade-offs.<br>"
-            "Applying a rank replaces all chunks with a single Yr 1-30 allocation "
+            "Applying a rank replaces all chunks with a single full-horizon allocation "
             "(no rebalancing = no switching tax)."
         ))
 
@@ -3936,13 +3942,13 @@ class AllocateCapitalDialog(QDialog):
             merged = []
             for old_chunk in preserve_data:
                 new_c = default_fn(old_chunk.get("year_from", 1),
-                                   old_chunk.get("year_to", 30))
+                                   old_chunk.get("year_to", self.state.horizon))
                 new_c.update({k: v for k, v in old_chunk.items()
                               if k in new_c})
                 merged.append(new_c)
             self.chunk_table.set_data(merged)
         else:
-            self.chunk_table.set_data([default_fn(1, 30)])
+            self.chunk_table.set_data([default_fn(1, self.state.horizon)])
 
         # Trigger an initial status update
         self._update_history_status()

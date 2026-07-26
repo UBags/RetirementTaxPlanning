@@ -58,7 +58,8 @@ class RequirementsDialog(QDialog):
             "Set the annual SWP withdrawal target per year (Rs Lakhs).\n"
             "Setting a value in year N automatically applies it to all subsequent years."))
 
-        self.table = QTableWidget(30, 2)
+        self.horizon = state.horizon
+        self.table = QTableWidget(self.horizon, 2)
         self.table.setHorizontalHeaderLabels(["Year", "Annual Withdrawal (L)"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.setAlternatingRowColors(True)
@@ -66,10 +67,10 @@ class RequirementsDialog(QDialog):
 
         # Pre-fill
         reqs = {}
-        for y in range(1, 31):
+        for y in state.fy_range():
             reqs[y] = state.get_requirement(y)
 
-        for yr in range(1, 31):
+        for yr in state.fy_range():
             yr_item = QTableWidgetItem(str(yr))
             yr_item.setFlags(yr_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.table.setItem(yr - 1, 0, yr_item)
@@ -91,13 +92,13 @@ class RequirementsDialog(QDialog):
         except ValueError:
             return
         self.table.blockSignals(True)
-        for r in range(row + 1, 30):
+        for r in range(row + 1, self.horizon):
             self.table.item(r, 1).setText(f"{val:.2f}")
         self.table.blockSignals(False)
 
     def _save(self):
         reqs = {}
-        for yr in range(1, 31):
+        for yr in range(1, self.horizon + 1):
             try:
                 val = float(self.table.item(yr - 1, 1).text())
                 reqs[yr] = val
@@ -227,9 +228,10 @@ class ReturnRateDialog(QDialog):
     def _add(self):
         last = self.chunks[-1] if self.chunks else None
         new_from = (last.year_to + 1) if last else 1
-        if new_from > 30:
+        if new_from > self.state.horizon:
             return
-        self.chunks.append(ReturnChunk(new_from, min(new_from + 4, 30),
+        self.chunks.append(ReturnChunk(new_from,
+                                       min(new_from + 4, self.state.horizon),
                                        last.annual_return if last else 0.07))
         self._refresh()
 
@@ -264,12 +266,12 @@ class ReturnRateDialog(QDialog):
         covered = set()
         for c in self.chunks:
             covered.update(range(c.year_from, c.year_to + 1))
-        missing = [y for y in range(1, 31) if y not in covered]
+        missing = [y for y in range(1, self.state.horizon + 1) if y not in covered]
         if missing:
             self.lbl.setText(f"⚠ Uncovered years: {missing[:8]}{'…' if len(missing)>8 else ''}")
             self.lbl.setStyleSheet("color: red;")
         else:
-            self.lbl.setText("✓ All 30 years covered")
+            self.lbl.setText(f"✓ All {self.state.horizon} years covered")
             self.lbl.setStyleSheet("color: green;")
 
     def _save(self):
@@ -339,10 +341,11 @@ class SplitDialog(QDialog):
     def _add(self):
         last = self.chunks[-1] if self.chunks else None
         new_from = (last.year_to + 1) if last else 1
-        if new_from > 30:
+        if new_from > self.state.horizon:
             return
         default_r = self.state.total_debt_allocation() / max(1.0, self.state.total_allocation())
-        self.chunks.append(SplitChunk(new_from, min(new_from + 4, 30),
+        self.chunks.append(SplitChunk(new_from,
+                                      min(new_from + 4, self.state.horizon),
                                       last.debt_ratio if last else default_r))
         self._refresh()
 
@@ -421,7 +424,7 @@ def _income_form(income: OtherIncome) -> tuple:
     hdr_gr = QLabel("<b>Growing @ % p.a.</b>")
     hdr_gr.setToolTip(
         "Compounded from FY2 onward; FY1 is the base year.\n"
-        "Blank or 0 keeps the stream flat for all 30 years.\n"
+        "Blank or 0 keeps the stream flat for the whole plan.\n"
         "Negative rates are allowed \u2014 a pension that is not "
         "index-linked loses real value.")
     grid.addWidget(hdr_amt, 0, 1)
@@ -633,9 +636,10 @@ class HUFWithdrawalDialog(QDialog):
     def _add(self):
         last = self.chunks[-1] if self.chunks else None
         new_from = (last.year_to + 1) if last else 1
-        if new_from > 30:
+        if new_from > self.state.horizon:
             return
-        self.chunks.append(HUFWithdrawalChunk(new_from, min(new_from + 4, 30),
+        self.chunks.append(HUFWithdrawalChunk(new_from,
+                                               min(new_from + 4, self.state.horizon),
                                                last.annual_withdrawal if last else 0.0))
         self._refresh()
 
@@ -950,7 +954,11 @@ class MonteCarloDialog(QDialog):
         from monte_carlo import _per_chunk_sigmas, _portfolio_sigma
         auto_sigma = _portfolio_sigma(state) * 100.0   # in %
         chunk_sigmas = _per_chunk_sigmas(state)
-        mu_det = _np.array([state.get_return_rate(fy) for fy in range(1, 31)])
+        # MC_FIXED_HORIZON, not state.horizon: these arrays are compared
+        # against Monte Carlo output, which is 30-element until Phase D.
+        from monte_carlo import MC_FIXED_HORIZON
+        mu_det = _np.array([state.get_return_rate(fy)
+                            for fy in range(1, MC_FIXED_HORIZON + 1)])
 
         layout = QVBoxLayout(self)
 
@@ -1320,7 +1328,7 @@ class GlidePathParametersDialog(QDialog):
 
         # Year-by-year weight table (scrollable)
         cols_set = set()
-        for y in range(1, 31):
+        for y in sorted(gp.schedule) or range(1, 31):
             cols_set.update(gp.weights_for_year(y).keys())
         fund_cols = sorted(cols_set)
 
@@ -1337,7 +1345,7 @@ class GlidePathParametersDialog(QDialog):
 
         # Colour transition rows
         trans_set = set(trans)
-        for yi, yr in enumerate(range(1, 31)):
+        for yi, yr in enumerate(sorted(gp.schedule) or range(1, 31)):
             w = gp.weights_for_year(yr)
             yr_item = QTableWidgetItem(str(yr))
             yr_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
