@@ -65,14 +65,30 @@ def test_models_exports_names_used_by_test_suite():
     assert not missing, f"models.py is missing: {missing}"
 
 
+SUPERSEDED_PATHS = [
+    "allocate_funds_v0.9.py",       # superseded by allocate_funds.py
+    "older_versions/",              # any archived copy
+    "test/portfolio_allocator.py",  # standalone precursor of allocate_funds.py
+]
+
+
 def test_duplicate_optimiser_is_not_tracked(project_root):
-    """allocate_funds_v0.9.py may sit on disk (gitignored) but must never be committed."""
+    """Superseded optimiser copies may sit on disk (gitignored) but must never
+    be committed.
+
+    Three have existed. The third, test/portfolio_allocator.py, is never
+    collected by pytest — pytest.ini's testpaths excludes test/ — so it needs
+    an explicit guard or nothing in the suite will ever mention it again.
+    """
     import subprocess
     try:
         tracked = subprocess.run(
-            ["git", "ls-files", "allocate_funds_v0.9.py", "older_versions/"],
+            ["git", "ls-files", *SUPERSEDED_PATHS],
             cwd=project_root, capture_output=True, text=True, timeout=15,
         ).stdout.split()
     except (OSError, subprocess.SubprocessError):
         pytest.skip("git not available")
-    assert not tracked, f"Superseded copies are tracked: {tracked}"
+    assert not tracked, (
+        "Superseded optimiser copies are tracked: " + ", ".join(tracked)
+        + "\nUntrack with `git rm --cached <path>` and add it to .gitignore."
+    )
