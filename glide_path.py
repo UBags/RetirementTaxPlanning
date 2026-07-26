@@ -19,9 +19,18 @@ build_glide_path(chunks, spread_years)  → GlidePath
         ramp-in); last year holds Chunk N weights until end-of-life (no ramp-out).
       • Truncates overlapping windows symmetrically when chunks are short.
 
-build_flat_glide_path(weights)  → GlidePath
-    Returns a GlidePath where every year (1–30) maps to the same weight dict.
-    Used for Mode A (buy-and-hold) and single-chunk plans.
+build_flat_glide_path(weights, horizon)  → GlidePath
+    Returns a GlidePath where every year (1..horizon) maps to the same weight
+    dict.  Used for Mode A (buy-and-hold) and single-chunk plans.
+
+HORIZON
+-------
+Both builders take *horizon* as an optional keyword defaulting to
+``config.max_simulation_years``.  Neither can reach an AppState, so the plan
+length has to arrive as an argument; making it optional keeps every existing
+caller -- including the engine tests and the archived v0.9 allocator --
+producing byte-identical schedules.  Pass ``state.horizon`` from anywhere that
+has a state.
 """
 
 from __future__ import annotations
@@ -36,14 +45,23 @@ if TYPE_CHECKING:
 # Public helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_flat_glide_path(weights: dict) -> "GlidePath":
+def _resolve_horizon(horizon: "int | None") -> int:
+    """Plan length in financial years, defaulting to the configured ceiling."""
+    if horizon is None:
+        from configuration import config
+        horizon = int(config.max_simulation_years)
+    return max(1, int(horizon))
+
+
+def build_flat_glide_path(weights: dict, horizon: "int | None" = None) -> "GlidePath":
     """
-    Return a GlidePath where every plan year (1–30) carries the same
+    Return a GlidePath where every plan year (1..horizon) carries the same
     weight dict.  Used for Mode A (singular buy-and-hold).
     """
     from models import GlidePath
+    horizon = _resolve_horizon(horizon)
     w = dict(weights)   # defensive copy
-    return GlidePath(schedule={y: w for y in range(1, 31)})
+    return GlidePath(schedule={y: w for y in range(1, horizon + 1)})
 
 
 def _weights_from_funds(chunk) -> dict:
@@ -77,6 +95,7 @@ def _effective_weights(chunk) -> dict:
 def build_glide_path(
     chunks:       list,   # list[AllocationChunk]
     spread_years: int,    # total years spanning each boundary transition
+    horizon: "int | None" = None,   # plan length in FYs; None -> config ceiling
 ) -> "GlidePath":
     """
     Build a year-by-year WITHDRAWAL-WEIGHT schedule from per-chunk target_weights.
@@ -98,6 +117,9 @@ def build_glide_path(
         Sorted by year_from ascending (as stored in AppState).
     spread_years : int
         Total width of each transition window.  Must be >= 2.
+    horizon : int, optional
+        Plan length in financial years.  Defaults to
+        ``config.max_simulation_years``.  Pass ``state.horizon``.
 
     Returns
     -------
@@ -105,12 +127,14 @@ def build_glide_path(
     """
     from models import GlidePath
 
+    horizon = _resolve_horizon(horizon)
+
     if not chunks:
-        return GlidePath(schedule={y: {} for y in range(1, 31)})
+        return GlidePath(schedule={y: {} for y in range(1, horizon + 1)})
 
     if len(chunks) == 1:
         w = _effective_weights(chunks[0])
-        return GlidePath(schedule={y: w for y in range(1, 31)})
+        return GlidePath(schedule={y: w for y in range(1, horizon + 1)})
 
     # spread_years <= 1 means a hard cut at each boundary: no transition
     # window, every year simply carries its owning chunk's weights.
@@ -118,7 +142,7 @@ def build_glide_path(
     # produced identical schedules and a hard cut was unreachable.)
     if spread_years <= 1:
         schedule = {}
-        for y in range(1, 31):
+        for y in range(1, horizon + 1):
             for c in chunks:
                 if c.year_from <= y <= c.year_to:
                     schedule[y] = _effective_weights(c)
@@ -150,9 +174,11 @@ def build_glide_path(
         left_start = B - (spread // 2) + 1
         right_end  = left_start + spread - 1
 
-        # Clip rules
-        left_start = max(left_start, 2)       # year 1 is clean buy
-        right_end  = min(right_end, 29)       # year 30 is hold-to-end
+        # Clip rules.  The intent is "the first year is a clean buy and the
+        # last year is held to end", not the literals 2 and 29 -- those were
+        # how it was spelled when the horizon was fixed at 30.
+        left_start = max(left_start, 2)                # year 1 is clean buy
+        right_end  = min(right_end, horizon - 1)       # last year is hold-to-end
         if boundaries:
             prev_right = boundaries[-1][1]
             left_start = max(left_start, prev_right + 1)
@@ -175,12 +201,12 @@ def build_glide_path(
 
     schedule: dict[int, dict[str, float]] = {}
 
-    for y in range(1, 31):
+    for y in range(1, horizon + 1):
         if y == 1:
             schedule[y] = _owning_weights(1)
             continue
-        if y == 30:
-            schedule[y] = _owning_weights(30)
+        if y == horizon:
+            schedule[y] = _owning_weights(horizon)
             continue
 
         bnd = year_to_boundary.get(y)

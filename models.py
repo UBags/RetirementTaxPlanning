@@ -9,6 +9,13 @@ from dataclasses import dataclass, field, fields
 from datetime import date
 from typing import Dict, List, Optional
 
+# Plan length in financial years for a state that does not say otherwise --
+# both the dataclass default and the value a pre-horizon save file loads as.
+# Defined once so "a plan is 30 years unless told otherwise" has exactly one
+# spelling; the enforced ceiling is config.max_simulation_years, applied by
+# AppState.horizon.
+DEFAULT_HORIZON_YEARS = 30
+
 
 def _first_available(*vals, default=7.0):
     """Return first non-None value, or default.
@@ -391,9 +398,9 @@ class RebalanceCost:
 @dataclass
 class GlidePath:
     """
-    Year-by-year portfolio weight schedule for a 30-year simulation.
+    Year-by-year portfolio weight schedule for the length of the plan.
 
-    ``schedule`` maps plan year (1–30) → {fund_name: weight_fraction}.
+    ``schedule`` maps plan year (1..horizon) → {fund_name: weight_fraction}.
     Weights in each year sum to 1.0.
 
     Built by glide_path.build_glide_path() after the sticky-portfolio
@@ -402,17 +409,20 @@ class GlidePath:
     schedule: Dict[int, Dict[str, float]] = field(default_factory=dict)
 
     def weights_for_year(self, year: int) -> Dict[str, float]:
-        """Return the target weight dict for *year* (1-30).
+        """Return the target weight dict for *year* (1..horizon).
         Falls back to the nearest year that exists if *year* is missing."""
         if year in self.schedule:
             return self.schedule[year]
-        # Fallback: search backwards then forwards
+        # Fallback: search backwards then forwards.  The forward scan walks
+        # the schedule's own keys rather than a fixed 1..30 bound -- GlidePath
+        # has no access to the plan horizon, and the schedule is the authority
+        # on which years exist.  Identical to the old range(year + 1, 31) for
+        # any schedule whose keys are 1..30.
         for y in range(year - 1, 0, -1):
             if y in self.schedule:
                 return self.schedule[y]
-        for y in range(year + 1, 31):
-            if y in self.schedule:
-                return self.schedule[y]
+        for y in sorted(k for k in self.schedule if k > year):
+            return self.schedule[y]
         return {}
 
     def transition_years(self) -> List[int]:
@@ -447,6 +457,12 @@ class AppState:
 
     # Investment start  [SHARED across scenarios]
     investment_date: date = field(default_factory=lambda: date(date.today().year, 3, 1))
+
+    #: Last financial year of the plan.  [SHARED across scenarios]
+    #: The plan ends 31 March of (investment FY + horizon_years).  Stored
+    #: rather than derived from an end date so FY indices — which every chunk,
+    #: tax band and requirement is keyed by — stay integers.
+    horizon_years: int = DEFAULT_HORIZON_YEARS
 
     # Funds (flat list — used when no allocation_chunks defined)
     funds: List[FundEntry] = field(default_factory=list)
@@ -496,7 +512,7 @@ class AppState:
     fd_rate: float = 0.07
 
     # ── Sticky-portfolio / rebalancing settings ──────────────────────────────
-    # "singular"       – Mode A: one portfolio held for all 30 years, no
+    # "singular"       – Mode A: one portfolio held for the whole plan, no
     #                    rebalancing (buy-and-hold).
     # "chunked_sticky" – Mode B: separate allocation per chunk, backward-
     #                    induction minimises turnover between adjacent chunks.
@@ -521,6 +537,29 @@ class AppState:
     # The computed glide-path schedule (set after optimize_sticky_portfolio
     # runs).  None until then.  Not persisted to JSON (recomputed on load).
     glide_path: Optional["GlidePath"] = field(default=None, compare=False)
+
+    # ── Plan horizon ──────────────────────────────────────────────────────────
+
+    @property
+    def horizon(self) -> int:
+        """THE single authority for how many financial years the plan runs.
+
+        Clamped to config.max_simulation_years, which is the ceiling the rest
+        of the system (notably the 30-element Monte Carlo arrays) is built
+        for.  Raising that ceiling is Phase D.
+
+        Read this rather than horizon_years: it is the value that has been
+        validated, and it is defined for a state built by any route --
+        hand-constructed, loaded from a pre-horizon save file, or carrying a
+        nonsense value someone typed into a JSON file by hand.
+        """
+        from configuration import config
+        ceiling = int(config.max_simulation_years)
+        return max(1, min(int(self.horizon_years or ceiling), ceiling))
+
+    def fy_range(self) -> range:
+        """1..horizon inclusive.  Replaces range(1, 31)."""
+        return range(1, self.horizon + 1)
 
     def to_dict(self):
                 # Fields that should NOT be persisted to JSON
@@ -611,8 +650,13 @@ class AppState:
             return result
 
         # Ignore any keys not valid in AppState (e.g. output_dir from old saves)
+        #
+        # THIS IS A SILENT-DROP WHITELIST.  A field absent from this set is
+        # discarded on load with no warning, so every new AppState field must
+        # be registered here in the same commit that adds it.
+        # tests/test_appstate_roundtrip.py enforces that mechanically.
         known_keys = {
-            "investment_date", "funds", "allocation_chunks",
+            "investment_date", "horizon_years", "funds", "allocation_chunks",
             "individual_debt_chunks", "individual_equity_chunks",
             "individual_other_chunks",
             "huf_debt_chunks", "huf_equity_chunks",
@@ -630,6 +674,7 @@ class AppState:
         inv_date = date_cls.fromisoformat(d.get("investment_date", date_cls(date_cls.today().year,3,1).isoformat()))
         result = cls(
             investment_date=inv_date,
+            horizon_years=int(d.get("horizon_years") or DEFAULT_HORIZON_YEARS),
             funds=make_funds(d.get("funds", [])),
             allocation_chunks=make_alloc_chunks(d.get("allocation_chunks", [])),
             individual_debt_chunks=make_tax_chunks(d.get("individual_debt_chunks", [])),
@@ -655,18 +700,22 @@ class AppState:
             allocation_params=d.get("allocation_params", None),
         )
         # ── Migration: populate missing chunks from older save files ─────
+        # These span the whole plan, so they are keyed to the horizon rather
+        # than to 30.  A pre-horizon file loads with horizon_years = 30 and
+        # therefore migrates to exactly the chunks it always did.
+        _h = result.horizon
         # FD rate chunks (legacy scalar → chunk migration)
         if not result.fd_rate_chunks and result.fd_rate > 0:
-            result.fd_rate_chunks = [FDRateChunk(1, 30, result.fd_rate)]
+            result.fd_rate_chunks = [FDRateChunk(1, _h, result.fd_rate)]
         # 'Other' tax chunks (added in v4 for Gold/Intl ETFs)
         if not result.individual_other_chunks:
-            result.individual_other_chunks = [OtherTaxChunk(1, 30, 0.125)]
+            result.individual_other_chunks = [OtherTaxChunk(1, _h, 0.125)]
         if not result.huf_other_chunks:
-            result.huf_other_chunks = [OtherTaxChunk(1, 30, 0.125)]
+            result.huf_other_chunks = [OtherTaxChunk(1, _h, 0.125)]
         return result
 
     def get_requirement(self, year: int) -> float:
-        """Return annual withdrawal requirement for given year (1-30)."""
+        """Return annual withdrawal requirement for given year (1..horizon)."""
         req = 0.0
         for y in sorted(self.annual_requirements.keys()):
             if y <= year:
@@ -888,7 +937,7 @@ class AppState:
         chunks = self.allocation_chunks if self.allocation_chunks else []
         if not chunks:
             # Single flat fund list — treat as one chunk
-            chunks_to_eval = [("Years 1-30", self.funds)]
+            chunks_to_eval = [(f"Years 1-{self.horizon}", self.funds)]
         else:
             chunks_to_eval = [
                 (f"Chunk {i+1} (Yr {ac.year_from}-{ac.year_to})", ac.funds)
@@ -953,7 +1002,7 @@ class AppState:
         """
         Evaluate all allocation chunks, pick the best-ranked one (rank index 0
         by default, or self.selected_robustness_rank if set), and apply it as
-        a single chunk spanning years 1-30 (Mode A — no rebalancing).
+        a single chunk spanning years 1..horizon (Mode A — no rebalancing).
 
         Returns the winning chunk info dict, or None if no chunks.
         Use apply_ranked_chunk() if you want to specify the rank explicitly.
@@ -964,7 +1013,7 @@ class AppState:
         """
         Evaluate all allocation chunks, pick the chunk at *rank* position in
         the robustness-score table (0 = best), and apply it as a single chunk
-        spanning years 1-30.
+        spanning years 1..horizon.
 
         If rank is out-of-range, the best (rank 0) is used with a warning.
         Returns the winning chunk info dict, or None if no chunks.
@@ -995,7 +1044,7 @@ class AppState:
         import copy as _copy
         best_funds = [_copy.deepcopy(f) for f in best["funds"]]
         self.allocation_chunks = [
-            AllocationChunk(year_from=1, year_to=30, funds=best_funds)
+            AllocationChunk(year_from=1, year_to=self.horizon, funds=best_funds)
         ]
         self.funds = [_copy.deepcopy(f) for f in best_funds]
 
@@ -1005,7 +1054,7 @@ class AppState:
                 if f.fund_type == 'equity')
         o = sum(f.allocation for f in self.allocation_chunks[0].funds
                 if f.fund_type == 'other')
-        _log.debug(f"  chunk[0] yr1-30: D={d:.2f} E={e:.2f} O={o:.2f}")
+        _log.debug(f"  chunk[0] yr1-{self.horizon}: D={d:.2f} E={e:.2f} O={o:.2f}")
 
         return best
 

@@ -263,7 +263,8 @@ class OptimizationReportDialog(QDialog):
 
         gp     = self.gp
         chunks = self.state.allocation_chunks or []
-        years  = list(range(1, 31))
+        horizon = self.state.horizon
+        years  = list(self.state.fy_range())
 
         # Build fund_type lookup
         fund_types: Dict[str, str] = {}
@@ -286,7 +287,9 @@ class OptimizationReportDialog(QDialog):
                      labels=["Equity", "Debt", "Other"],
                      colors=["#27ae60", "#2980b9", "#e67e22"],
                      alpha=0.80)
-        ax.set_xlim(1, 30)
+        # max(2, ...) because a one-year plan would otherwise ask
+        # matplotlib for a zero-width axis.
+        ax.set_xlim(1, max(2, horizon))
         ax.set_ylim(0, 100)
         ax.set_xlabel("FY Year", fontsize=9)
         ax.set_ylabel("Portfolio Weight %", fontsize=9)

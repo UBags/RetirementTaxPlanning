@@ -719,6 +719,23 @@ def _lognormal_returns(
 # Main entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
+#: Number of financial years this module's arrays are built for.  mu_det,
+#: sigmas, floors, caps are all np.full(MC_FIXED_HORIZON, ...), corpus_p50 and
+#: friends are MC_FIXED_HORIZON-element, and mc_history.json plus the five
+#: bootstrap snapshots assume it.  Making this follow state.horizon is Phase D
+#: -- 18 sites.  Until then run_monte_carlo() refuses a plan of another length
+#: rather than returning 30 numbers for it.
+MC_FIXED_HORIZON = 30
+
+
+class MonteCarloHorizonUnsupported(ValueError):
+    """Raised when the plan horizon is not the one this module is built for.
+
+    A distinct type so the GUI can catch exactly this and explain it, rather
+    than a bare ValueError from somewhere in the arithmetic.
+    """
+
+
 def run_monte_carlo(
     state: AppState,
     n_sims:         int   = 2000,
@@ -747,12 +764,26 @@ def run_monte_carlo(
     block_length  : Consecutive years per bootstrap block (default 3).
         Larger values = stronger volatility clustering.
     """
+    # Every array below is MC_FIXED_HORIZON-long.  A shorter or longer plan
+    # would silently get a 30-year answer, so refuse instead: wrong numbers
+    # that look right are worse than no numbers.  Lifting this is Phase D.
+    if state.horizon != MC_FIXED_HORIZON:
+        raise MonteCarloHorizonUnsupported(
+            f"Monte Carlo is built for a {MC_FIXED_HORIZON}-year plan; this "
+            f"plan runs {state.horizon} financial years. Running it anyway "
+            f"would produce {MC_FIXED_HORIZON} years of output for a "
+            f"{state.horizon}-year plan. Supporting a variable horizon here "
+            "is Phase D (18 sites, plus mc_history.json and the five "
+            "bootstrap snapshots)."
+        )
+
     rng    = np.random.default_rng(seed)
-    mu_det = np.array([state.get_return_rate(fy) for fy in range(1, 31)])
+    mu_det = np.array([state.get_return_rate(fy)
+                       for fy in range(1, MC_FIXED_HORIZON + 1)])
 
     # ── Per-chunk sigma and return band ───────────────────────────────────────
     if sigma_override is not None:
-        sigmas = np.full(30, sigma_override)
+        sigmas = np.full(MC_FIXED_HORIZON, sigma_override)
     else:
         sigmas = _per_chunk_sigmas(state)
 

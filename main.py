@@ -944,6 +944,7 @@ class MainWindow(QMainWindow):
         # saves, changes propagate from the active scenario to all others.
         self._SHARED_FIELDS = [
             'investment_date',
+            'horizon_years',
             'individual_debt_chunks', 'individual_equity_chunks',
             'individual_other_chunks',
             'huf_debt_chunks', 'huf_equity_chunks', 'huf_other_chunks',

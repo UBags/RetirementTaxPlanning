@@ -5604,7 +5604,7 @@ def optimize_sticky_portfolio(
         from glide_path import build_flat_glide_path, build_glide_path
     except ImportError:
         # glide_path.py not yet present — provide stubs so the rest works
-        def build_glide_path(chunks, spread):
+        def build_glide_path(chunks, spread, horizon=None):
             from models import GlidePath
             sched = {}
             for c in chunks:
@@ -5612,9 +5612,12 @@ def optimize_sticky_portfolio(
                     sched[y] = dict(c.target_weights)
             return GlidePath(sched)
 
-        def build_flat_glide_path(weights):
+        def build_flat_glide_path(weights, horizon=None):
             from models import GlidePath
-            return GlidePath({y: dict(weights) for y in range(1, 31)})
+            if horizon is None:
+                from configuration import config
+                horizon = int(config.max_simulation_years)
+            return GlidePath({y: dict(weights) for y in range(1, horizon + 1)})
 
     def _emit(msg: str):
         print(msg, flush=True)
@@ -5643,7 +5646,7 @@ def optimize_sticky_portfolio(
         for c in chunks:
             c.target_weights = dict(merged.target_weights)
 
-        gp = build_flat_glide_path(merged.target_weights)
+        gp = build_flat_glide_path(merged.target_weights, horizon=state.horizon)
         state.glide_path = gp
         _emit("\n  Mode A complete.")
         return gp
@@ -5746,7 +5749,8 @@ def optimize_sticky_portfolio(
                   "falling back to single-mode Aim pass.")
             run_aim_pass(chunks, universe, progress_cb=progress_cb, mode=_aim_mode)
 
-    gp = build_glide_path(chunks, state.rebalance_spread_years)
+    gp = build_glide_path(chunks, state.rebalance_spread_years,
+                          horizon=state.horizon)
     state.glide_path = gp
 
     n_trans = len(gp.transition_years())

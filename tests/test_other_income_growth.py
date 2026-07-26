@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import re
 
 import pytest
 
@@ -155,7 +156,12 @@ def test_the_optimiser_resolves_income_inside_the_fy_loop(project_root):
         "the optimiser still describes other income as constant")
     idx = src.find("taxable_other = pi.taxable(fy)")
     assert idx != -1, "the optimiser does not resolve income per FY"
-    loop = src.rfind("for fy in range(1, 31):", 0, idx)
+    # Match the loop by what it is, not by one spelling of it. This used to
+    # look for the literal `for fy in range(1, 31):` and broke when Phase A1
+    # replaced that with `state.fy_range()` — the assertion is about where the
+    # resolution sits, not about how the horizon happens to be written.
+    loop = max((m.start() for m in re.finditer(r"^\s*for fy in .+:$",
+                                               src[:idx], re.M)), default=-1)
     assert loop != -1, "the per-FY resolution is not inside the FY loop"
 
 

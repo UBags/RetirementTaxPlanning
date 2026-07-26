@@ -972,6 +972,9 @@ class Engine:
                            List[MonthlyRow], List[YearSummary]]:
         state = self.state
         SWP_START = config.swp_start_month
+        # Plan length.  Every 30 that used to be spelled literally below is
+        # this value; at horizon 30 the arithmetic is unchanged throughout.
+        horizon = state.horizon
 
         # ── Diagnostic logging ─────────────────────────────────────────────────
         import logging
@@ -1163,7 +1166,7 @@ class Engine:
         # drains retiring funds pro-rata, and the rebalancer only handles
         # weight shifts.  The two mechanisms work independently.
 
-        total_months = 32 * 12
+        total_months = (horizon + 2) * 12
         prev_fy      = -1
         _topup_needed = 0.0   # personal shortfall to top up from HUF each month
 
@@ -1171,11 +1174,11 @@ class Engine:
             cy, cm = self._calendar_date_for_month(m)
             fy = self._fy_year_for_month(m)
 
-            if fy > 31:
+            if fy > horizon + 1:
                 break
 
             # ── FY boundary: compute prior FY's tax ───────────────────────────
-            if fy != prev_fy and 1 <= prev_fy <= 30:
+            if fy != prev_fy and 1 <= prev_fy <= horizon:
                 a = acc_get(p_acc, prev_fy)
                 taxable_other = state.personal_income.taxable(prev_fy)
                 total_slab_income = taxable_other + a["gain_d"]
@@ -1443,7 +1446,7 @@ class Engine:
             # the moment running tax hits the budget.  This distributes the full
             # transition tax evenly across the window years in rupee terms.
             if (gp is not None and not gp.is_flat()
-                    and fy >= 2 and fy <= 30
+                    and fy >= 2 and fy <= horizon
                     and fy not in glide_rebalanced_set
                     and fy not in rebalanced_set):
                 target_w = gp.weights_for_year(fy)
@@ -1475,14 +1478,14 @@ class Engine:
                     # Find the post-window stable weights (first year after
                     # the window where weights stop changing)
                     post_window_w = target_w
-                    for probe in range(fy + 1, 31):
+                    for probe in range(fy + 1, horizon + 1):
                         pw_next = gp.weights_for_year(probe)
                         pw_curr = gp.weights_for_year(probe - 1)
                         if pw_next == pw_curr:
                             post_window_w = pw_next
                             break
                     else:
-                        post_window_w = gp.weights_for_year(30)
+                        post_window_w = gp.weights_for_year(horizon)
 
                     # Compute lookahead budget once per boundary (keyed by b_start_yr).
                     # CRITICAL: estimate tax for the FULL transition
@@ -1565,7 +1568,7 @@ class Engine:
                     p_other_agg  = FIFOBucket(); p_other_agg.invest(agg_o2,  p_nav_o, m)
 
             # ── Grow NAVs (per-fund and per-category rates) ────────────────
-            safe_fy = min(fy, 30)
+            safe_fy = min(fy, horizon)
 
             # Per-fund NAVs: each fund grows at its own CAGR (personal AND HUF share these)
             for fname, fentry in all_funds_map.items():
@@ -1580,7 +1583,7 @@ class Engine:
 
             # ── Personal windfall ─────────────────────────────────────────────
             wf_p_this = 0.0
-            if fy <= 30 and fy not in seen_p_fy:
+            if fy <= horizon and fy not in seen_p_fy:
                 seen_p_fy.add(fy)
                 amt = wf_p.get(fy, 0.0)
                 if amt > 0:
@@ -1757,7 +1760,7 @@ class Engine:
             prin_d = gain_d = prin_e = gain_e = prin_o = gain_o = 0.0
             fund_details: List[FundWithdrawalDetail] = []
 
-            if m >= SWP_START and fy <= 30:
+            if m >= SWP_START and fy <= horizon:
                 req_annual  = state.get_requirement(fy)
                 req_monthly = req_annual / 12
 
@@ -1937,7 +1940,7 @@ class Engine:
             # If the personal corpus was insufficient for the full monthly
             # requirement, record the gap so the HUF withdrawal block can fund it.
             # _topup_needed is consumed inside the HUF WD section below.
-            if m >= SWP_START and fy <= 30:
+            if m >= SWP_START and fy <= horizon:
                 _personal_actual = wd_d + wd_e + wd_o
                 _topup_needed    = max(0.0, req_monthly - _personal_actual - 1e-6)
             else:
@@ -1950,7 +1953,7 @@ class Engine:
             # topup_from_huf added to p_acc below, after HUF top-up executes
 
             # ── Tax-free LTCG harvesting (March of each FY) ──────────────
-            if cm == 3 and 1 <= fy <= 30:
+            if cm == 3 and 1 <= fy <= horizon:
                 harvest_total = self._execute_ltcg_harvest(
                     state, fy, m, a, fund_types_map, p_fund_buckets, p_fund_navs, _log)
 
@@ -2068,7 +2071,7 @@ class Engine:
 
             # ── HUF glide-path micro-rebalancing ──────────────────────────────
             if (gp is not None and not gp.is_flat()
-                    and fy >= 2 and fy <= 30
+                    and fy >= 2 and fy <= horizon
                     and fy not in h_glide_rebalanced
                     and fy not in h_rebalanced_set):
                 target_w_h = gp.weights_for_year(fy)
@@ -2132,7 +2135,7 @@ class Engine:
                 huf_inflow += huf_xfer_this
 
             wf_h_this = 0.0
-            if fy <= 30 and fy not in seen_h_fy:
+            if fy <= horizon and fy not in seen_h_fy:
                 seen_h_fy.add(fy)
                 amt_h = wf_h.get(fy, 0.0)
                 if amt_h > 0:
@@ -2202,7 +2205,7 @@ class Engine:
             h_prin_d = h_gain_d = h_prin_e = h_gain_e = h_prin_o = h_gain_o = 0.0
             h_topup_this = 0.0   # amount topped up to personal this month
             h_fund_details: List[FundWithdrawalDetail] = []
-            if fy <= 30:
+            if fy <= horizon:
                 huf_req = self._huf_annual_wd(fy) / 12
                 # Add any personal shortfall (personal corpus insufficient).
                 # _topup_needed is zero unless the personal SWP block raised less
@@ -2314,8 +2317,8 @@ class Engine:
             ))
 
         # ── Filter ────────────────────────────────────────────────────────────
-        p_rows = [r for r in p_rows if r.fy_year <= 30]
-        h_rows = [r for r in h_rows if r.fy_year <= 30]
+        p_rows = [r for r in p_rows if r.fy_year <= horizon]
+        h_rows = [r for r in h_rows if r.fy_year <= horizon]
 
         # ── Yearly summaries ──────────────────────────────────────────────────
         yearly = self._build_yearly_summaries(
@@ -2414,7 +2417,7 @@ class Engine:
         """Build per-FY summary rows from accumulated monthly data."""
         state = self.state
         yearly: List[YearSummary] = []
-        for fy in range(1, config.max_simulation_years + 1):
+        for fy in state.fy_range():
             a  = acc_get(p_acc, fy)
             ha = acc_get(h_acc, fy)
 
@@ -2577,8 +2580,9 @@ def optimize_withdrawal_split(
 
     # Save the ORIGINAL baseline requirements — deltas are always relative to these
     original_personal_reqs = _copy.deepcopy(state.annual_requirements)
+    horizon = state.horizon
     original_huf_base = {}
-    for fy in range(1, 31):
+    for fy in state.fy_range():
         for c in state.huf_withdrawal_chunks:
             if c.year_from <= fy <= c.year_to:
                 original_huf_base[fy] = c.annual_withdrawal
@@ -2593,7 +2597,7 @@ def optimize_withdrawal_split(
         p_fy_gain_e = {}; p_fy_gain_o = {}
         for r in p_monthly:
             fy = r.fy_year
-            if fy < 1 or fy > 30:
+            if fy < 1 or fy > horizon:
                 continue
             p_fy_gain_d[fy] = p_fy_gain_d.get(fy, 0.0) + r.gain_debt
             p_fy_wd_d[fy]   = p_fy_wd_d.get(fy, 0.0)   + r.wd_debt
@@ -2604,7 +2608,7 @@ def optimize_withdrawal_split(
         h_fy_gain_d = {}; h_fy_wd_d = {}
         for r in h_monthly:
             fy = r.fy_year
-            if fy < 1 or fy > 30:
+            if fy < 1 or fy > horizon:
                 continue
             h_fy_gain_d[fy] = h_fy_gain_d.get(fy, 0.0) + r.gain_debt
             h_fy_wd_d[fy]   = h_fy_wd_d.get(fy, 0.0)   + r.wd_debt
@@ -2618,7 +2622,7 @@ def optimize_withdrawal_split(
 
         # ── Personal other taxable income ─────────────────────────────────
         # Was hoisted out of the per-FY loop below and computed once, which was
-        # correct only while these streams were flat for all 30 years.  With
+        # correct only while these streams were flat for every year.  With
         # HANDOVER 2.3 growth rates it varies by FY, so it is resolved inside
         # the loop instead.
         pi = state.personal_income
@@ -2627,7 +2631,7 @@ def optimize_withdrawal_split(
         opt_personal: Dict[int, float] = {}
         opt_huf: Dict[int, float] = {}
 
-        for fy in range(1, 31):
+        for fy in state.fy_range():
             taxable_other = pi.taxable(fy)
             req = 0.0
             for y in sorted(original_personal_reqs.keys()):
