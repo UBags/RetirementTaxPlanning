@@ -21,11 +21,14 @@ Run with:
     python test_swp_engine.py
 """
 
-import sys, math, copy
-from datetime import date
+import copy
+import math
 
 # ── allow running from repo root without install ─────────────────────────────
 import os
+import sys
+from datetime import date
+
 sys.path.insert(0, os.path.dirname(__file__))
 
 # ─── Test helpers ─────────────────────────────────────────────────────────────
@@ -81,8 +84,7 @@ def _make_state(funds=None, total_alloc=100.0, req_annual=8.0,
     ``total_alloc`` is accepted for signature compatibility but unused --
     each FundEntry carries its own ``allocation``.
     """
-    from models import (AllocationChunk, ReturnChunk, FDRateChunk,
-                        OtherIncome, default_state)
+    from models import AllocationChunk, FDRateChunk, OtherIncome, ReturnChunk, default_state
 
     state = default_state()
     state.investment_date = inv_date or date(2024, 4, 1)
@@ -202,8 +204,8 @@ def test_engine_rebalancing_tax_self_funded():
     and verify that net_cash_personal in the rebalance year is NOT reduced
     by the rebalancing tax — it should be portfolio-self-funded.
     """
-    from models import AllocationChunk, ReturnChunk, SplitChunk
     from glide_path import build_glide_path
+    from models import AllocationChunk, ReturnChunk, SplitChunk
 
     state = _make_state(funds=[
         _make_fund("Debt Big", "debt", 160.0),
@@ -265,7 +267,7 @@ def test_engine_windfall():
 
 def test_engine_no_trade_threshold():
     _section("Engine — No-Trade Threshold (Garleanu & Pedersen)")
-    from engine import _rebalance_portfolio, FIFOBucket, Lot
+    from engine import FIFOBucket, Lot, _rebalance_portfolio
 
     # Build a tiny portfolio that is well within 3% drift
     fund_buckets = {
@@ -318,8 +320,8 @@ def test_glide_path_single_chunk():
 
 def test_glide_path_interpolation_correctness():
     _section("GlidePath — Interpolation (Bug #3 fix): true fractional spread")
-    from models import AllocationChunk
     from glide_path import build_glide_path
+    from models import AllocationChunk
 
     c1 = AllocationChunk(year_from=1, year_to=10, funds=[])
     c1.target_weights = {"Eq": 1.0}
@@ -359,8 +361,8 @@ def test_glide_path_interpolation_correctness():
 
 def test_glide_path_year1_and_year30_are_clean():
     _section("GlidePath — Year 1 never in transition, Year 30 fully anchored")
-    from models import AllocationChunk
     from glide_path import build_glide_path
+    from models import AllocationChunk
 
     c1 = AllocationChunk(year_from=1, year_to=5, funds=[])
     c1.target_weights = {"Eq": 1.0}
@@ -378,8 +380,8 @@ def test_glide_path_year1_and_year30_are_clean():
 
 def test_glide_path_zero_spread():
     _section("GlidePath — Zero Spread (hard cut)")
-    from models import AllocationChunk
     from glide_path import build_glide_path
+    from models import AllocationChunk
 
     c1 = AllocationChunk(year_from=1, year_to=15, funds=[])
     c1.target_weights = {"Eq": 1.0}
@@ -683,7 +685,7 @@ def run_all():
     print(f"\n{'═'*60}")
     print(f"  Results: {passed}/{total} passed")
     if failed:
-        print(f"\n  FAILURES:")
+        print("\n  FAILURES:")
         for n in failed:
             print(f"    {FAIL}  {n}")
     else:

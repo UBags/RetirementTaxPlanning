@@ -21,6 +21,10 @@
 # Golden baseline
 !tests/golden/snapshots/*.csv
 
+!ruff.toml
+!tests/golden/fixtures/
+!tests/golden/fixtures/*.json
+
 # Denied regardless of the above — last match wins
 __pycache__/
 *.py[cod]

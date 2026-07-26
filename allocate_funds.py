@@ -75,7 +75,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import milp, minimize, LinearConstraint, Bounds as ScipyBounds
+from scipy.optimize import Bounds as ScipyBounds
+from scipy.optimize import LinearConstraint, milp, minimize
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
@@ -111,7 +112,18 @@ def extract_amc(fund_name: str) -> str:
 # DEFAULT PATHS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+from typing import TYPE_CHECKING
+
 from configuration import config, get_project_root
+
+if TYPE_CHECKING:                       # never executed
+    # _merge_chunks_strict() and the top-level orchestrator annotate their
+    # returns as "AllocationChunk" and "GlidePath" without importing either.
+    # Same reasoning as monte_carlo.py: string annotations that no checker
+    # can resolve.  This module has no other `from typing` import, so the
+    # import lives here rather than being merged into one.
+    from glide_path import GlidePath
+    from models import AllocationChunk
 
 DEFAULT_INPUT  = str(get_project_root() / config.allocator_default_input)
 DEFAULT_OUTPUT = str(get_project_root() / config.allocator_default_output)
@@ -1461,17 +1473,17 @@ def report(
 
     # ── Header ────────────────────────────────────────────────────────────────
     print(f"\n{'═'*82}")
-    print(f"  ALLOCATION RESULT")
+    print("  ALLOCATION RESULT")
     print(f"{'═'*82}")
     print(f"  Total corpus  : ₹{total_money:,.2f} L")
     print(f"  Funds selected: {len(result)}")
 
     if info.get("relaxations"):
-        print(f"\n  ⚠  Constraints were relaxed to find a feasible solution:")
+        print("\n  ⚠  Constraints were relaxed to find a feasible solution:")
         for r in info["relaxations"]:
             print(f"      • {r}")
     else:
-        print(f"\n  ✓  All original constraints satisfied")
+        print("\n  ✓  All original constraints satisfied")
 
     if fine_tune_info:
         print(f"  ↻  {fine_tune_info}")
@@ -1552,7 +1564,7 @@ def report(
     def _ratio_str(v):
         return f"{v:.3f}" if np.isfinite(v) else "n/a"
 
-    print(f"\n  Portfolio risk-adjusted ratios:")
+    print("\n  Portfolio risk-adjusted ratios:")
     print(f"    Sharpe  (wtd avg 5Y/10Y) : {_ratio_str(port_sharpe)}")
     print(f"    Sortino (wtd avg 5Y/10Y) : {_ratio_str(port_sortino)}")
     print(f"    Calmar  (ret / |max_dd|) : {_ratio_str(port_calmar)}"
@@ -1560,7 +1572,7 @@ def report(
 
     # ── Fund detail table ─────────────────────────────────────────────────────
     print(f"\n{sep}")
-    print(f"  FUND-LEVEL ALLOCATION  (sorted by allocation)")
+    print("  FUND-LEVEL ALLOCATION  (sorted by allocation)")
     print(sep)
     hdr = f"  {'Fund Name':<44} {'Type':<24} {'₹ L':>8} {'Wt%':>7} {'Ret%':>7} {'Std%':>7} {'DD%':>8}"
     print(hdr)
@@ -1597,7 +1609,7 @@ def report(
         .sort_values("Alloc_L", ascending=False)
     )
     print(f"\n{sep}")
-    print(f"  FUND-TYPE BREAKDOWN")
+    print("  FUND-TYPE BREAKDOWN")
     print(sep)
     print(f"  {'Fund Type':<36} {'N':>3} {'₹ Lakhs':>9} {'Wt%':>7}")
     print(f"  {'─'*36} {'─'*3} {'─'*9} {'─'*7}")
@@ -1609,7 +1621,7 @@ def report(
             flag = " !"
         print(f"  {ft:<36} {int(r['N']):>3} {r['Alloc_L']:>9.2f} {r['Wt_pct']:>7.2f}{flag}")
     if not final["type_caps_active"]:
-        print(f"  * per-type cap was relaxed")
+        print("  * per-type cap was relaxed")
     print()
 
     # ── Save CSV ──────────────────────────────────────────────────────────────
@@ -1754,6 +1766,7 @@ def allocate_chunks(
     Returns a list of result dicts, one per chunk.
     """
     import os
+
     import numpy as np
     os.makedirs(output_dir, exist_ok=True)
 
@@ -1827,8 +1840,8 @@ def allocate_chunks(
         )
 
     elif frontier_walk:
-        print(f"\n─── Pass 1: Frontier Walk "
-              f"(up to 10 candidates/chunk, risk_step=0.05%) ───")
+        print("\n─── Pass 1: Frontier Walk "
+              "(up to 10 candidates/chunk, risk_step=0.05%) ───")
 
         all_candidates = run_frontier_walk(
             chunks       = proxies,
@@ -1839,8 +1852,8 @@ def allocate_chunks(
             risk_ref     = risk_ref,
         )
     else:
-        print(f"\n─── Pass 1: Multi-Portfolio Aim "
-              f"(up to 10 candidates/chunk, α step=0.025) ───")
+        print("\n─── Pass 1: Multi-Portfolio Aim "
+              "(up to 10 candidates/chunk, α step=0.025) ───")
 
         all_candidates = run_aim_pass_multi(
             chunks       = proxies,
@@ -1855,7 +1868,7 @@ def allocate_chunks(
     if len(chunks) > 1:
         if pulp_commonality:
             # Use the target-distribution fitness scorer
-            print(f"\n─── Pass 2: PuLP Commonality Combination Scoring ───")
+            print("\n─── Pass 2: PuLP Commonality Combination Scoring ───")
 
             best_indices, best_combo, penalty, sum_std, best_stats = \
                 find_best_commonality_combination(
@@ -1865,7 +1878,7 @@ def allocate_chunks(
                 )
 
             if best_combo is not None:
-                print(f"\n─── Pass 3: Applying Best Commonality Combination ───")
+                print("\n─── Pass 3: Applying Best Commonality Combination ───")
                 _apply_pulp_commonality_result(
                     chunks         = proxies,
                     all_candidates = all_candidates,
@@ -1875,8 +1888,8 @@ def allocate_chunks(
                 )
             else:
                 # Fallback: use quality-weighted overlap scorer
-                print(f"\n  ⚠ PuLP commonality scorer failed — "
-                      f"falling back to overlap scorer.")
+                print("\n  ⚠ PuLP commonality scorer failed — "
+                      "falling back to overlap scorer.")
                 _fq = {str(row["Fund Name"]): float(row["adj_quality"])
                        for _, row in df.iterrows()
                        if pd.notna(row.get("adj_quality")) and float(row["adj_quality"]) > 0}
@@ -1895,7 +1908,7 @@ def allocate_chunks(
                             proxies[ci]._type_ratios   = dict(cands[0]["type_ratios"])
 
         else:
-            print(f"\n─── Pass 2: Cross-Chunk Combination Scoring ───")
+            print("\n─── Pass 2: Cross-Chunk Combination Scoring ───")
 
             # Build fund quality lookup from universe for quality-weighted scoring
             _fq = {str(row["Fund Name"]): float(row["adj_quality"])
@@ -1911,7 +1924,7 @@ def allocate_chunks(
 
             # ── Pass 3: Select best combination ───────────────────────────────
             if scored:
-                print(f"\n─── Pass 3: Best Combination Selection ───")
+                print("\n─── Pass 3: Best Combination Selection ───")
                 select_best_combination(
                     chunks         = proxies,
                     all_candidates = all_candidates,
@@ -1919,8 +1932,8 @@ def allocate_chunks(
                 )
             else:
                 # Fallback: use first candidate per chunk
-                print(f"\n  ⚠ Combination scoring returned no results — "
-                      f"using best single candidate per chunk.")
+                print("\n  ⚠ Combination scoring returned no results — "
+                      "using best single candidate per chunk.")
                 for ci, cands in enumerate(all_candidates):
                     if cands:
                         proxies[ci].target_weights = dict(cands[0]["weights"])
@@ -2115,7 +2128,6 @@ def _write_chunk_summary(results: list, output_dir: str, total_money: float):
     Write allocation_summary.csv — one section per chunk, separated by blank
     rows, so the user can review all chunk allocations in one file.
     """
-    import os
     rows = []
 
     for r in results:
@@ -2300,7 +2312,7 @@ def _substitution_advisor(
     min_core_std = min(ca["core_max_fund_std"] for ca in chunk_analysis)
 
     print(f"\n{'═' * 82}")
-    print(f"  SUBSTITUTION ADVISOR")
+    print("  SUBSTITUTION ADVISOR")
     print(f"{'═' * 82}")
 
     # ── Steps (c)-(f): For each chunk, find candidates and suggest ──
@@ -2322,7 +2334,7 @@ def _substitution_advisor(
         print(f"{sep}")
 
         if len(outliers) == 0:
-            print(f"  ✓ No outlier funds — portfolio is harmonious.")
+            print("  ✓ No outlier funds — portfolio is harmonious.")
             sub_advice.append({
                 "chunk_label": chunk_label,
                 "chunk_num":   r["chunk_num"],
@@ -2345,7 +2357,7 @@ def _substitution_advisor(
                   f"wt={orow['_w']*100:.1f}%  ret={orow['adj_ret']*100:.2f}%  "
                   f"std={orow['adj_std']*100:.2f}%  |dd|={abs(orow['adj_dd'])*100:.2f}%")
 
-        print(f"\n  Core portfolio (excluding outliers):")
+        print("\n  Core portfolio (excluding outliers):")
         print(f"    ret={ca['core_ret']*100:.2f}%  std={ca['core_std']*100:.2f}%  "
               f"|dd|={ca['core_dd']*100:.2f}%")
         print(f"    Max fund std in core: {ca['core_max_fund_std']*100:.2f}%")
@@ -2794,7 +2806,7 @@ def _cross_amc_substitution_report(
     )
 
     print(f"\n{'═' * 82}")
-    print(f"  CROSS-AMC SUBSTITUTION REPORT")
+    print("  CROSS-AMC SUBSTITUTION REPORT")
     print(f"  Tolerances: CAGR ±{ret_tol*100:.1f}%  Std ±{std_tol*100:.2f}%  |DD| ±{dd_tol*100:.1f}%")
     print(f"{'═' * 82}")
 
@@ -2896,12 +2908,12 @@ def _cross_amc_substitution_report(
                 print(f"\n{sep}")
                 print(f"  {chunk_label}")
                 print(f"{sep}")
-            print(f"  ✓ No near-equivalent substitutes found from other AMCs.")
+            print("  ✓ No near-equivalent substitutes found from other AMCs.")
 
         report.extend(chunk_entries)
 
     if not report:
-        print(f"\n  ✓ All funds: no near-equivalent substitutes from other AMCs found.")
+        print("\n  ✓ All funds: no near-equivalent substitutes from other AMCs found.")
 
     return report
 
@@ -3393,7 +3405,6 @@ def _fund_list_to_df(funds: list) -> pd.DataFrame:
       History_Months ← 120 (10 years synthetic; the universe was already filtered
                         upstream by the user's min_history setting)
     """
-    from models import FundEntry, _first_available
     rows = []
     for f in funds:
         # Return: prefer worst_exp_ret, fall back to worst CAGR across all periods
@@ -3573,9 +3584,10 @@ def run_track_pass(
     Soft tolerances on risk constraints (defaults):
         return  ±0.0025 pp   std_dev ±0.0025 pp   max_dd ±0.0050 pp
     """
-    from scipy.optimize import minimize, LinearConstraint, Bounds as ScipyBounds
     import numpy as np
-    from models import _first_available
+    from scipy.optimize import Bounds as ScipyBounds
+    from scipy.optimize import LinearConstraint, minimize
+
 
     if tolerance is None:
         tolerance = {"return": 0.0025, "std_dev": 0.0025, "max_dd": 0.0050}
@@ -3963,8 +3975,8 @@ def run_aim_pass_multi(
 
         if not candidates:
             # Fallback: run original single-mode aim pass for this chunk
-            _emit(f"    No candidates found via λ-blending — "
-                  f"falling back to single-mode solve")
+            _emit("    No candidates found via λ-blending — "
+                  "falling back to single-mode solve")
             w, info = optimise_with_relaxation(
                 df=df_universe, min_return=r_target, max_std_dev=s_limit,
                 max_dd=d_limit, max_per_fund=mf_max, max_per_type=mt_max,
@@ -4043,8 +4055,9 @@ def _solve_frontier(
 
     Returns (weights | None, feasible: bool).
     """
-    from scipy.optimize import milp, LinearConstraint, Bounds as ScipyBounds
     import numpy as np
+    from scipy.optimize import Bounds as ScipyBounds
+    from scipy.optimize import LinearConstraint, milp
 
     n = len(df)
     if n == 0:
@@ -4214,7 +4227,6 @@ def _solve_frontier_with_relaxation(
 
     Returns (weights | None, dict_info).
     """
-    import numpy as np
 
     fund_types_all = df["Fund Type"].unique()
     type_caps = {ft: max_per_type for ft in fund_types_all}
@@ -4385,7 +4397,7 @@ def run_frontier_walk(
                             found = True
                             break
                 if not found:
-                    _emit(f"    P0 completely infeasible — skipping chunk")
+                    _emit("    P0 completely infeasible — skipping chunk")
                     break
 
             if w_try is None and p0_iter > 0:
@@ -4475,7 +4487,7 @@ def run_frontier_walk(
         if p0_violating.any():
             stripped_names = [str(names[i]) for i in range(n) if p0_violating[i]]
             _emit(f"    P0 contains capped fund(s): {', '.join(stripped_names)}")
-            _emit(f"    Re-solving with mask, stepping down return target...")
+            _emit("    Re-solving with mask, stepping down return target...")
 
             r_try = r_target
             RETURN_STEP = 0.0005     # 0.05% per step
@@ -5080,7 +5092,7 @@ def run_pulp_commonality_walk(
                       f"wtd_std={_wtd*100:.3f}% max_fund_std={_maxs*100:.3f}% "
                       f"→ abs_fund_std_cap={chunk_abs_std_cap*100:.3f}%")
             else:
-                _emit(f"    Calibration P0 infeasible — no hard ceiling applied")
+                _emit("    Calibration P0 infeasible — no hard ceiling applied")
         except Exception as _ce:
             _emit(f"    Calibration P0 error ({_ce}) — no hard ceiling applied")
 
@@ -5187,14 +5199,14 @@ def run_pulp_commonality_walk(
                     continue
 
                 if pulp.LpStatus[prob.status] != "Optimal":
-                    print(f"infeasible", flush=True)
+                    print("infeasible", flush=True)
                     continue
 
                 # Extract solution
                 sel_funds = [i for i in funds
                              if w[i].varValue is not None and w[i].varValue > 1e-4]
                 if not sel_funds:
-                    print(f"empty solution", flush=True)
+                    print("empty solution", flush=True)
                     continue
 
                 p_weights = np.array([w[i].varValue for i in sel_funds])
@@ -5455,7 +5467,7 @@ def find_best_commonality_combination(
         _emit("  ✗ No valid combination found.")
         return None, None, float("inf"), float("inf"), {}
 
-    _emit(f"  ✓ Best Combination found!")
+    _emit("  ✓ Best Combination found!")
     _emit(f"    Distribution Penalty: {min_penalty:.4f}")
     _emit(f"    Sum of RMS Std Devs: {min_sum_std*100:.4f}%")
     _emit(f"    Unique funds: {best_stats['total_unique']}")
@@ -5586,11 +5598,10 @@ def optimize_sticky_portfolio(
 
     In both cases the returned GlidePath is also stored in state.glide_path.
     """
-    from models import AppState
     # Import glide_path builder lazily so this module doesn't hard-require
     # glide_path.py at import time (the module is in the same package).
     try:
-        from glide_path import build_glide_path, build_flat_glide_path
+        from glide_path import build_flat_glide_path, build_glide_path
     except ImportError:
         # glide_path.py not yet present — provide stubs so the rest works
         def build_glide_path(chunks, spread):
@@ -5922,7 +5933,7 @@ def main():
         print("  ERROR: No eligible funds. Try reducing --min-history.")
         sys.exit(1)
 
-    print(f"\n  Optimisation parameters:")
+    print("\n  Optimisation parameters:")
     print(f"    Corpus        : ₹{params['total_money']:,.2f} L")
     print(f"    Min return    : {params['min_return']*100:.2f}%")
     print(f"    Max std dev   : {params['max_std_dev']*100:.2f}%")

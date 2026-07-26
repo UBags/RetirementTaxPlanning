@@ -28,8 +28,14 @@ New in v4 (over v3):
   5. Two new output columns inserted after Match Quality:
        Allocation_L     – placeholder column, always 0; populate manually
                           once fund selection is finalised.
-       Worst_Exp_Ret_%  – min(1Y, 3Y, 5Y, 10Y CAGR) adjusted for a −0.40%
-                          STT hit on Arbitrage / Tax Efficient Income funds.
+       Worst_Exp_Ret_%  – min(Avg_CAGR_3Y, Avg_CAGR_5Y, Avg_CAGR_7Y,
+                          Avg_CAGR_10Y) adjusted for a −0.40% STT hit on
+                          Arbitrage / Tax Efficient Income funds.  1Y is
+                          deliberately excluded.  The point-in-time
+                          3Y/5Y/7Y/10Y_CAGR columns are a fallback only, used
+                          when no Avg_CAGR_* column is present at all.
+                          (This header previously read "min(1Y, 3Y, 5Y, 10Y
+                          CAGR)", which never matched the computation.)
 
   6. KNOWN_CODE_OVERRIDES dict – hard-pins exact AMFI codes for funds where
      auto-resolution collides (highest priority over all other resolution paths).
@@ -62,11 +68,16 @@ Building / reviewing the AMFI code map
 """
 
 import argparse
+import io
 import logging
 import re
 import sys
 import time
-import io
+
+# Suppress numpy/pandas RuntimeWarnings from degenerate statistical computations
+# (e.g. std/var on single-element or near-constant series like overnight fund returns).
+# These are expected and handled by NaN guards in the code.
+import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
@@ -77,10 +88,6 @@ import requests
 from scipy import stats
 from tqdm import tqdm
 
-# Suppress numpy/pandas RuntimeWarnings from degenerate statistical computations
-# (e.g. std/var on single-element or near-constant series like overnight fund returns).
-# These are expected and handled by NaN guards in the code.
-import warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning, module=r"(numpy|pandas|scipy).*")
 
 # ── optional: yfinance ────────────────────────────────────────────────────────
@@ -255,19 +262,45 @@ HYBRID_TYPES   = {
 # LOGGING
 # ═══════════════════════════════════════════════════════════════════════════════
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s  %(message)s",
-    datefmt="%H:%M:%S",
-    handlers=[
-        logging.StreamHandler(
-            io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-            if hasattr(sys.stdout, "buffer") else sys.stdout
-        ),
-        logging.FileHandler("fund_analyser.log", mode="w", encoding="utf-8"),
-    ],
-)
 log = logging.getLogger(__name__)
+
+
+def configure_logging(logfile: str = "fund_analyser.log") -> None:
+    """Install console + file logging.  Called from main(), never on import.
+
+    This ran at module level until it was found to break any importer.
+    `io.TextIOWrapper(sys.stdout.buffer, ...)` takes OWNERSHIP of the buffer
+    and closes it when garbage-collected; under pytest, sys.stdout is a
+    per-test capture object whose .buffer is a temp file pytest still needs,
+    so `import get_funds_data` closed pytest's capture and every subsequent
+    test errored with "ValueError: I/O operation on closed file".
+
+    The trigger was building the handlers list, not configuring logging:
+    basicConfig() is a no-op once the root logger has handlers, but the
+    wrapper is constructed regardless, and constructing it is what seizes the
+    buffer.  Importing also reconfigured root logging process-wide and wrote
+    fund_analyser.log into whatever the cwd happened to be.
+
+    monte_carlo._fetch_debt_index_annual_returns() imports this module to
+    reach the embedded debt-index table, so "anyone who imports it" includes
+    the Monte Carlo path.
+
+    The body below is unchanged from the original, so running this file as a
+    script logs exactly as it always did.
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s  %(levelname)-8s  %(message)s",
+        datefmt="%H:%M:%S",
+        handlers=[
+            logging.StreamHandler(
+                io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+                if hasattr(sys.stdout, "buffer") else sys.stdout
+            ),
+            logging.FileHandler(logfile, mode="w", encoding="utf-8"),
+        ],
+        force=True,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2086,4 +2119,7 @@ def main():
 
 
 if __name__ == "__main__":
+    # Logging is configured here rather than at import, so that importing this
+    # module (monte_carlo does, for the debt-index table) has no side effects.
+    configure_logging()
     main()

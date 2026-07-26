@@ -4,21 +4,28 @@
 """
 Fund selection and allocation dialog.
 """
-from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
-    QPushButton, QLabel, QHeaderView, QComboBox, QMessageBox,
-    QDialogButtonBox, QAbstractItemView, QDoubleSpinBox, QLineEdit,
-    QGroupBox, QSplitter, QWidget, QSizePolicy
-)
-from PySide6.QtCore import Qt, QSortFilterProxyModel
-from PySide6.QtGui import QColor, QFont
-from typing import List
 import copy
-
 import json
 from pathlib import Path
-from models import AppState, FundEntry, DEFAULT_FUNDS, SCORE_COLUMNS, _first_available
+from typing import List
 
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QFont
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
+
+from models import SCORE_COLUMNS, AppState, FundEntry, _first_available
 
 SORT_OPTIONS = [c[1] for c in SCORE_COLUMNS]
 SORT_KEYS    = [c[0] for c in SCORE_COLUMNS]
@@ -511,7 +518,7 @@ class RollingChartPopup(QWidget):
 
     # ── painting ─────────────────────────────────────────────────────────
     def paintEvent(self, event):  # noqa: N802
-        from PySide6.QtGui import QPainter, QPen, QFontMetrics
+        from PySide6.QtGui import QFontMetrics, QPainter, QPen
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
 

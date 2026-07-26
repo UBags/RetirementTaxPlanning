@@ -5,9 +5,8 @@
 Data models for SWP Financial Planner
 """
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict
-import json
 from datetime import date
+from typing import Dict, List, Optional
 
 
 def _first_available(*vals, default=7.0):

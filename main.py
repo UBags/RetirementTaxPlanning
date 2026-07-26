@@ -17,35 +17,74 @@ Changes vs v2:
   3. Each output table has a "Show Chart" button above it that opens a
      non-modal chart pop-up window (using matplotlib).
 """
-import sys, json, csv, subprocess, traceback
+import csv
+import json
+import subprocess
+import sys
+import traceback
 from datetime import date
 from pathlib import Path
 from typing import List, Optional
 
+from PySide6.QtCore import QDate, QObject, Qt, QThread, Signal
+from PySide6.QtGui import QAction, QColor, QFont
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTabWidget,
-    QTableWidget, QTableWidgetItem, QHeaderView, QLabel, QPushButton,
-    QFileDialog, QMessageBox, QStatusBar,
-    QGroupBox, QDoubleSpinBox, QDateEdit, QApplication,
-    QAbstractItemView, QDialog, QDialogButtonBox, QLineEdit,
-    QFormLayout, QToolTip, QSpinBox, QProgressDialog, QTextEdit,
-    QCheckBox, QComboBox, QGridLayout
+    QAbstractItemView,
+    QApplication,
+    QCheckBox,
+    QDateEdit,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFormLayout,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QProgressDialog,
+    QPushButton,
+    QSpinBox,
+    QStatusBar,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
-from PySide6.QtCore import Qt, QDate, QPoint, QThread, Signal, QObject
-from PySide6.QtGui import QColor, QFont, QAction
 
-from models import AppState, default_state
-from engine import Engine, run_sensitivity, optimize_withdrawal_split, YearSummary, MonthlyRow, FundWithdrawalDetail
-from tax_dialog import TaxRulesDialog
+from engine import (
+    Engine,
+    FundWithdrawalDetail,
+    MonthlyRow,
+    YearSummary,
+    optimize_withdrawal_split,
+    run_sensitivity,
+)
 from fund_dialog import FundAllocationDialog
+from models import AppState, default_state
+from tax_dialog import TaxRulesDialog
+
 try:
     from optimization_report import show_optimization_report
     _OPT_REPORT_AVAILABLE = True
 except ImportError:
     _OPT_REPORT_AVAILABLE = False
-from dialogs import (RequirementsDialog, ReturnRateDialog, SplitDialog,
-                     IncomeDialog, WindfallDialog, HUFWithdrawalDialog,
-                     SensitivityDialog, MonteCarloDialog)
+from dialogs import (
+    HUFWithdrawalDialog,
+    IncomeDialog,
+    MonteCarloDialog,
+    RequirementsDialog,
+    ReturnRateDialog,
+    SensitivityDialog,
+    SplitDialog,
+    WindfallDialog,
+)
 
 # ── Colours ────────────────────────────────────────────────────────────────────
 CLR_DEBT   = QColor("#ddeeff")
@@ -880,7 +919,7 @@ class MainWindow(QMainWindow):
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.user_name: str = user_name or "SWP"
 
-        title = f"SWP Financial Planner"
+        title = "SWP Financial Planner"
         if user_name:
             title += f"  –  {user_name}"
         self.setWindowTitle(title)
@@ -1019,7 +1058,7 @@ class MainWindow(QMainWindow):
         root.addWidget(self.lbl_summary)
 
         # ── Outer 4-scenario tab widget ───────────────────────────────────
-        from PySide6.QtWidgets import (QButtonGroup, QRadioButton, QComboBox)
+        from PySide6.QtWidgets import QButtonGroup, QRadioButton
         self.outer_tabs = QTabWidget()
         self.outer_tabs.currentChanged.connect(self._on_scenario_changed)
         root.addWidget(self.outer_tabs)
@@ -1049,10 +1088,16 @@ class MainWindow(QMainWindow):
             btn_mode.setCheckable(True)
             btn_mode.setChecked(False)
             btn_mode.setToolTip(
-                "<b>Historical Mode</b> (default): per-fund returns use 5Y CAGR.<br>"
-                "<b>Conservative Mode</b>: per-fund returns use Worst_Exp_Ret_%<br>"
-                "(minimum historical rolling CAGR minus STT costs) — a genuine<br>"
-                "stress-tested lower-bound for corpus survival.")
+                "<b>Historical Mode</b> (default): per-fund returns use<br>"
+                "min(Avg_CAGR_3Y/5Y/7Y/10Y) — the worst of the four<br>"
+                "rolling-average windows, and the same figure shown in<br>"
+                "View Fund Selection &amp; Allocation.<br><br>"
+                "<b>Conservative Mode</b>: per-fund returns use<br>"
+                "Worst_Exp_Ret_%, which is that same minimum less a 0.40%<br>"
+                "STT charge on arbitrage / tax-efficient-income funds.<br><br>"
+                "<i>The two modes differ only by that STT charge. Neither is<br>"
+                "a worst-case stress test — Avg_CAGR is the mean of all<br>"
+                "rolling windows, not the worst one.</i>")
             btn_mode.toggled.connect(self._on_mode_toggled)
             btn_mode.setStyleSheet(
                 "background:#95a5a6;color:white;font-weight:bold;"
@@ -1323,7 +1368,8 @@ class MainWindow(QMainWindow):
         self._propagate_shared_fields()
 
     def _update_status(self):
-        import os, logging
+        import logging
+        import os
         log_path = os.environ.get("SWP_DEBUG_LOG")
         _log = logging.getLogger("main.debug")
         if log_path and not _log.handlers:
@@ -1434,7 +1480,8 @@ class MainWindow(QMainWindow):
         self._propagate_shared_fields()
 
     def _open_funds(self):
-        import os, logging
+        import logging
+        import os
         log_path = os.environ.get("SWP_DEBUG_LOG")
         _log = logging.getLogger("main.debug")
         if log_path and not _log.handlers:
@@ -1522,7 +1569,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Calculating...")
 
         # ── Debug logging ──────────────────────────────────────────────
-        import os, logging
+        import logging
+        import os
         log_path = os.environ.get("SWP_DEBUG_LOG")
         if log_path:
             _log = logging.getLogger("main.debug")
@@ -1553,7 +1601,8 @@ class MainWindow(QMainWindow):
         conservative = self.btn_mode.isChecked()
 
         # ── Diagnostic logging before engine run ──────────────────────────
-        import logging as _clo, os as _cos
+        import logging as _clo
+        import os as _cos
         _clog = _clo.getLogger("main.calc")
         _clog.setLevel(_clo.DEBUG)
         _clp = _cos.environ.get("SWP_DEBUG_LOG")
@@ -1616,7 +1665,6 @@ class MainWindow(QMainWindow):
                     # keep baseline results
                     self.state.annual_requirements = saved_reqs
                     self.state.huf_annual_requirements = saved_huf
-                    import traceback
                     traceback.print_exc()
                     QMessageBox.warning(
                         self, "Tax Optimisation Skipped",
@@ -1637,7 +1685,6 @@ class MainWindow(QMainWindow):
                 f"Done [{mode_str} mode]. "
                 f"{len(p_monthly)} personal months, {len(h_monthly)} HUF months.")
         except Exception:
-            import traceback
             QMessageBox.critical(self, "Calculation Error", traceback.format_exc())
             self.statusBar().showMessage("Error.")
         finally:
@@ -2144,13 +2191,12 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error", traceback.format_exc())
 
     def _run_monte_carlo(self):
-        from dialogs import MonteCarloDialog
 
         dlg = MonteCarloDialog(self.state, self)
         if not dlg.exec():
             return
 
-        n_sims, sigma_override, floor_multiplier, seed, \
+        n_sims, sigma_override, floor_multiplier, cap_multiplier, seed, \
             use_bootstrap, block_length = dlg.get_params()
 
         method_str = (f"Block Bootstrap (block={block_length}yr)"
@@ -2187,9 +2233,9 @@ class MainWindow(QMainWindow):
         # simpler and gives immediate, reliable feedback.
         try:
             from monte_carlo import (
-                run_monte_carlo,
-                _fetch_nifty50_annual_returns,
                 _fetch_debt_index_annual_returns,
+                _fetch_nifty50_annual_returns,
+                run_monte_carlo,
             )
 
             self.statusBar().showMessage(f"Running Monte Carlo [{method_str}]…")
@@ -2216,6 +2262,7 @@ class MainWindow(QMainWindow):
             mc_kwargs = dict(
                 n_sims=n_sims, sigma_override=sigma_override,
                 floor_multiplier=floor_multiplier,
+                cap_multiplier=cap_multiplier,
                 seed=seed, use_bootstrap=use_bootstrap, block_length=block_length,
             )
             res = run_monte_carlo(self.state, **mc_kwargs)
@@ -2251,21 +2298,28 @@ class MainWindow(QMainWindow):
                     + (" <i>(bootstrap data unavailable)</i>"
                        if use_bootstrap else "")
                 )
-            # Build per-chunk floor summary for display
+            # Build per-chunk band summary for display (HANDOVER 2.2:
+            # floor AND cap; getattr keeps this readable against an
+            # MCResults pickled before caps existed).
             _floor_parts = []
+            _caps = getattr(res, 'caps', None)
             if hasattr(res, 'floors') and hasattr(res, 'sigmas'):
                 seen = {}
                 for fy in range(30):
                     fl = res.floors[fy]
+                    cp = _caps[fy] if _caps is not None else None
                     sig = res.sigmas[fy]
-                    key = (round(fl, 5), round(sig, 5))
+                    key = (round(fl, 5), round(cp, 5) if cp is not None else None,
+                           round(sig, 5))
                     if key not in seen:
                         seen[key] = [fy + 1, fy + 1]
                     else:
                         seen[key][1] = fy + 1
-                for (fl, sig), (yr_from, yr_to) in seen.items():
+                for (fl, cp, sig), (yr_from, yr_to) in seen.items():
+                    _band = (f"[{fl*100:.2f}%, {cp*100:.2f}%]"
+                             if cp is not None else f"floor={fl*100:.2f}%")
                     _floor_parts.append(
-                        f"FY{yr_from}–{yr_to}: floor={fl*100:.2f}% (σ={sig*100:.2f}%)")
+                        f"FY{yr_from}–{yr_to}: {_band} (σ={sig*100:.2f}%)")
             floor_str = "  |  ".join(_floor_parts) if _floor_parts else (
                 f"Floor FY1–10: {res.floor_fy1_10*100:.2f}%  |  "
                 f"Floor FY11–30: {res.floor_fy11_30*100:.2f}%")
@@ -2332,7 +2386,9 @@ class MainWindow(QMainWindow):
                 f"30-yr ruin probability: {rp:.1f}%."
             )
         except Exception:
-            import traceback
+            # NO local `import traceback` here. It bound the name as local for
+            # the whole of _run_monte_carlo, so the handler ~100 lines above
+            # raised UnboundLocalError instead of showing the real error.
             QMessageBox.critical(self, "Monte Carlo Error — display",
                                  traceback.format_exc())
             self.statusBar().showMessage("Monte Carlo display error.")
@@ -2504,7 +2560,8 @@ class MainWindow(QMainWindow):
                 QApplication.processEvents()
 
             # Log chunk state BEFORE optimizer
-            import logging as _lo, os as _os2
+            import logging as _lo
+            import os as _os2
             _olog = _lo.getLogger("main.optimizer")
             _olog.setLevel(_lo.DEBUG)
             _lp = _os2.environ.get("SWP_DEBUG_LOG")
@@ -2676,7 +2733,8 @@ class MainWindow(QMainWindow):
     def _evaluate_best_chunk(self):
         """Evaluate all allocation chunks, show ranked options as radio buttons,
         and apply the user-selected rank."""
-        import os, logging
+        import logging
+        import os
         log_path = os.environ.get("SWP_DEBUG_LOG")
         _log = logging.getLogger("main.debug")
         if log_path and not _log.handlers:
@@ -2706,7 +2764,7 @@ class MainWindow(QMainWindow):
         ))
 
         # Table-style display with radio buttons
-        from PySide6.QtWidgets import QScrollArea, QTableWidget, QTableWidgetItem
+        from PySide6.QtWidgets import QTableWidget, QTableWidgetItem
         tbl = QTableWidget(len(scores), 9)
         tbl.setHorizontalHeaderLabels([
             "Select", "Rank", "Chunk Label",
@@ -3008,9 +3066,9 @@ class _MCWorker(QThread):
     def run(self):
         try:
             from monte_carlo import (
-                run_monte_carlo,
-                _fetch_nifty50_annual_returns,
                 _fetch_debt_index_annual_returns,
+                _fetch_nifty50_annual_returns,
+                run_monte_carlo,
             )
             use_bootstrap = self._kwargs.get("use_bootstrap", True)
 
@@ -3039,7 +3097,6 @@ class _MCWorker(QThread):
             self._signals.finished.emit(res)
 
         except Exception:
-            import traceback
             self._signals.error.emit(traceback.format_exc())
 
 
@@ -3057,7 +3114,6 @@ class _SubprocessWorker(QThread):
         self._signals = signals
 
     def run(self):
-        import subprocess, sys
         try:
             proc = subprocess.Popen(
                 self._cmd,
@@ -3157,7 +3213,8 @@ class FetchSchemeNamesDialog(QDialog):
         self.date_edit.setCalendarPopup(True)
         self.date_edit.setDisplayFormat("dd-MMM-yyyy")
         # Default: 7 days ago
-        from datetime import date as _date, timedelta as _td
+        from datetime import date as _date
+        from datetime import timedelta as _td
         default_date = _date.today() - _td(days=7)
         self.date_edit.setDate(
             QDate(default_date.year, default_date.month, default_date.day)
@@ -3267,7 +3324,8 @@ class FetchSchemeNamesDialog(QDialog):
         )
 
     def _open_csv(self):
-        import os, subprocess as _sp
+        import os
+        import subprocess as _sp
         try:
             if sys.platform.startswith("win"):
                 os.startfile(str(self._out_path))
@@ -3639,7 +3697,7 @@ class AllocateCapitalDialog(QDialog):
         ))
 
         # ── Mode radio buttons ────────────────────────────────────────────────
-        from PySide6.QtWidgets import QRadioButton, QButtonGroup
+        from PySide6.QtWidgets import QButtonGroup, QRadioButton
         mode_box = QGroupBox("Optimisation mode")
         mode_lay = QHBoxLayout(mode_box)
         self._radio_coarse = QRadioButton(
@@ -3709,7 +3767,7 @@ class AllocateCapitalDialog(QDialog):
         top.addWidget(self.chk_frontier)
 
         # ── Risk reference radio buttons (only relevant when frontier walk on) ──
-        from PySide6.QtWidgets import QRadioButton, QButtonGroup
+        from PySide6.QtWidgets import QButtonGroup, QRadioButton
         top.addSpacing(20)
         self._risk_ref_group = QButtonGroup(self)
         self.rb_portfolio = QRadioButton("3×std / 10×dd portfolio ref")
@@ -3934,7 +3992,7 @@ class AllocateCapitalDialog(QDialog):
             )
         else:
             self._lbl_history_status.setText(
-                f"  ⚠  Could not read fund count from metrics CSV"
+                "  ⚠  Could not read fund count from metrics CSV"
             )
 
     def _load_saved_params(self):
@@ -4069,16 +4127,16 @@ class AllocateCapitalDialog(QDialog):
 
         if _use_pulp:
             cmd.append("--pulp-commonality")
-            self._log(f"[OPT-DIAG] CLI: using --pulp-commonality")
+            self._log("[OPT-DIAG] CLI: using --pulp-commonality")
         elif self.chk_frontier.isChecked():
             cmd.append("--frontier-walk")
             if self.rb_pct75.isChecked():
                 cmd.extend(["--risk-ref", "pct75"])
             else:
                 cmd.extend(["--risk-ref", "portfolio"])
-            self._log(f"[OPT-DIAG] CLI: using --frontier-walk")
+            self._log("[OPT-DIAG] CLI: using --frontier-walk")
         else:
-            self._log(f"[OPT-DIAG] CLI: using home-grown α-blending (no flag)")
+            self._log("[OPT-DIAG] CLI: using home-grown α-blending (no flag)")
         self._log(f"[OPT-DIAG] state.allocation_params={_ap!r}")
         self._log(f"\n$ {' '.join(cmd)}\n")
         self.btn_run.setEnabled(False)
@@ -4154,7 +4212,8 @@ class AllocateCapitalDialog(QDialog):
         Read sub_advice from the viz HTML, apply swaps to chunk CSVs,
         rebuild allocation_chunks, and regenerate the viz.
         """
-        import json, re
+        import json
+        import re
 
         viz_path = self.output_dir / "portfolio_viz.html"
         if not viz_path.exists():
@@ -4239,8 +4298,8 @@ class AllocateCapitalDialog(QDialog):
         self._log("  APPLYING SUBSTITUTIONS (GUI)")
         self._log("═" * 70)
 
-        import pandas as pd
         import numpy as np
+        import pandas as pd
 
         applied = 0
         for sa in active:
@@ -4451,9 +4510,11 @@ class AllocateCapitalDialog(QDialog):
         and patch the ``const C = [...]`` block in portfolio_viz.html so the
         browser view reflects substitutions / optimization changes.
         """
-        import json as _json, re
-        import pandas as pd
+        import json as _json
+        import re
+
         import numpy as np
+        import pandas as pd
 
         viz_path = self.output_dir / "portfolio_viz.html"
         if not viz_path.exists() or not self._result_paths:
@@ -4582,7 +4643,8 @@ class AllocateCapitalDialog(QDialog):
         Read every chunk CSV and populate state.allocation_chunks.
         Also auto-populates state.return_chunks from each chunk's portfolio yield.
         """
-        import os, logging
+        import logging
+        import os
         log_path = os.environ.get("SWP_DEBUG_LOG")
         _log = logging.getLogger("main.debug")
         if log_path and not _log.handlers:
@@ -4596,6 +4658,7 @@ class AllocateCapitalDialog(QDialog):
 
         try:
             import pandas as pd
+
             from models import AllocationChunk, FundEntry, ReturnChunk
 
             new_alloc_chunks = []
@@ -4736,7 +4799,7 @@ class AllocateCapitalDialog(QDialog):
                         new_return_chunks[-1].year_to + 1, 30, last_rate))
                 self.state.return_chunks = new_return_chunks
                 self._log(
-                    f"\n  Return rates auto-set from portfolio yields:\n" +
+                    "\n  Return rates auto-set from portfolio yields:\n" +
                     "\n".join(
                         f"    Yrs {c.year_from}–{c.year_to}: "
                         f"{c.annual_return*100:.3f}%"
@@ -4753,7 +4816,8 @@ class AllocateCapitalDialog(QDialog):
 
     def _load_chunk_into_state(self, csv_path: Path):
         """Read one chunk CSV, replace state.funds, log portfolio ratios."""
-        import os, logging
+        import logging
+        import os
         log_path = os.environ.get("SWP_DEBUG_LOG")
         _log = logging.getLogger("main.debug")
         if log_path and not _log.handlers:
@@ -4766,6 +4830,7 @@ class AllocateCapitalDialog(QDialog):
 
         try:
             import pandas as pd
+
             from models import FundEntry
 
             df = pd.read_csv(csv_path, encoding="utf-8-sig")

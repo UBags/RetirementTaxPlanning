@@ -59,7 +59,13 @@ Two simulation modes are available:
         r_centred = r_historical - mean(r_history) + mu_det[fy]
     This preserves historical volatility / tail shape while keeping the
     simulation mean aligned to each chunk's return assumption.
-    Per-FY return floors = mu_det[fy] − N × sigma[fy] (default N=3).
+    Per-FY return band (HANDOVER 2.2), deliberately asymmetric:
+        floor = mu_det[fy] − 2.5 × sigma[fy]
+        cap   = mu_det[fy] + 3.0 × sigma[fy]
+    Both are applied AFTER per-FY centring, so both are measured from
+    mu_det rather than from the raw historical mean.  The base return is
+    already left-skewed by the min(Avg_CAGR_*) choice (HANDOVER 2.1), so
+    less downside room is needed and the upside tail is given more.
 
 2.  LOG-NORMAL (``use_bootstrap=False``, or automatic fallback)
     ─────────────────────────────────────────────────────────────
@@ -74,17 +80,26 @@ New metadata fields: method_used, n_equity_years, n_debt_years, block_length.
 """
 
 from __future__ import annotations
+
 import math
 import warnings
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 import numpy as np
 
 from models import AppState
-from dataclasses import dataclass
 
+if TYPE_CHECKING:                       # never executed
+    # Seven functions below annotate parameters and returns as
+    # "pd.DataFrame" while importing pandas inside their own bodies. The
+    # annotations are strings so nothing breaks at runtime, but
+    # typing.get_type_hints() on any of them would raise NameError and no
+    # checker can resolve them. This block makes the name real for tooling
+    # at zero import cost.
+    import pandas as pd
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MCResults data structure (backward-compatible: new fields have defaults)
@@ -123,8 +138,9 @@ class MCResults:
     median_final_corpus: float
     p5_final_corpus: float
 
-    # Floor and sigma arrays used in this run (30,)
-    floors:   np.ndarray      # per-FY floor array
+    # Band and sigma arrays used in this run (30,)
+    floors:   np.ndarray      # per-FY floor array  (mu − floor_multiplier·sigma)
+    caps:     np.ndarray      # per-FY cap array    (mu + cap_multiplier·sigma)
     sigmas:   np.ndarray      # per-FY sigma array
 
     # Legacy compatibility — derived from arrays
@@ -135,6 +151,14 @@ class MCResults:
     @property
     def floor_fy11_30(self) -> float:
         return float(self.floors[10]) if len(self.floors) > 10 else 0.0
+
+    @property
+    def cap_fy1_10(self) -> float:
+        return float(self.caps[0]) if len(self.caps) > 0 else 0.0
+
+    @property
+    def cap_fy11_30(self) -> float:
+        return float(self.caps[10]) if len(self.caps) > 10 else 0.0
 
     @property
     def sigma_used(self) -> float:
@@ -268,8 +292,8 @@ def _nav_df_from_mfapi(scheme_code: str) -> "Optional[pd.DataFrame]":
     Returns DataFrame ['date', 'nav'] sorted ascending, or None on failure.
     """
     try:
-        import requests
         import pandas as pd
+        import requests
         resp = requests.get(
             f"https://api.mfapi.in/mf/{scheme_code}",
             headers={"User-Agent": "Mozilla/5.0"},
@@ -295,8 +319,8 @@ def _nav_df_from_amfi_portal(scheme_code: str) -> "Optional[pd.DataFrame]":
     Returns DataFrame ['date', 'nav'] sorted ascending, or None on failure.
     """
     try:
-        import requests
         import pandas as pd
+        import requests
         url = (
             "https://portal.amfiindia.com/DownloadNAVHistoryReport_Po.aspx"
             f"?frmdt=01-Apr-2000&todt=31-Mar-2030&Sch={scheme_code}"
@@ -334,7 +358,6 @@ def _nav_df_to_fy_returns(df: "pd.DataFrame") -> "Optional[np.ndarray]":
     April-to-March (Indian FY) annual return fractions.
     Returns None if fewer than _MIN_EQUITY_FY complete FYs are found.
     """
-    import pandas as pd
     eom = df.set_index("date")["nav"].resample("ME").last().dropna()
     annual = []
     fy_starts = sorted(set(
@@ -388,7 +411,6 @@ def _fetch_nifty50_annual_returns() -> "Optional[np.ndarray]":
 
     Returns None only if all sources fail for all scheme codes.
     """
-    import pandas as pd
 
     # ── 1. Try local cache ────────────────────────────────────────────────────
     cached_df = _load_equity_cache()
@@ -479,8 +501,9 @@ def _fetch_debt_index_annual_returns() -> "Optional[np.ndarray]":
 
     # ── 2. Import get_funds_data and call get_debt_benchmark_monthly ──────────
     try:
-        import sys
         import importlib
+        import sys
+
         import pandas as pd
 
         _here = str(_SCRIPT_DIR)
@@ -538,6 +561,7 @@ def _block_bootstrap_returns(
     n_sims:        int,
     block_length:  int,
     floors:        np.ndarray,   # per-FY floor array (30,)
+    caps:          np.ndarray,   # per-FY cap array   (30,)
     rng:           np.random.Generator,
 ) -> np.ndarray:
     """
@@ -602,12 +626,15 @@ def _block_bootstrap_returns(
     raw_eq  = eq_hist [eq_idx]    # (n_sims, 30) — one C-level gather
     raw_dbt = dbt_hist[dbt_idx]   # (n_sims, 30)
 
-    # ── Step 4: centre per-FY, blend, apply per-FY floors ────────────────────
+    # ── Step 4: centre per-FY, blend, apply the per-FY band ──────────────────
     # Centre each bootstrapped year around its chunk-specific mu_det rather
     # than a single global mean.  mu_det shape (30,) broadcasts over sims.
     port = ((w_equity + w_other) * (raw_eq  - eq_mean  + mu_det[np.newaxis, :]) +
              w_debt              * (raw_dbt  - dbt_mean + mu_det[np.newaxis, :]))
+    # HANDOVER 2.2: clamp AFTER centring, so both bounds are measured from
+    # mu_det and not from whatever this bootstrap sample happened to average.
     port = np.maximum(port, floors[np.newaxis, :])
+    port = np.minimum(port, caps[np.newaxis, :])
 
     return port
 
@@ -675,12 +702,16 @@ def _lognormal_returns(
     sigma:         np.ndarray,     # (30,) per-FY sigma
     n_sims:        int,
     floors:        np.ndarray,     # (30,) per-FY floor
+    caps:          np.ndarray,     # (30,) per-FY cap
     rng:           np.random.Generator,
 ) -> np.ndarray:
     mu_ln = np.log(1.0 + mu_det) - 0.5 * sigma ** 2
     z     = rng.standard_normal((n_sims, 30))
     r     = np.exp(mu_ln[np.newaxis, :] + sigma[np.newaxis, :] * z) - 1.0
+    # The log-normal tail is unbounded above; without the cap a low-sigma debt
+    # portfolio can still draw an implausible year that compounds forever.
     r     = np.maximum(r, floors[np.newaxis, :])
+    r     = np.minimum(r, caps[np.newaxis, :])
     return r
 
 
@@ -692,7 +723,8 @@ def run_monte_carlo(
     state: AppState,
     n_sims:         int   = 2000,
     sigma_override: Optional[float] = None,
-    floor_multiplier: float = 3.0,
+    floor_multiplier: float = 2.5,
+    cap_multiplier:   float = 3.0,
     seed:           int   = 42,
     use_bootstrap:  bool  = True,
     block_length:   int   = 3,
@@ -703,7 +735,12 @@ def run_monte_carlo(
     Parameters
     ----------
     floor_multiplier : Number of sigmas below the mean to set the per-FY
-        return floor.  Default 3.0 → floor = mu − 3σ per chunk.
+        return floor.  Default 2.5 → floor = mu − 2.5σ per chunk.
+    cap_multiplier : Number of sigmas above the mean to set the per-FY
+        return cap.  Default 3.0 → cap = mu + 3.0σ per chunk.
+        The band is deliberately asymmetric: the base return is already
+        left-skewed by the min(Avg_CAGR_*) choice, so less downside room is
+        needed and the upside tail is not truncated as tightly.
     use_bootstrap : If True (default), uses Historical Block Bootstrap with
         real Nifty 50 equity and Nifty Composite Debt Index history.
         Falls back to log-normal if data is unavailable.
@@ -713,13 +750,14 @@ def run_monte_carlo(
     rng    = np.random.default_rng(seed)
     mu_det = np.array([state.get_return_rate(fy) for fy in range(1, 31)])
 
-    # ── Per-chunk sigma and floors ────────────────────────────────────────────
+    # ── Per-chunk sigma and return band ───────────────────────────────────────
     if sigma_override is not None:
         sigmas = np.full(30, sigma_override)
     else:
         sigmas = _per_chunk_sigmas(state)
 
     floors = mu_det - floor_multiplier * sigmas
+    caps   = mu_det + cap_multiplier   * sigmas
 
     # ── Select simulation method ──────────────────────────────────────────────
     method_used  = "log_normal"
@@ -745,7 +783,7 @@ def run_monte_carlo(
                 eq_hist=eq_hist, dbt_hist=dbt_hist,
                 w_equity=w_eq, w_debt=w_dbt, w_other=w_oth,
                 mu_det=mu_det, n_sims=n_sims, block_length=block_length,
-                floors=floors, rng=rng,
+                floors=floors, caps=caps, rng=rng,
             )
             method_used = "block_bootstrap"
 
@@ -765,9 +803,9 @@ def run_monte_carlo(
                 width=80,
             )
             warnings.warn(_msg, RuntimeWarning, stacklevel=2)
-            r_sim = _lognormal_returns(mu_det, sigmas, n_sims, floors, rng)
+            r_sim = _lognormal_returns(mu_det, sigmas, n_sims, floors, caps, rng)
     else:
-        r_sim = _lognormal_returns(mu_det, sigmas, n_sims, floors, rng)
+        r_sim = _lognormal_returns(mu_det, sigmas, n_sims, floors, caps, rng)
 
     # ── Deterministic base from engine ───────────────────────────────────────
     from engine import Engine
@@ -918,7 +956,7 @@ def run_monte_carlo(
         ruin_probability=float(ever_ruined.mean()),
         median_final_corpus=float(c50[-1]),
         p5_final_corpus=float(c5[-1]),
-        floors=floors, sigmas=sigmas,
+        floors=floors, caps=caps, sigmas=sigmas,
         marginal_ruin_idx=mri, marginal_ruin_corpus=mrc,
         marginal_ruin_returns=mrr, marginal_ruin_fy=mrfy,
         method_used=method_used,

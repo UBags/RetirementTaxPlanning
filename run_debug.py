@@ -8,7 +8,9 @@ Usage:
 
 Log file: swp_debug.log (same directory)
 """
-import os, sys, logging
+import logging
+import os
+import sys
 
 # ── Set log path BEFORE importing anything else ──
 LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "swp_debug.log")
@@ -16,7 +18,7 @@ os.environ["SWP_DEBUG_LOG"] = LOG_FILE
 
 # Clear previous log
 with open(LOG_FILE, "w", encoding="utf-8") as f:
-    f.write(f"=== SWP Debug Log ===\n")
+    f.write("=== SWP Debug Log ===\n")
     f.write(f"Started: {__import__('datetime').datetime.now()}\n")
     f.write(f"Python: {sys.executable}\n")
     f.write(f"CWD: {os.getcwd()}\n\n")
@@ -31,6 +33,7 @@ for name in ("main.debug", "engine.debug", "models.debug"):
 
 # Delete __pycache__ to ensure fresh bytecode
 import shutil
+
 cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "__pycache__")
 if os.path.isdir(cache_dir):
     shutil.rmtree(cache_dir)
@@ -41,4 +44,5 @@ print("Starting app...\n")
 
 # Now import and run the app
 from main import main
+
 main()
