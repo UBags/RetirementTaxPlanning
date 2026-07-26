@@ -177,3 +177,61 @@ def test_output_is_shaped_for_cross_fund_averaging():
     rf = pm.risk_free_from_liquid_funds(per_fund, percentile=33.0, min_funds=10)
     assert rf is not None
     assert 0.0 < rf < 0.20, f"implausible risk-free rate {rf}"
+
+
+# ── the export whitelist ─────────────────────────────────────────────────────
+
+def _cols_whitelist():
+    import inspect
+    import re
+
+    import get_funds_data as g
+    src = inspect.getsource(g.main)
+    block = re.search(r"cols = \[(.*?)\n    \]", src, re.S)
+    assert block, "could not locate the `cols` whitelist in get_funds_data.main()"
+    return set(re.findall(r'"([^"]+)"', block.group(1)))
+
+
+def test_new_columns_survive_the_export_whitelist():
+    """
+    `main()` does `pd.DataFrame(results).reindex(columns=cols)` against an
+    explicit whitelist. A column computed into `out[...]` but absent from that
+    list is silently DROPPED — no warning, no error, it simply is not in the
+    CSV.
+
+    That is exactly how Pctile_CAGR_* shipped missing: the values were computed
+    correctly and discarded on the way out. Writing into `out` is not
+    sufficient to reach the file, and nothing about the code says so.
+    """
+    have = _cols_whitelist()
+    need = {f"Pctile_CAGR_{w}" for w in ("3Y", "5Y", "7Y", "10Y")}
+    need.add("Return_Pctile")
+    missing = sorted(need - have)
+    assert not missing, (
+        f"{missing} are computed but not in the export whitelist, so they will "
+        "not reach Fund_Metrics_Output.csv")
+
+
+def test_every_rolling_stat_exported_is_whitelisted():
+    """
+    The general form, so the next added column cannot repeat this. Anything
+    `_rolling_stats()` returns and the per-fund `out` dict exposes must be on
+    the whitelist or it dies at the reindex.
+    """
+    r = _rolling_stats(*_series(), 36)
+    public = {k for k in r if not k.startswith("_")}
+    have = _cols_whitelist()
+
+    stat_to_col = {
+        "avg_cagr": "Avg_CAGR_3Y", "min_cagr": "Min_CAGR_3Y",
+        "pctile_cagr": "Pctile_CAGR_3Y", "pctile_used": "Return_Pctile",
+        "avg_std_dev": "Avg_Std_Dev_3Y", "max_std_dev": "Max_Std_Dev_3Y",
+        "worst_max_dd": "Worst_Max_DD_3Y",
+    }
+    unmapped = sorted(public - set(stat_to_col))
+    assert not unmapped, (
+        f"_rolling_stats() now returns {unmapped}; add the matching column to "
+        "the export whitelist and to this map, or it will be dropped silently")
+
+    dropped = sorted(c for c in stat_to_col.values() if c not in have)
+    assert not dropped, f"{dropped} would be discarded by the reindex"

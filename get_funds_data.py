@@ -1944,6 +1944,81 @@ def process_fund(row: dict, amfi_map: dict) -> tuple[dict, Optional[str]]:
 # MAIN
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _write_risk_free_rate(results: list, df_out) -> None:
+    """Measure the liquid-fund risk-free rate and write it to the config file.
+
+    Refuses rather than guesses.  Too few funds, too few months, or an
+    implausible result and nothing is written -- overwriting a working
+    configuration with a number built from four funds and six months is worse
+    than leaving it alone.
+    """
+    import percentile_metrics as _pm
+    from configuration import config as _config
+    from configuration import set_value as _set_value
+
+    tunables = _pm.configured()
+    pct       = tunables["risk_free_rate_percentile"]
+    min_funds = tunables["risk_free_min_funds"]
+
+    # Fund Type -> is this a liquid fund?  Type first: it is the AMFI
+    # regulatory category and unambiguous.  Name is the fallback.
+    type_by_name = {}
+    if df_out is not None and "Fund Name" in df_out.columns:
+        for _n, _t in zip(df_out["Fund Name"], df_out.get("Fund Type", [])):
+            type_by_name[str(_n)] = str(_t)
+
+    per_fund = {}
+    for rec in results:
+        name = str(rec.get("Fund Name", ""))
+        if not name or not _pm.is_liquid_fund(type_by_name.get(name), name):
+            continue
+        series = (rec.get("_rolling_series") or {}).get("3Y") or {}
+        cagrs, dates = series.get("cagrs") or [], series.get("cagr_dates") or []
+        if len(cagrs) != len(dates) or not cagrs:
+            continue
+        # _cagrs is stored in percent; the rate is a fraction.
+        per_fund[name] = [(d, c / 100.0) for d, c in zip(dates, cagrs)]
+
+    if len(per_fund) < min_funds:
+        log.warning(
+            "risk_free_rate not updated: %d liquid fund(s) with usable rolling "
+            "3Y data, need at least %d", len(per_fund), min_funds)
+        return
+
+    monthly = _pm.cross_fund_monthly_average(per_fund, min_funds=min_funds)
+    rate = _pm.risk_free_from_liquid_funds(per_fund, percentile=pct,
+                                           min_funds=min_funds)
+    if rate is None:
+        log.warning(
+            "risk_free_rate not updated: only %d calendar month(s) had at "
+            "least %d liquid funds reporting", len(monthly), min_funds)
+        return
+
+    if not 0.01 < rate < 0.15:
+        log.warning(
+            "risk_free_rate not updated: computed %.4f, outside the plausible "
+            "1%%-15%% band. Check the liquid-fund set and the date alignment "
+            "before the percentile.", rate)
+        return
+
+    old = _config.get("risk_free_rate")
+    rate = round(rate, 4)
+    if old is not None and abs(float(old) - rate) < 1e-9:
+        log.info("risk_free_rate unchanged at %.4f (P%.0f of %d months across "
+                 "%d liquid funds)", rate, pct, len(monthly), len(per_fund))
+        return
+
+    _set_value("risk_free_rate", rate)
+    log.info(
+        "risk_free_rate updated: %s -> %.4f  (P%.0f of the cross-fund monthly "
+        "average, %d months, %d liquid funds)",
+        f"{float(old):.4f}" if old is not None else "unset",
+        rate, pct, len(monthly), len(per_fund))
+    log.info(
+        "  every chunk min_return moves with it: min_return = "
+        "risk_free_rate + spread (see chunk_defaults.py)")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Indian MF Fund Metrics Analyser v4")
     parser.add_argument("--input",          default=INPUT_FILE,    help="Input CSV")
@@ -2049,18 +2124,22 @@ def main():
     #   Combined_Ratio (3 cols) → Alpha/Beta/Treynor → History → CAGR
     cols = [
         "Fund Type", "Fund Name", "Fund Size", "AMFI Code", "Match Quality",
-        "Allocation_L", "Worst_Exp_Ret_%",
+        "Allocation_L", "Worst_Exp_Ret_%", "Return_Pctile",
         "Std_Dev_10Y", "Sharpe_10Y", "Sortino_10Y", "Max_DD_10Y", "Calmar_10Y",
         "Std_Dev_7Y",  "Sharpe_7Y",  "Sortino_7Y",  "Max_DD_7Y",  "Calmar_7Y",
         "Std_Dev_5Y",  "Sharpe_5Y",  "Sortino_5Y",  "Max_DD_5Y",  "Calmar_5Y",
         "Std_Dev_3Y",  "Sharpe_3Y",  "Sortino_3Y",  "Max_DD_3Y",  "Calmar_3Y",
-        "Avg_CAGR_10Y",    "Min_CAGR_10Y",    "Avg_Std_Dev_10Y",
+        "Avg_CAGR_10Y",    "Min_CAGR_10Y",    "Pctile_CAGR_10Y",
+        "Avg_Std_Dev_10Y",
         "Max_Std_Dev_10Y", "Worst_Max_DD_10Y",
-        "Avg_CAGR_7Y",     "Min_CAGR_7Y",     "Avg_Std_Dev_7Y",
+        "Avg_CAGR_7Y",     "Min_CAGR_7Y",     "Pctile_CAGR_7Y",
+        "Avg_Std_Dev_7Y",
         "Max_Std_Dev_7Y",  "Worst_Max_DD_7Y",
-        "Avg_CAGR_5Y",     "Min_CAGR_5Y",     "Avg_Std_Dev_5Y",
+        "Avg_CAGR_5Y",     "Min_CAGR_5Y",     "Pctile_CAGR_5Y",
+        "Avg_Std_Dev_5Y",
         "Max_Std_Dev_5Y",  "Worst_Max_DD_5Y",
-        "Avg_CAGR_3Y",     "Min_CAGR_3Y",     "Avg_Std_Dev_3Y",
+        "Avg_CAGR_3Y",     "Min_CAGR_3Y",     "Pctile_CAGR_3Y",
+        "Avg_Std_Dev_3Y",
         "Max_Std_Dev_3Y",  "Worst_Max_DD_3Y",
         "Combined_Ratio_10Y", "Combined_Ratio_7Y",
         "Combined_Ratio_5Y",  "Combined_Ratio_3Y",
@@ -2119,6 +2198,16 @@ def main():
             "Combined_Ratio computed: 10Y=%d  5Y=%d  3Y=%d  (of %d funds); sorted descending",
             n_10y, n_5y, n_3y, len(df_out),
         )
+
+        # ── HANDOVER 2.5: measure risk_free_rate and write it back ────────
+        # The through-the-cycle liquid-fund yield: average each liquid fund's
+        # rolling 3Y CAGR across funds per calendar month, then take the
+        # configured percentile of that monthly series.  Average first,
+        # percentile second -- the orders are not interchangeable.
+        try:
+            _write_risk_free_rate(results, df_out)
+        except Exception as _exc:                      # never abort the run
+            log.warning("risk_free_rate not updated: %s", _exc)
 
         Path(args.output).parent.mkdir(parents=True, exist_ok=True)
 

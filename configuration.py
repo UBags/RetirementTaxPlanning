@@ -183,6 +183,49 @@ class _Configuration:
         self._ensure_loaded()
 
 
+def set_value(key: str, value: object, path: "Path | None" = None) -> None:
+    """Rewrite one `key = value` line in the properties file, in place.
+
+    Everything else survives byte-for-byte: comments, blank lines, the
+    box-drawing section rules, and the ordering.  A naive rewrite that dumped
+    the parsed dict back out would lose all of it, and those comments are the
+    only documentation several of these keys have.
+
+    Refuses to CREATE a key.  A caller with a typo should fail loudly rather
+    than quietly add `risk_fre_rate` beside the real one and leave the real
+    one stale forever.
+
+    The in-memory singleton is refreshed afterwards, so a process that writes
+    a value sees it immediately rather than the value it started with.
+    """
+    cfg_path = Path(path) if path is not None else get_project_root() / _CONFIG_FILENAME
+    lines = cfg_path.read_text(encoding="utf-8").splitlines(keepends=True)
+
+    hit = None
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("#") or "=" not in stripped:
+            continue
+        if stripped.split("=", 1)[0].strip() == key:
+            hit = i
+            break
+
+    if hit is None:
+        raise KeyError(
+            f"{key!r} is not present in {cfg_path.name}. set_value() rewrites "
+            "existing keys only -- add it to the file and to REQUIRED_KEYS "
+            "first, in the same commit."
+        )
+
+    # Preserve the original alignment: `foo      = 1` keeps its padding.
+    lhs = lines[hit].split("=", 1)[0]
+    eol = "\n" if lines[hit].endswith("\n") else ""
+    lines[hit] = f"{lhs}= {value}{eol}"
+    cfg_path.write_text("".join(lines), encoding="utf-8")
+
+    config.reload()
+
+
 def _parse_properties(path: Path) -> Dict[str, Any]:
     """
     Parse a simple ``key = value`` properties file.

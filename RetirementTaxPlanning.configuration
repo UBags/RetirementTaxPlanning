@@ -92,7 +92,7 @@ default_cagr_fallback = 7.0
 # reproducible: a default that moved with every CSV reimport would mean a
 # project opened six months later no longer matches the structure it was
 # built against.
-risk_free_rate = 0.0665
+risk_free_rate = 0.0535
 
 # ─── Through-the-cycle percentile metrics ─────────────────────────────────
 # Percentile of the cross-fund monthly average of liquid-fund rolling 3Y CAGR,
