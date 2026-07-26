@@ -680,20 +680,29 @@ class FDRateChunksDialog(QDialog):
         self.resize(560, 420)
         self.state = state
         self.chunks: List[FDRateChunk] = [copy.deepcopy(c) for c in state.fd_rate_chunks]
+        self.horizon = state.horizon
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(
             "Define the FD interest rate used for the tax benchmark comparison.\n"
             "This determines the hypothetical FD tax that the SWP structure saves against.\n"
-            "Chunks must be contiguous and cover years 1–30."))
+            f"Chunks must be contiguous and cover years 1–{state.horizon}.\n"
+            "Reset to defaults uses the measured liquid-fund percentiles "
+            "(P33 / P20 / P5) plus the configured spread, in three equal parts."))
 
         btn_bar = QHBoxLayout()
         btn_add = QPushButton("➕ Add Chunk")
         btn_del = QPushButton("🗑 Remove Last")
+        btn_reset = QPushButton("↺ Reset to defaults")
+        btn_reset.setToolTip(
+            "Replace every chunk with the measured default ladder. Your own "
+            "rates always win until you press this.")
         btn_add.clicked.connect(self._add)
         btn_del.clicked.connect(self._remove)
+        btn_reset.clicked.connect(self._reset_to_defaults)
         btn_bar.addWidget(btn_add)
         btn_bar.addWidget(btn_del)
+        btn_bar.addWidget(btn_reset)
         btn_bar.addStretch()
         layout.addLayout(btn_bar)
 
@@ -726,13 +735,31 @@ class FDRateChunksDialog(QDialog):
         self.table.blockSignals(False)
         self._validate()
 
+    def _default_ladder(self):
+        from chunk_defaults import default_fd_benchmark_chunks
+        return [FDRateChunk(a, b, r)
+                for a, b, r in default_fd_benchmark_chunks(self.horizon)]
+
+    def _reset_to_defaults(self):
+        """Discard the user's rates and take the measured ladder.
+
+        Deliberately explicit.  A saved rate is indistinguishable from one
+        typed a minute ago, so nothing migrates an existing plan silently --
+        this button is the only route from a user's chunks back to the
+        defaults.
+        """
+        self.chunks = self._default_ladder()
+        self._refresh()
+
     def _add(self):
         last = self.chunks[-1] if self.chunks else None
         new_from = (last.year_to + 1) if last else 1
-        if new_from > 30:
+        if new_from > self.horizon:
             return
-        self.chunks.append(FDRateChunk(new_from, min(new_from + 4, 30),
-                                        last.fd_rate if last else 0.07))
+        # The anchored figure, not a hardcoded 0.07 from nowhere.
+        rate = last.fd_rate if last is not None else self._default_ladder()[0].fd_rate
+        self.chunks.append(
+            FDRateChunk(new_from, min(new_from + 4, self.horizon), rate))
         self._refresh()
 
     def _remove(self):
@@ -766,12 +793,12 @@ class FDRateChunksDialog(QDialog):
         covered = set()
         for c in self.chunks:
             covered.update(range(c.year_from, c.year_to + 1))
-        missing = [y for y in range(1, 31) if y not in covered]
+        missing = [y for y in range(1, self.horizon + 1) if y not in covered]
         if missing:
             self.lbl.setText(f"⚠ Uncovered years: {missing[:8]}{'…' if len(missing)>8 else ''}")
             self.lbl.setStyleSheet("color: red;")
         else:
-            self.lbl.setText("✓ All 30 years covered")
+            self.lbl.setText(f"✓ All {self.horizon} years covered")
             self.lbl.setStyleSheet("color: green;")
 
     def _save(self):

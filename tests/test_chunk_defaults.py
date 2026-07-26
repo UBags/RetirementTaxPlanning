@@ -257,3 +257,54 @@ def test_unused_keys_really_are_unused(project_root):
     assert not now_used, (
         f"{now_used} are listed as unused but something now reads them. Move "
         "them into REQUIRED_KEYS so a missing value fails at startup.")
+
+
+# ── the FD tax benchmark ladder ──────────────────────────────────────────────
+
+def test_fd_ladder_is_three_descending_parts_of_the_horizon():
+    """Three equal parts, earliest first, rates falling across the plan.
+
+    A later chunk carrying a higher rate would claim more confidence about
+    year 30 than about year 1, which is backwards.
+    """
+    out = cd.default_fd_benchmark_chunks(30, rates=[0.053, 0.045, 0.036],
+                                         spread=0.01)
+    assert [(a, b) for a, b, _ in out] == [(1, 10), (11, 20), (21, 30)]
+    rates = [r for _a, _b, r in out]
+    assert rates == sorted(rates, reverse=True)
+    assert rates[0] == pytest.approx(0.063)
+
+
+def test_fd_ladder_shares_the_layout_with_the_allocation_options():
+    """'Three equal parts' must have one definition, not two."""
+    for horizon in (30, 25, 20, 15, 10):
+        fd = [(a, b) for a, b, _ in
+              cd.default_fd_benchmark_chunks(horizon, rates=[0.05, 0.04, 0.03],
+                                             spread=0.0)]
+        assert fd == cd.default_chunk_layout(3, horizon)
+
+
+def test_fd_ladder_covers_every_year_with_no_gap_or_overlap():
+    for horizon in (30, 23, 17, 11, 10):
+        out = cd.default_fd_benchmark_chunks(horizon, rates=[0.05, 0.04, 0.03],
+                                             spread=0.0)
+        covered = []
+        for a, b, _ in out:
+            covered.extend(range(a, b + 1))
+        assert covered == list(range(1, horizon + 1)), (
+            f"horizon {horizon}: {out} leaves a gap or overlaps")
+
+
+def test_fd_ladder_refuses_rates_that_do_not_descend():
+    with pytest.raises(ValueError, match="descend"):
+        cd.default_fd_benchmark_chunks(30, rates=[0.03, 0.04, 0.05],
+                                       spread=0.01)
+
+
+def test_fd_ladder_reads_the_configured_rates_and_spread():
+    from configuration import config
+    out = cd.default_fd_benchmark_chunks(30)
+    expected = [config.risk_free_rate, config.risk_free_rate_mid,
+                config.risk_free_rate_low]
+    for (_a, _b, got), base in zip(out, expected):
+        assert got == pytest.approx(base + config.fd_benchmark_spread)

@@ -729,9 +729,21 @@ class AppState:
         # than to 30.  A pre-horizon file loads with horizon_years = 30 and
         # therefore migrates to exactly the chunks it always did.
         _h = result.horizon
-        # FD rate chunks (legacy scalar → chunk migration)
-        if not result.fd_rate_chunks and result.fd_rate > 0:
-            result.fd_rate_chunks = [FDRateChunk(1, _h, result.fd_rate)]
+        # FD rate chunks.  A file carrying either chunks or an explicit
+        # fd_rate holds a USER decision and keeps it -- the benchmark ladder
+        # is only a default, and silently reinterpreting a saved rate is the
+        # class of change this codebase has been bitten by before.  A file
+        # with neither predates the field entirely and takes the ladder.
+        if not result.fd_rate_chunks:
+            if "fd_rate" in d and result.fd_rate > 0:
+                result.fd_rate_chunks = [FDRateChunk(1, _h, result.fd_rate)]
+            else:
+                from chunk_defaults import default_fd_benchmark_chunks
+                result.fd_rate_chunks = [
+                    FDRateChunk(a, b, r)
+                    for a, b, r in default_fd_benchmark_chunks(_h)
+                ]
+                result.fd_rate = result.fd_rate_chunks[0].fd_rate
         # 'Other' tax chunks (added in v4 for Gold/Intl ETFs)
         if not result.individual_other_chunks:
             result.individual_other_chunks = [OtherTaxChunk(1, _h, 0.125)]
@@ -1117,6 +1129,8 @@ class AppState:
 
 def default_state() -> AppState:
     """Create a default AppState with sample data pre-loaded."""
+    from chunk_defaults import default_fd_benchmark_chunks
+
     funds = [FundEntry(
         name=f["name"], fund_type=f["type"], allocation=f["allocation"],
         std_dev=f["std_dev"], sharpe=f["sharpe"], sortino=f["sortino"],
@@ -1185,7 +1199,8 @@ def default_state() -> AppState:
             HUFWithdrawalChunk(11, 20, 5.0),
             HUFWithdrawalChunk(21, 30, 10.0),
         ],
-        fd_rate_chunks=[FDRateChunk(1, 30, 0.07)],
-        fd_rate=0.07,
+        fd_rate_chunks=[FDRateChunk(a, b, r) for a, b, r
+                        in default_fd_benchmark_chunks()],
+        fd_rate=default_fd_benchmark_chunks()[0][2],
     )
     return state

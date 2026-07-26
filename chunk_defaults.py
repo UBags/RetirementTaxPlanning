@@ -68,13 +68,15 @@ and reproduces the table above literally — `test_chunk_defaults.py` pins that.
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 __all__ = [
     "CANONICAL_HORIZON",
+    "FD_BENCHMARK_CHUNKS",
     "SPREADS_PCT",
     "default_chunk_layout",
     "default_chunks_for_option",
+    "default_fd_benchmark_chunks",
 ]
 
 CANONICAL_HORIZON = 30
@@ -94,6 +96,67 @@ SPREADS_PCT: Dict[int, Tuple[float, ...]] = {
     3: (1.90, 1.50, 1.00),
     4: (2.10, 1.60, 1.25, 1.00),
 }
+
+
+# How many chunks the FD tax benchmark ladder is divided into, and which
+# configured rate anchors each.  Three equal parts, earliest first.
+FD_BENCHMARK_CHUNKS = 3
+_FD_RATE_KEYS: Tuple[str, ...] = (
+    "risk_free_rate",       # P33 -- the plan's own anchor
+    "risk_free_rate_mid",   # P20
+    "risk_free_rate_low",   # P5
+)
+
+
+def default_fd_benchmark_chunks(
+    horizon: Optional[int] = None,
+    rates: Optional[Sequence[float]] = None,
+    spread: Optional[float] = None,
+) -> List[Tuple[int, int, float]]:
+    """Default (year_from, year_to, fd_rate) for the FD tax benchmark.
+
+    The benchmark is a notional "what if it had all sat in fixed deposits"
+    comparator.  It was a flat 7.00% for the whole plan -- a hardcoded number
+    of the same species as the 6.85 min_return this module replaced, and one
+    that asserts as much confidence about year 30 as about year 1.
+
+    The horizon is divided into three equal parts by the SAME
+    default_chunk_layout() the allocation Options use, so "three equal parts"
+    has one definition.  Each part takes a descending percentile of the
+    liquid-fund series plus *spread*:
+
+        FY1..a    risk_free_rate      + spread     (P33)
+        FY..b     risk_free_rate_mid  + spread     (P20)
+        FY..end   risk_free_rate_low  + spread     (P5)
+
+    Rates are FRACTIONS, matching FDRateChunk.fd_rate and config -- unlike
+    default_chunks_for_option(), which returns min_return in PERCENT because
+    the GUI dicts do.  The two live side by side; see the UNITS note above.
+
+    This is only the DEFAULT.  A rate set in the FD Interest Rate Chunks
+    dialog is a user decision and always wins.
+    """
+    if rates is None:
+        from configuration import config
+        rates = [float(getattr(config, k)) for k in _FD_RATE_KEYS]
+    if spread is None:
+        from configuration import config
+        spread = float(config.fd_benchmark_spread)
+    if len(rates) != FD_BENCHMARK_CHUNKS:
+        raise ValueError(
+            f"expected {FD_BENCHMARK_CHUNKS} rates, got {len(rates)}")
+
+    ordered = sorted(rates, reverse=True)
+    if list(rates) != ordered:
+        raise ValueError(
+            f"FD benchmark rates must descend across the plan, got {list(rates)}. "
+            "A later chunk carrying a HIGHER rate would claim more confidence "
+            "about year 30 than about year 1, which is backwards."
+        )
+
+    layout = default_chunk_layout(FD_BENCHMARK_CHUNKS, horizon)
+    return [(yf, yt, round(r + spread, 6))
+            for (yf, yt), r in zip(layout, rates)]
 
 
 def default_chunk_layout(n_chunks: int, horizon: Optional[int] = None) -> List[Tuple[int, int]]:
