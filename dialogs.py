@@ -735,9 +735,12 @@ class SensitivityDialog(QDialog):
         self.scenario_tabs.setTabsClosable(False)
         layout.addWidget(self.scenario_tabs)
 
-        # Start with 2 default scenarios
-        self._add_scenario("Optimistic (+1%)", offset=0.01)
-        self._add_scenario("Stressed (−1%)", offset=-0.01)
+        # Start with the two approved default scenarios (HANDOVER 2.2):
+        # −1.00% and +1.50%.  Asymmetric because the base return is
+        # already left-skewed by the min(Avg_CAGR_*) choice, so the
+        # downside probe needs less room than the upside one.
+        self._add_scenario("Optimistic (+1.50%)", offset=0.015)
+        self._add_scenario("Stressed (−1.00%)", offset=-0.01)
 
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         btns.accepted.connect(self.accept)
@@ -932,14 +935,33 @@ class MonteCarloDialog(QDialog):
         self.spin_floor_mult.setRange(1.0, 5.0)
         self.spin_floor_mult.setDecimals(1)
         self.spin_floor_mult.setSingleStep(0.5)
-        self.spin_floor_mult.setValue(3.0)
+        self.spin_floor_mult.setValue(2.5)
         self.spin_floor_mult.setSuffix(" σ")
         self.spin_floor_mult.setToolTip(
-            "Floor = μ − Nσ per chunk.  Default 3σ means floors are set at "
-            "3 standard deviations below each chunk's expected return.")
+            "Floor = μ − Nσ per chunk.  Default 2.5σ: the base return is "
+            "already left-skewed by the min(Avg_CAGR_*) choice, so less "
+            "downside room is needed than a symmetric 3σ band implies.")
         form.addRow("Floor multiplier (N × σ):", self.spin_floor_mult)
 
-        # Build per-chunk floor display
+        self.spin_cap_mult = QDoubleSpinBox()
+        self.spin_cap_mult.setRange(1.0, 6.0)
+        self.spin_cap_mult.setDecimals(1)
+        self.spin_cap_mult.setSingleStep(0.5)
+        self.spin_cap_mult.setValue(3.0)
+        self.spin_cap_mult.setSuffix(" σ")
+        self.spin_cap_mult.setToolTip(
+            "Cap = μ + Nσ per chunk.  Default 3.0σ, wider than the floor: "
+            "the upside tail should not be truncated as tightly as the "
+            "downside, which the conservative base return already covers.")
+        form.addRow("Cap multiplier (N × σ):", self.spin_cap_mult)
+
+        # Build per-chunk band display.
+        # NOTE: this preview is static, computed at dialog-open time from
+        # the DEFAULT multipliers. It does not follow the spinners. That
+        # was true of the floor preview before HANDOVER 2.2 as well; the
+        # band is simply wider now. Wiring it to valueChanged is a
+        # separate, purely cosmetic change.
+        _FLOOR_N, _CAP_N = 2.5, 3.0
         floor_lines = []
         if state.allocation_chunks:
             for ac in state.allocation_chunks:
@@ -947,21 +969,23 @@ class MonteCarloDialog(QDialog):
                 idx = yr_from - 1
                 mu_c  = mu_det[idx] * 100.0
                 sig_c = chunk_sigmas[idx] * 100.0
-                fl_c  = (mu_det[idx] - 3.0 * chunk_sigmas[idx]) * 100.0
+                fl_c  = (mu_det[idx] - _FLOOR_N * chunk_sigmas[idx]) * 100.0
+                cp_c  = (mu_det[idx] + _CAP_N   * chunk_sigmas[idx]) * 100.0
                 floor_lines.append(
                     f"Yr {yr_from}–{yr_to}: μ={mu_c:.2f}%  σ={sig_c:.2f}%  "
-                    f"→ floor={fl_c:.2f}%")
+                    f"→ [{fl_c:.2f}%, {cp_c:.2f}%]")
         else:
-            fl_val = (mu_det[0] - 3.0 * chunk_sigmas[0]) * 100.0
+            fl_val = (mu_det[0] - _FLOOR_N * chunk_sigmas[0]) * 100.0
+            cp_val = (mu_det[0] + _CAP_N   * chunk_sigmas[0]) * 100.0
             floor_lines.append(
                 f"All years: μ={mu_det[0]*100:.2f}%  σ={chunk_sigmas[0]*100:.2f}%  "
-                f"→ floor={fl_val:.2f}%")
+                f"→ [{fl_val:.2f}%, {cp_val:.2f}%]")
 
         self._floor_info_label = QLabel(
             "<i>" + "<br>".join(floor_lines) + "</i>")
         self._floor_info_label.setWordWrap(True)
         self._floor_info_label.setStyleSheet("color:#2980b9;font-size:10px;")
-        form.addRow("Per-chunk floors (at 3σ):", self._floor_info_label)
+        form.addRow("Per-chunk band (−2.5σ / +3.0σ):", self._floor_info_label)
 
         layout.addLayout(form)
 
@@ -989,16 +1013,22 @@ class MonteCarloDialog(QDialog):
     def get_params(self):
         """
         Returns (n_sims, sigma_override_or_None, floor_multiplier,
-                 seed, use_bootstrap, block_length).
+                 cap_multiplier, seed, use_bootstrap, block_length).
+
+        cap_multiplier was added by HANDOVER 2.2 and is inserted directly
+        after floor_multiplier so the two bounds read together. The only
+        caller is MainWindow._run_monte_carlo().
         """
         n             = self.spin_n.value()
         seed          = self.spin_seed.value()
         sigma         = (self.spin_sigma.value() / 100.0
                          if self.chk_custom.isChecked() else None)
         floor_mult    = self.spin_floor_mult.value()
+        cap_mult      = self.spin_cap_mult.value()
         use_bootstrap = self.chk_bootstrap.isChecked()
         block_length  = self.spin_block.value()
-        return n, sigma, floor_mult, seed, use_bootstrap, block_length
+        return (n, sigma, floor_mult, cap_mult, seed,
+                use_bootstrap, block_length)
 
 # ─────────────────────────────────────────────────────────────
 # Glide-Path Parameters Dialog

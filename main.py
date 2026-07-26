@@ -2156,7 +2156,7 @@ class MainWindow(QMainWindow):
         if not dlg.exec():
             return
 
-        n_sims, sigma_override, floor_multiplier, seed, \
+        n_sims, sigma_override, floor_multiplier, cap_multiplier, seed, \
             use_bootstrap, block_length = dlg.get_params()
 
         method_str = (f"Block Bootstrap (block={block_length}yr)"
@@ -2222,6 +2222,7 @@ class MainWindow(QMainWindow):
             mc_kwargs = dict(
                 n_sims=n_sims, sigma_override=sigma_override,
                 floor_multiplier=floor_multiplier,
+                cap_multiplier=cap_multiplier,
                 seed=seed, use_bootstrap=use_bootstrap, block_length=block_length,
             )
             res = run_monte_carlo(self.state, **mc_kwargs)
@@ -2257,21 +2258,28 @@ class MainWindow(QMainWindow):
                     + (" <i>(bootstrap data unavailable)</i>"
                        if use_bootstrap else "")
                 )
-            # Build per-chunk floor summary for display
+            # Build per-chunk band summary for display (HANDOVER 2.2:
+            # floor AND cap; getattr keeps this readable against an
+            # MCResults pickled before caps existed).
             _floor_parts = []
+            _caps = getattr(res, 'caps', None)
             if hasattr(res, 'floors') and hasattr(res, 'sigmas'):
                 seen = {}
                 for fy in range(30):
                     fl = res.floors[fy]
+                    cp = _caps[fy] if _caps is not None else None
                     sig = res.sigmas[fy]
-                    key = (round(fl, 5), round(sig, 5))
+                    key = (round(fl, 5), round(cp, 5) if cp is not None else None,
+                           round(sig, 5))
                     if key not in seen:
                         seen[key] = [fy + 1, fy + 1]
                     else:
                         seen[key][1] = fy + 1
-                for (fl, sig), (yr_from, yr_to) in seen.items():
+                for (fl, cp, sig), (yr_from, yr_to) in seen.items():
+                    _band = (f"[{fl*100:.2f}%, {cp*100:.2f}%]"
+                             if cp is not None else f"floor={fl*100:.2f}%")
                     _floor_parts.append(
-                        f"FY{yr_from}–{yr_to}: floor={fl*100:.2f}% (σ={sig*100:.2f}%)")
+                        f"FY{yr_from}–{yr_to}: {_band} (σ={sig*100:.2f}%)")
             floor_str = "  |  ".join(_floor_parts) if _floor_parts else (
                 f"Floor FY1–10: {res.floor_fy1_10*100:.2f}%  |  "
                 f"Floor FY11–30: {res.floor_fy11_30*100:.2f}%")
