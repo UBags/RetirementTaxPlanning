@@ -302,3 +302,56 @@ def test_minimum_fund_count_is_configurable_and_sane():
     assert n >= 2, (
         f"risk_free_min_funds = {n}: a 'cross-fund average' over one fund is "
         "that fund")
+
+
+# ── the FD benchmark ladder ──────────────────────────────────────────────────
+
+def test_ladder_rungs_come_from_one_series_and_descend():
+    """A lower percentile must not yield a higher rate.
+
+    Arithmetically impossible on a single monthly series, so if it happens
+    the rungs are describing different fund sets -- which is exactly the
+    failure three separate risk_free_from_liquid_funds() calls could produce
+    silently after a change to the filtering.
+    """
+    series = {f"Liquid Fund {i}": [(f"2020-{m:02d}-01", 0.04 + 0.0004 * (m + i))
+                                   for m in range(1, 13)]
+              for i in range(12)}
+    ladder = pm.risk_free_ladder(series, (33, 20, 5), min_funds=10,
+                                 min_readings=6)
+    assert set(ladder) == {33.0, 20.0, 5.0}
+    assert ladder[5.0] <= ladder[20.0] <= ladder[33.0]
+
+
+def test_ladder_agrees_with_the_single_percentile_function():
+    """The base rung must equal what the existing function returns.
+
+    If these ever disagree, the plan's anchor and the benchmark's top rung
+    have drifted apart while both still looking measured.
+    """
+    series = {f"Liquid Fund {i}": [(f"2020-{m:02d}-01", 0.03 + 0.001 * m + 0.0001 * i)
+                                   for m in range(1, 13)]
+              for i in range(12)}
+    ladder = pm.risk_free_ladder(series, (33, 20, 5), min_funds=10,
+                                 min_readings=6)
+    single = pm.risk_free_from_liquid_funds(series, percentile=33,
+                                            min_funds=10, min_readings=6)
+    assert ladder[33.0] == pytest.approx(single)
+
+
+def test_ladder_refuses_rather_than_guessing_on_thin_data():
+    series = {f"Liquid Fund {i}": [("2020-01-01", 0.05)] for i in range(12)}
+    assert pm.risk_free_ladder(series, (33, 20, 5), min_funds=10,
+                               min_readings=24) is None
+
+
+def test_configured_exposes_all_three_percentiles():
+    t = pm.configured()
+    for key in ("risk_free_rate_percentile", "risk_free_rate_mid_percentile",
+                "risk_free_rate_low_percentile"):
+        assert key in t, f"{key} missing from configured()"
+    assert (t["risk_free_rate_low_percentile"]
+            < t["risk_free_rate_mid_percentile"]
+            < t["risk_free_rate_percentile"]), (
+        "the ladder percentiles must descend: the later chunks of the FD "
+        "benchmark are meant to be the less confident ones")

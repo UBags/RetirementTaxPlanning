@@ -78,6 +78,20 @@ REQUIRED_KEYS = frozenset({
     "risk_free_rate_percentile",
     "fund_return_percentile",
     "risk_free_min_funds",
+    # The FD tax benchmark ladder.  The benchmark is a notional "what if it
+    # had all sat in fixed deposits" comparator, and a single flat rate for
+    # thirty years asserts more certainty about year 30 than about year 1.
+    # Three measured percentiles of the same liquid-fund series, plus a
+    # spread, give the later chunks a lower and less confident rate.
+    #
+    # _mid_ and _low_ are the percentiles; the measured RATES they produce
+    # are risk_free_rate_mid / risk_free_rate_low, written back by
+    # get_funds_data.py exactly as risk_free_rate is.
+    "risk_free_rate_mid_percentile",
+    "risk_free_rate_low_percentile",
+    "risk_free_rate_mid",
+    "risk_free_rate_low",
+    "fd_benchmark_spread",
 })
 
 # Keys present in RetirementTaxPlanning.configuration that NO module reads.

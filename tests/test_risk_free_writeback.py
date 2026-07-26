@@ -154,17 +154,37 @@ class _DF:
         return list(self._t) if key == "Fund Name" else list(self._t.values())
 
 
+def _tunables():
+    """Stand-in for percentile_metrics.configured().
+
+    Every key that function returns must appear here. This was five inline
+    copies; adding the ladder percentiles to configured() broke all five at
+    once, which is the drift REQUIRED_KEYS exists to prevent and which a copy
+    of a dict reintroduces. Asserted against the real thing below.
+    """
+    return {
+        "risk_free_rate_percentile": 33.0,
+        "risk_free_rate_mid_percentile": 20.0,
+        "risk_free_rate_low_percentile": 5.0,
+        "fund_return_percentile": 33.0,
+        "risk_free_min_funds": 10,
+    }
+
+
+def test_the_stub_matches_the_real_configured_signature():
+    """A stub missing a key would make every test below pass vacuously."""
+    assert set(_tunables()) == set(pm.configured()), (
+        "_tunables() has drifted from percentile_metrics.configured(); "
+        "add the missing key here as well")
+
+
 def test_writeback_computes_and_writes(tmp_path, monkeypatch, project_root):
     import configuration as cfg
     from get_funds_data import _write_risk_free_rate
 
     p = _full_config(tmp_path, project_root)
     monkeypatch.setattr(cfg, "get_project_root", lambda: tmp_path)
-    monkeypatch.setattr(pm, "configured", lambda: {
-        "risk_free_rate_percentile": 33.0,
-        "fund_return_percentile": 33.0,
-        "risk_free_min_funds": 10,
-    })
+    monkeypatch.setattr(pm, "configured", _tunables)
 
     recs, types = _liquid_corpus()
     _write_risk_free_rate(recs, _DF(types))
@@ -184,11 +204,7 @@ def test_writeback_refuses_when_too_few_liquid_funds(tmp_path, monkeypatch, proj
     p = _full_config(tmp_path, project_root)
     before = cfg._parse_properties(p)['risk_free_rate']
     monkeypatch.setattr(cfg, "get_project_root", lambda: tmp_path)
-    monkeypatch.setattr(pm, "configured", lambda: {
-        "risk_free_rate_percentile": 33.0,
-        "fund_return_percentile": 33.0,
-        "risk_free_min_funds": 10,
-    })
+    monkeypatch.setattr(pm, "configured", _tunables)
 
     recs, types = _liquid_corpus(n_funds=4)
     _write_risk_free_rate(recs, _DF(types))
@@ -202,11 +218,7 @@ def test_writeback_ignores_funds_that_are_not_liquid(tmp_path, monkeypatch, proj
     p = _full_config(tmp_path, project_root)
     before = cfg._parse_properties(p)['risk_free_rate']
     monkeypatch.setattr(cfg, "get_project_root", lambda: tmp_path)
-    monkeypatch.setattr(pm, "configured", lambda: {
-        "risk_free_rate_percentile": 33.0,
-        "fund_return_percentile": 33.0,
-        "risk_free_min_funds": 10,
-    })
+    monkeypatch.setattr(pm, "configured", _tunables)
 
     recs, types = _liquid_corpus(n_funds=12)
     for name in types:
@@ -223,11 +235,7 @@ def test_writeback_refuses_an_implausible_rate(tmp_path, monkeypatch, project_ro
     p = _full_config(tmp_path, project_root)
     before = cfg._parse_properties(p)['risk_free_rate']
     monkeypatch.setattr(cfg, "get_project_root", lambda: tmp_path)
-    monkeypatch.setattr(pm, "configured", lambda: {
-        "risk_free_rate_percentile": 33.0,
-        "fund_return_percentile": 33.0,
-        "risk_free_min_funds": 10,
-    })
+    monkeypatch.setattr(pm, "configured", _tunables)
 
     recs, types = _liquid_corpus(base=45.0)      # 45% "liquid" yield
     _write_risk_free_rate(recs, _DF(types))
@@ -246,11 +254,7 @@ def test_writeback_skips_series_whose_dates_do_not_match(tmp_path, monkeypatch, 
     p = _full_config(tmp_path, project_root)
     before = cfg._parse_properties(p)['risk_free_rate']
     monkeypatch.setattr(cfg, "get_project_root", lambda: tmp_path)
-    monkeypatch.setattr(pm, "configured", lambda: {
-        "risk_free_rate_percentile": 33.0,
-        "fund_return_percentile": 33.0,
-        "risk_free_min_funds": 10,
-    })
+    monkeypatch.setattr(pm, "configured", _tunables)
 
     recs, types = _liquid_corpus(n_funds=12)
     for r in recs:

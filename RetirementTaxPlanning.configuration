@@ -110,3 +110,34 @@ fund_return_percentile = 33
 # handful of long-lived schemes whose average describes those schemes rather
 # than the category.
 risk_free_min_funds = 10
+
+# ─── FD tax benchmark ladder ──────────────────────────────────────────────
+# The FD benchmark is a notional "what if it had all sat in fixed deposits"
+# comparator; the tax it would have attracted, less the tax the SWP actually
+# pays, is transferred to the HUF. A single flat rate for thirty years
+# asserts as much confidence about year 30 as about year 1, so the default
+# chunk structure uses three measured percentiles of the SAME liquid-fund
+# monthly series, each plus the spread below:
+#
+#     FY1..a    risk_free_rate      + fd_benchmark_spread
+#     FY..b     risk_free_rate_mid  + fd_benchmark_spread
+#     FY..end   risk_free_rate_low  + fd_benchmark_spread
+#
+# A rate a user sets in the FD Interest Rate Chunks dialog always wins; this
+# is only the default.
+#
+# The two _percentile keys are the tunables. The two rate keys below them are
+# MEASURED and rewritten by get_funds_data.py, exactly as risk_free_rate is
+# -- do not hand-edit them expecting the change to survive a fund refresh.
+risk_free_rate_mid_percentile = 20
+risk_free_rate_low_percentile = 5
+
+# PLACEHOLDER -- both are overwritten on the next get_funds_data.py run.
+# Seeded from the 2016-01..2026-07 series (127 months, liquid funds) so the
+# application starts; treat them as provisional until that run reports them.
+risk_free_rate_mid = 0.0448
+risk_free_rate_low = 0.0357
+
+# Percentage points added to each rung. 0.01 = 1%: a fixed deposit yields a
+# little above the liquid-fund category it is being compared with.
+fd_benchmark_spread = 0.01

@@ -1971,6 +1971,8 @@ def _write_risk_free_rate(results: list, df_out) -> None:
 
     tunables = _pm.configured()
     pct       = tunables["risk_free_rate_percentile"]
+    pct_mid   = tunables["risk_free_rate_mid_percentile"]
+    pct_low   = tunables["risk_free_rate_low_percentile"]
     min_funds = tunables["risk_free_min_funds"]
 
     # Fund Type -> is this a liquid fund?  Type first: it is the AMFI
@@ -1999,8 +2001,16 @@ def _write_risk_free_rate(results: list, df_out) -> None:
         return
 
     monthly = _pm.cross_fund_monthly_average(per_fund, min_funds=min_funds)
-    rate = _pm.risk_free_from_liquid_funds(per_fund, percentile=pct,
-                                           min_funds=min_funds)
+
+    # All three rungs from one series, computed once -- see
+    # percentile_metrics.risk_free_ladder() for why not three calls.
+    try:
+        ladder = _pm.risk_free_ladder(per_fund, (pct, pct_mid, pct_low),
+                                      min_funds=min_funds)
+    except ValueError as _exc:
+        log.warning("risk_free rates not updated: %s", _exc)
+        return
+    rate = ladder.get(float(pct)) if ladder else None
     if rate is None:
         log.warning(
             "risk_free_rate not updated: only %d calendar month(s) had at "
@@ -2014,22 +2024,36 @@ def _write_risk_free_rate(results: list, df_out) -> None:
             "before the percentile.", rate)
         return
 
-    old = _config.get("risk_free_rate")
-    rate = round(rate, 4)
-    if old is not None and abs(float(old) - rate) < 1e-9:
-        log.info("risk_free_rate unchanged at %.4f (P%.0f of %d months across "
-                 "%d liquid funds)", rate, pct, len(monthly), len(per_fund))
-        return
+    # Each rung is written independently: a run that leaves one unchanged and
+    # moves another is normal, and reporting "unchanged" for the whole set
+    # because the base happened not to move would hide the others.
+    _written = []
+    for _key, _pct in (("risk_free_rate", pct),
+                       ("risk_free_rate_mid", pct_mid),
+                       ("risk_free_rate_low", pct_low)):
+        _new = round(ladder[float(_pct)], 4)
+        _old = _config.get(_key)
+        if _old is not None and abs(float(_old) - _new) < 1e-9:
+            log.info("%s unchanged at %.4f (P%.0f of %d months across %d "
+                     "liquid funds)", _key, _new, _pct, len(monthly),
+                     len(per_fund))
+            continue
+        _set_value(_key, _new)
+        _written.append(_key)
+        log.info(
+            "%s updated: %s -> %.4f  (P%.0f of the cross-fund monthly "
+            "average, %d months, %d liquid funds)", _key,
+            f"{float(_old):.4f}" if _old is not None else "unset",
+            _new, _pct, len(monthly), len(per_fund))
 
-    _set_value("risk_free_rate", rate)
-    log.info(
-        "risk_free_rate updated: %s -> %.4f  (P%.0f of the cross-fund monthly "
-        "average, %d months, %d liquid funds)",
-        f"{float(old):.4f}" if old is not None else "unset",
-        rate, pct, len(monthly), len(per_fund))
-    log.info(
-        "  every chunk min_return moves with it: min_return = "
-        "risk_free_rate + spread (see chunk_defaults.py)")
+    if "risk_free_rate" in _written:
+        log.info(
+            "  every chunk min_return moves with it: min_return = "
+            "risk_free_rate + spread (see chunk_defaults.py)")
+    if _written:
+        log.info(
+            "  the FD tax benchmark ladder moves with these: each default "
+            "chunk rate = its rung + fd_benchmark_spread")
 
 
 def main():

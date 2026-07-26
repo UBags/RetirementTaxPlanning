@@ -83,6 +83,7 @@ __all__ = [
     "cross_fund_monthly_average",
     "risk_free_from_liquid_funds",
     "fund_expected_return",
+    "risk_free_ladder",
 ]
 
 DEFAULT_PERCENTILE = 33.0
@@ -241,6 +242,49 @@ def fund_expected_return(
 
 # ── configured defaults ──────────────────────────────────────────────────────
 
+def risk_free_ladder(
+    per_fund_3y_series: Mapping[str, Sequence[Tuple[object, float]]],
+    percentiles: Sequence[float],
+    min_funds: int = 10,
+    min_readings: int = 24,
+) -> Optional[Dict[float, float]]:
+    """Several percentiles of ONE liquid-fund monthly series.
+
+    Returns {percentile: rate}, or None if the inputs cannot support the
+    calculation -- the same refusal contract as risk_free_from_liquid_funds().
+
+    Why one function rather than calling that one repeatedly: every rate in
+    the ladder must come from the same monthly average, computed once. Three
+    separate calls would each rebuild the series, and any future change to
+    the filtering that was applied inconsistently would produce a ladder
+    whose rungs describe different fund sets. They would still look like a
+    ladder.
+
+    The result is checked for monotonicity. A lower percentile yielding a
+    HIGHER rate is arithmetically impossible on one series, so if it happens
+    the series differs between rungs and the whole ladder is refused rather
+    than half-trusted.
+    """
+    monthly = cross_fund_monthly_average(per_fund_3y_series, min_funds=min_funds)
+    values = [v for _d, v in monthly]
+
+    out: Dict[float, float] = {}
+    for pct in percentiles:
+        rate = percentile_of(values, pct, min_readings=min_readings)
+        if rate is None:
+            return None
+        out[float(pct)] = rate
+
+    ordered = [out[float(p)] for p in sorted(out, reverse=True)]
+    if any(a < b for a, b in zip(ordered, ordered[1:])):
+        raise ValueError(
+            f"risk-free ladder is not monotonic: {out}. A lower percentile "
+            "cannot yield a higher rate on a single series, so the rungs are "
+            "not describing the same data."
+        )
+    return out
+
+
 def configured() -> Dict[str, float]:
     """Resolve the tunables from RetirementTaxPlanning.configuration.
 
@@ -249,13 +293,25 @@ def configured() -> Dict[str, float]:
     the single place that reads the keys, so callers do not each grow their
     own `config.get(..., 33)` with a different fallback.
 
-        risk_free_rate_percentile   applied to the liquid-fund monthly series
-        fund_return_percentile      applied to each fund's rolling series
-        risk_free_min_funds         months below this fund count are dropped
+        risk_free_rate_percentile       applied to the liquid-fund monthly
+                                        series; the plan's base anchor
+        risk_free_rate_mid_percentile   the middle rung of the FD benchmark
+                                        ladder
+        risk_free_rate_low_percentile   the lowest rung
+        fund_return_percentile          applied to each fund's rolling series
+        risk_free_min_funds             months below this fund count are
+                                        dropped
+
+    The three rate percentiles are separate keys on purpose. They answer
+    different questions -- what a plan should assume it earns, versus what a
+    notional FD comparator should be credited with a decade or two out -- and
+    a single knob would tie them together silently.
     """
     from configuration import config
     return {
         "risk_free_rate_percentile": float(config.risk_free_rate_percentile),
+        "risk_free_rate_mid_percentile": float(config.risk_free_rate_mid_percentile),
+        "risk_free_rate_low_percentile": float(config.risk_free_rate_low_percentile),
         "fund_return_percentile": float(config.fund_return_percentile),
         "risk_free_min_funds": int(config.risk_free_min_funds),
     }
