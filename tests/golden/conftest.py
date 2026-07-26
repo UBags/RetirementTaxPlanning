@@ -35,11 +35,11 @@ SNAPSHOT_DIR = Path(__file__).parent / "snapshots"
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
 SCENARIOS = [
-    ("Uddipan_project.swp.json", 0, "s0_1chunk"),
-    ("Uddipan_project.swp.json", 1, "s1_2chunk"),
-    ("Uddipan_project.swp.json", 2, "s2_3chunk"),
-    ("Uddipan_project.swp.json", 3, "s3_4chunk"),
-    ("Uddipan_project_8yr_hist.swp.json", 2, "hist_8yr"),
+    ("main", 0, "s0_1chunk"),
+    ("main", 1, "s1_2chunk"),
+    ("main", 2, "s2_3chunk"),
+    ("main", 3, "s3_4chunk"),
+    ("hist_8yr", 2, "hist_8yr"),
 ]
 
 # Config keys that change engine output. Recorded in every snapshot header so a
@@ -87,15 +87,11 @@ def load_scenario(project_root: Path, rel_path: str, index: int):
     """
     from models import AppState
 
-    path = FIXTURE_DIR / rel_path
-    if not path.exists():
-        pytest.skip(
-            f"golden fixture missing: {path.relative_to(Path(__file__).parent.parent.parent)}\n"
-            "Freeze one with:\n"
-            "    git show <snapshot-commit>:Uddipan/<file> > tests/golden/fixtures/<file>"
-        )
+    from golden_projects import PROJECTS
 
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = PROJECTS.get(rel_path)
+    if data is None:
+        pytest.skip(f"no golden project named {rel_path!r} in golden_projects.py")
     scenarios = data.get("scenarios")
     if not scenarios:
         pytest.skip(f"{rel_path} has no 'scenarios' key")
