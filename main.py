@@ -1049,10 +1049,16 @@ class MainWindow(QMainWindow):
             btn_mode.setCheckable(True)
             btn_mode.setChecked(False)
             btn_mode.setToolTip(
-                "<b>Historical Mode</b> (default): per-fund returns use 5Y CAGR.<br>"
-                "<b>Conservative Mode</b>: per-fund returns use Worst_Exp_Ret_%<br>"
-                "(minimum historical rolling CAGR minus STT costs) — a genuine<br>"
-                "stress-tested lower-bound for corpus survival.")
+                "<b>Historical Mode</b> (default): per-fund returns use<br>"
+                "min(Avg_CAGR_3Y/5Y/7Y/10Y) — the worst of the four<br>"
+                "rolling-average windows, and the same figure shown in<br>"
+                "View Fund Selection &amp; Allocation.<br><br>"
+                "<b>Conservative Mode</b>: per-fund returns use<br>"
+                "Worst_Exp_Ret_%, which is that same minimum less a 0.40%<br>"
+                "STT charge on arbitrage / tax-efficient-income funds.<br><br>"
+                "<i>The two modes differ only by that STT charge. Neither is<br>"
+                "a worst-case stress test — Avg_CAGR is the mean of all<br>"
+                "rolling windows, not the worst one.</i>")
             btn_mode.toggled.connect(self._on_mode_toggled)
             btn_mode.setStyleSheet(
                 "background:#95a5a6;color:white;font-weight:bold;"

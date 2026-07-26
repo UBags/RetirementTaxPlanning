@@ -610,11 +610,14 @@ class Engine:
         Parameters
         ----------
         conservative_mode : if True, each fund's return is taken from
-            ``worst_exp_ret`` (the worst expected return from fund analyser —
-            minimum rolling CAGR minus STT cost).  This gives a genuine
-            stress-tested lower-bound projection.  Falls back to
+            ``worst_exp_ret`` (Worst_Exp_Ret_% from the fund analyser =
+            min(Avg_CAGR_3/5/7/10Y) less a 0.40% STT charge on Arbitrage /
+            Tax Efficient Income types).  Falls back to
             min(cagr_1, cagr_3, cagr_5, cagr_10) if ``worst_exp_ret`` is None.
-            In Historical mode (default), the 5Y CAGR is used; 10Y is the second preference
+            In Historical mode (default) the engine uses
+            min(Avg_CAGR_3/5/7/10Y) — the same figure the UI displays.
+            The two modes therefore differ only by the STT adjustment;
+            "conservative" is a misnomer.  See _fund_annual_return().
         glide_path : Optional GlidePath from the sticky-portfolio optimizer.
             When provided and not flat, triggers annual micro-rebalancing at
             glide-path transition years (Mode B — chunked_sticky).
@@ -657,14 +660,30 @@ class Engine:
         """Per-fund annual return from its own CAGR data.
 
         Historical mode (default):
-            Uses 5Y CAGR -> 10Y -> 3Y -> 1Y -> category average.
+            Uses min(Avg_CAGR_3Y, Avg_CAGR_5Y, Avg_CAGR_7Y, Avg_CAGR_10Y) —
+            the worst of the four rolling-average windows.  This is the same
+            metric AllocationChunk.optimized_yield() computes, so the rate the
+            engine applies and the rate shown in the UI (return_chunks) are
+            now the same number.  Falls back to the previous chain —
+            point-in-time cagr_5 -> cagr_10 -> cagr_3 -> cagr_1, then the
+            category average — when no Avg_CAGR_* were imported.
 
         Conservative mode (stress-test):
-            Uses fund.worst_exp_ret (Worst_Exp_Ret_% from fund analyser —
-            the minimum historically observed rolling CAGR after STT costs).
-            Falls back to min(cagr_1, cagr_3, cagr_5, cagr_10) if not set,
-            then to category average.  This gives the true worst-case
-            corpus-survival projection.
+            Uses fund.worst_exp_ret (Worst_Exp_Ret_% from the fund analyser),
+            which is min(Avg_CAGR_*) less a 0.40% STT charge on Arbitrage /
+            Tax Efficient Income types.  Falls back to
+            min(cagr_1, cagr_3, cagr_5, cagr_10) if not set, then to the
+            category average.
+
+        NAMING WARNING.  Since this change the two modes differ only by that
+        STT adjustment, so Conservative is no longer a stress test in any
+        meaningful sense — for every fund that carries no STT charge it is
+        arithmetically identical to Historical.  Before this change it was
+        actually the more OPTIMISTIC of the two, because worst_exp_ret was
+        above cagr_5 for every fund in the dataset.  A genuinely worst-case
+        metric exists and is unused: Min_CAGR_3Y/5Y/7Y/10Y, the minimum
+        rolling window ever observed, exported by get_funds_data.py but not
+        imported by models.import_fund_metrics().
         """
         if self.alt_return_chunks:
             # Sensitivity-analysis override: use the blended rate for all funds
@@ -678,9 +697,17 @@ class Engine:
             if cagrs:
                 return min(cagrs) / 100.0
             return self._category_annual_return(fy, fund.fund_type)
-        # Historical mode
-        # cagr = _first_available(fund.cagr_5, fund.cagr_3, fund.cagr_1, default=None)
-        # Fix — include 10Y, keep 5Y as preferred for historical mode
+        # Historical mode — HANDOVER 2.1: standardise on min(Avg_CAGR_*).
+        # Same metric as AllocationChunk.optimized_yield(), which feeds
+        # return_chunks, the UI, and the Monte Carlo deterministic mean.
+        _avgs = [c for c in (fund.avg_cagr_3, fund.avg_cagr_5,
+                             fund.avg_cagr_7, fund.avg_cagr_10)
+                 if c is not None and c > 0]
+        if _avgs:
+            return min(_avgs) / 100.0
+        # Fallback: the pre-2.1 chain, kept verbatim so a FundEntry loaded
+        # from a project file that predates the Avg_CAGR_* columns projects
+        # exactly as it used to.
         cagr = _first_available(fund.cagr_5, fund.cagr_10, fund.cagr_3, fund.cagr_1, default=None)
         if cagr is not None and cagr > 0:
             return cagr / 100.0

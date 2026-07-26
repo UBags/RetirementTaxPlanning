@@ -28,8 +28,14 @@ New in v4 (over v3):
   5. Two new output columns inserted after Match Quality:
        Allocation_L     – placeholder column, always 0; populate manually
                           once fund selection is finalised.
-       Worst_Exp_Ret_%  – min(1Y, 3Y, 5Y, 10Y CAGR) adjusted for a −0.40%
-                          STT hit on Arbitrage / Tax Efficient Income funds.
+       Worst_Exp_Ret_%  – min(Avg_CAGR_3Y, Avg_CAGR_5Y, Avg_CAGR_7Y,
+                          Avg_CAGR_10Y) adjusted for a −0.40% STT hit on
+                          Arbitrage / Tax Efficient Income funds.  1Y is
+                          deliberately excluded.  The point-in-time
+                          3Y/5Y/7Y/10Y_CAGR columns are a fallback only, used
+                          when no Avg_CAGR_* column is present at all.
+                          (This header previously read "min(1Y, 3Y, 5Y, 10Y
+                          CAGR)", which never matched the computation.)
 
   6. KNOWN_CODE_OVERRIDES dict – hard-pins exact AMFI codes for funds where
      auto-resolution collides (highest priority over all other resolution paths).
