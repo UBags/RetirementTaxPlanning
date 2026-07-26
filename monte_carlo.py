@@ -80,17 +80,26 @@ New metadata fields: method_used, n_equity_years, n_debt_years, block_length.
 """
 
 from __future__ import annotations
+
 import math
 import warnings
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 import numpy as np
 
 from models import AppState
-from dataclasses import dataclass
 
+if TYPE_CHECKING:                       # never executed
+    # Seven functions below annotate parameters and returns as
+    # "pd.DataFrame" while importing pandas inside their own bodies. The
+    # annotations are strings so nothing breaks at runtime, but
+    # typing.get_type_hints() on any of them would raise NameError and no
+    # checker can resolve them. This block makes the name real for tooling
+    # at zero import cost.
+    import pandas as pd
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MCResults data structure (backward-compatible: new fields have defaults)
@@ -283,8 +292,8 @@ def _nav_df_from_mfapi(scheme_code: str) -> "Optional[pd.DataFrame]":
     Returns DataFrame ['date', 'nav'] sorted ascending, or None on failure.
     """
     try:
-        import requests
         import pandas as pd
+        import requests
         resp = requests.get(
             f"https://api.mfapi.in/mf/{scheme_code}",
             headers={"User-Agent": "Mozilla/5.0"},
@@ -310,8 +319,8 @@ def _nav_df_from_amfi_portal(scheme_code: str) -> "Optional[pd.DataFrame]":
     Returns DataFrame ['date', 'nav'] sorted ascending, or None on failure.
     """
     try:
-        import requests
         import pandas as pd
+        import requests
         url = (
             "https://portal.amfiindia.com/DownloadNAVHistoryReport_Po.aspx"
             f"?frmdt=01-Apr-2000&todt=31-Mar-2030&Sch={scheme_code}"
@@ -349,7 +358,6 @@ def _nav_df_to_fy_returns(df: "pd.DataFrame") -> "Optional[np.ndarray]":
     April-to-March (Indian FY) annual return fractions.
     Returns None if fewer than _MIN_EQUITY_FY complete FYs are found.
     """
-    import pandas as pd
     eom = df.set_index("date")["nav"].resample("ME").last().dropna()
     annual = []
     fy_starts = sorted(set(
@@ -403,7 +411,6 @@ def _fetch_nifty50_annual_returns() -> "Optional[np.ndarray]":
 
     Returns None only if all sources fail for all scheme codes.
     """
-    import pandas as pd
 
     # ── 1. Try local cache ────────────────────────────────────────────────────
     cached_df = _load_equity_cache()
@@ -494,8 +501,9 @@ def _fetch_debt_index_annual_returns() -> "Optional[np.ndarray]":
 
     # ── 2. Import get_funds_data and call get_debt_benchmark_monthly ──────────
     try:
-        import sys
         import importlib
+        import sys
+
         import pandas as pd
 
         _here = str(_SCRIPT_DIR)

@@ -40,14 +40,20 @@ New in v5:
 """
 
 from __future__ import annotations
-from dataclasses import dataclass, field
-from typing import List, Dict, Tuple, Optional
-from datetime import date
 
-from models import (AppState, TaxChunk, TaxSlab, EquityTaxChunk,
-                    OtherTaxChunk, FundEntry, GlidePath, RebalanceCost,
-                    _first_available)
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
+
 from configuration import config
+from models import (
+    AppState,
+    EquityTaxChunk,
+    FundEntry,
+    GlidePath,
+    RebalanceCost,
+    TaxChunk,
+    _first_available,
+)
 
 CESS = config.cess_rate
 
@@ -970,7 +976,8 @@ class Engine:
         SWP_START = config.swp_start_month
 
         # ── Diagnostic logging ─────────────────────────────────────────────────
-        import logging, os
+        import logging
+        import os
         _log = logging.getLogger("engine.debug")
         _log_path = os.environ.get("SWP_DEBUG_LOG")
         if _log_path:

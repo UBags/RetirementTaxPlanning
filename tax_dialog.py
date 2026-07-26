@@ -4,19 +4,27 @@
 """
 Tax rules editor dialogs.
 """
-from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QTabWidget, QWidget, QLabel,
-    QPushButton, QTableWidget, QTableWidgetItem, QHeaderView,
-    QScrollArea, QFrame, QSplitter, QGroupBox, QComboBox,
-    QDialogButtonBox, QMessageBox, QDoubleSpinBox, QSpinBox,
-    QAbstractItemView, QSizePolicy, QFormLayout
-)
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont
-from typing import List
 import copy
+from typing import List
 
-from models import AppState, TaxChunk, TaxSlab, EquityTaxChunk
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QDialog,
+    QDialogButtonBox,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
+
+from models import AppState, EquityTaxChunk, TaxChunk, TaxSlab
 
 
 class SlabTableWidget(QWidget):

@@ -4,14 +4,23 @@
 """
 Reusable chunk editor: allows editing year-range chunks with continuity enforcement.
 """
-from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
-    QPushButton, QLabel, QHeaderView, QMessageBox, QSpinBox, QDoubleSpinBox,
-    QAbstractItemView, QSizePolicy
-)
+from typing import Callable, List
+
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QFont
-from typing import List, Callable, Any
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
 
 class ChunkTableWidget(QWidget):

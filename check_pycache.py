@@ -6,7 +6,9 @@ Quick diagnostic: run from your app directory.
   cd C:\PythonProjects\RetirementTaxPlanning
   python check_pycache.py
 """
-import os, sys, hashlib, importlib, shutil
+import os
+import shutil
+import sys
 from pathlib import Path
 
 app = Path(os.path.dirname(os.path.abspath(__file__)))
@@ -26,13 +28,13 @@ if pc.exists():
             stale = "STALE!" if pyc_mtime < py_mtime else "ok"
             print(f"    {p.name}: {stale}  (pyc={pyc_mtime:.0f}, py={py_mtime:.0f})")
 
-    print(f"\n=== Step 2: Delete __pycache__ ===")
+    print("\n=== Step 2: Delete __pycache__ ===")
     shutil.rmtree(pc)
-    print(f"  Deleted __pycache__")
+    print("  Deleted __pycache__")
 else:
     print("  No __pycache__ found (clean)")
 
-print(f"\n=== Step 3: Verify engine.py version ===")
+print("\n=== Step 3: Verify engine.py version ===")
 sys.path.insert(0, str(app))
 import engine
 
@@ -48,7 +50,7 @@ has_init = hasattr(models.AppState, '_init_funds')
 print(f"  models._init_funds: {has_init}")
 
 # Quick sanity: create test state and run
-from models import FundEntry, AllocationChunk, ReturnChunk, default_state
+from models import AllocationChunk, FundEntry, ReturnChunk, default_state
 
 state = default_state()
 funds = [
@@ -63,13 +65,13 @@ state.return_chunks = [ReturnChunk(1, 30, 0.1133)]
 e = engine.Engine(state)
 rows, yearly, _, _ = e.run()
 r = rows[0]
-print(f"\n=== Step 4: Engine test (D=100, E=100, O=100) ===")
+print("\n=== Step 4: Engine test (D=100, E=100, O=100) ===")
 print(f"  Month 0: D={r.corpus_debt_start:.2f}  E={r.corpus_equity_start:.2f}  O={r.corpus_other_start:.2f}")
 
 if r.corpus_other_start < 0.01:
-    print(f"\n  ✗✗✗ BUG: Other corpus = 0! Engine is broken.")
-    print(f"  Try: restart Python, delete __pycache__, and re-run the app.")
+    print("\n  ✗✗✗ BUG: Other corpus = 0! Engine is broken.")
+    print("  Try: restart Python, delete __pycache__, and re-run the app.")
 else:
-    print(f"\n  ✓ Engine is working correctly. Other corpus > 0.")
-    print(f"  If you still see Other=0 in the GUI, please save your project,")
-    print(f"  close the app, delete __pycache__, and re-open.")
+    print("\n  ✓ Engine is working correctly. Other corpus > 0.")
+    print("  If you still see Other=0 in the GUI, please save your project,")
+    print("  close the app, delete __pycache__, and re-open.")

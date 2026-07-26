@@ -8,21 +8,23 @@ Each chart window is independent (non-modal) and stays open alongside the main a
 Uses matplotlib embedded in a PySide6 widget.
 """
 from __future__ import annotations
-from typing import List, TYPE_CHECKING
-
-from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QComboBox,
-    QLabel, QWidget, QSizePolicy, QToolBar
-)
-from PySide6.QtCore import Qt
 
 import matplotlib
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QComboBox,
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QSizePolicy,
+    QVBoxLayout,
+)
+
 matplotlib.use("QtAgg")
+import matplotlib.ticker as ticker
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
-import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
 
 # Colour palette
 COLOURS = [
@@ -71,7 +73,6 @@ class ChartWindow(QDialog):
 
 def _bar_line(ax, x, bar_ys, bar_labels, line_ys, line_labels, title, ylabel):
     """Draw grouped bars + optional line series on a shared axes."""
-    import numpy as np
     n = len(x)
     width = 0.8 / max(len(bar_ys), 1)
     offsets = [(i - (len(bar_ys) - 1) / 2) * width for i in range(len(bar_ys))]
@@ -776,7 +777,6 @@ class MonteCarloChart(ChartWindow):
     # ── View 0: Corpus fan chart ──────────────────────────────────────────────
 
     def _draw_corpus_fan(self):
-        import numpy as np
         ax = self.fig.add_subplot(111)
         res = self.results
         yrs = res.fy_labels
@@ -855,7 +855,6 @@ class MonteCarloChart(ChartWindow):
     # ── View 2: Ruin probability ──────────────────────────────────────────────
 
     def _draw_ruin(self):
-        import numpy as np
         ax  = self.fig.add_subplot(111)
         ax2 = ax.twinx()
         res = self.results
@@ -963,7 +962,6 @@ class MonteCarloChart(ChartWindow):
     # ── View 4: Summary table ─────────────────────────────────────────────────
 
     def _draw_summary(self):
-        import numpy as np
         res = self.results
         ax = self.fig.add_subplot(111)
         ax.axis("off")
@@ -1140,7 +1138,6 @@ class AllocationDriftChart(ChartWindow):
         if not trans:
             return
         # Group consecutive years into bands
-        import numpy as np
         if not trans:
             return
         trans = sorted(trans)
@@ -1435,7 +1432,6 @@ class RebalancingCostChart(ChartWindow):
 
     def _draw_turnover(self):
         """Show % weight change year-over-year derived from the glide path."""
-        import numpy as np
         ax = self.fig.add_subplot(111)
 
         years = list(range(1, 31))

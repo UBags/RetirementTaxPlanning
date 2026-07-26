@@ -64,6 +64,7 @@ OUT = ROOT / "tests" / "golden" / "fixtures" / "mc_history.json"
 def main() -> int:
     sys.path.insert(0, str(ROOT))
     import numpy as np
+
     import monte_carlo as mc
 
     print("Fetching Nifty 50 annual returns (network) ...")

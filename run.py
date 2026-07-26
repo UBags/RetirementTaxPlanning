@@ -17,20 +17,25 @@ Requirements:
 Usage:
   python3 run.py
 """
-import sys
 import os
+import sys
 from pathlib import Path
 
 # ── Make sure the app directory is on sys.path ────────────────────────────────
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from PySide6.QtWidgets import (
-    QApplication, QDialog, QVBoxLayout, QHBoxLayout,
-    QLabel, QLineEdit, QDialogButtonBox, QMessageBox
-)
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
-
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QDialogButtonBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QVBoxLayout,
+)
 
 # ── Project root is the directory that contains run.py ───────────────────────
 PROJECT_ROOT = Path(os.path.dirname(os.path.abspath(__file__)))

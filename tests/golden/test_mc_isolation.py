@@ -35,7 +35,6 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-
 FIXTURE = Path(__file__).parent / "fixtures" / "mc_history.json"
 SNAPSHOT_DIR = Path(__file__).parent / "snapshots"
 CAPTURE_HINT = (
@@ -259,8 +258,8 @@ def test_equity_history_is_dead_weight_for_all_debt_portfolios(
     point the equity series starts mattering and the snapshot above gains
     coverage it does not currently have.
     """
-    from monte_carlo import run_monte_carlo
     import monte_carlo as mc
+    from monte_carlo import run_monte_carlo
     label, state = scenario
 
     w_eq = state.total_equity_allocation()
@@ -299,8 +298,8 @@ def test_bootstrap_is_refused_when_the_irrelevant_fetch_fails(
     Filed as an observation, not fixed here: the gate belongs in §2.x, and
     changing it changes which generator the owner's real runs use.
     """
-    from monte_carlo import run_monte_carlo
     import monte_carlo as mc
+    from monte_carlo import run_monte_carlo
     label, state = scenario
     if (state.total_equity_allocation() + state.total_other_allocation()) > 0:
         pytest.skip(f"{label} holds equity — the equity fetch is load-bearing")

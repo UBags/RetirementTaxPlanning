@@ -68,11 +68,16 @@ Building / reviewing the AMFI code map
 """
 
 import argparse
+import io
 import logging
 import re
 import sys
 import time
-import io
+
+# Suppress numpy/pandas RuntimeWarnings from degenerate statistical computations
+# (e.g. std/var on single-element or near-constant series like overnight fund returns).
+# These are expected and handled by NaN guards in the code.
+import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
@@ -83,10 +88,6 @@ import requests
 from scipy import stats
 from tqdm import tqdm
 
-# Suppress numpy/pandas RuntimeWarnings from degenerate statistical computations
-# (e.g. std/var on single-element or near-constant series like overnight fund returns).
-# These are expected and handled by NaN guards in the code.
-import warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning, module=r"(numpy|pandas|scipy).*")
 
 # ── optional: yfinance ────────────────────────────────────────────────────────

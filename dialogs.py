@@ -3,21 +3,42 @@
 """
 Additional dialogs for SWP Planner.
 """
-from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
-    QPushButton, QLabel, QHeaderView, QDialogButtonBox, QComboBox,
-    QDoubleSpinBox, QSpinBox, QGroupBox, QFormLayout, QWidget,
-    QTabWidget, QMessageBox, QAbstractItemView, QCheckBox, QDateEdit,
-    QScrollArea, QSizePolicy
-)
-from PySide6.QtCore import Qt, QDate
-from PySide6.QtGui import QColor, QFont
-from typing import List
 import copy
-from datetime import date
+from typing import List
 
-from models import (AppState, ReturnChunk, SplitChunk, HUFWithdrawalChunk,
-                    WindfallEntry, OtherIncome, FDRateChunk)
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QFont
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QPushButton,
+    QScrollArea,
+    QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
+
+from models import (
+    AppState,
+    FDRateChunk,
+    HUFWithdrawalChunk,
+    OtherIncome,
+    ReturnChunk,
+    SplitChunk,
+    WindfallEntry,
+)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -748,7 +769,6 @@ class SensitivityDialog(QDialog):
         layout.addWidget(btns)
 
     def _add_scenario(self, name: str = None, offset: float = 0.0):
-        from models import ReturnChunk as RC
         idx = len(self.scenarios) + 1
         sc_name = name or f"Scenario {idx}"
 
@@ -841,8 +861,9 @@ class MonteCarloDialog(QDialog):
         self.resize(520, 580)
         self.state = state
 
-        from monte_carlo import _portfolio_sigma, _per_chunk_sigmas
         import numpy as _np
+
+        from monte_carlo import _per_chunk_sigmas, _portfolio_sigma
         auto_sigma = _portfolio_sigma(state) * 100.0   # in %
         chunk_sigmas = _per_chunk_sigmas(state)
         mu_det = _np.array([state.get_return_rate(fy) for fy in range(1, 31)])
@@ -1060,7 +1081,7 @@ class GlidePathParametersDialog(QDialog):
         mode_grp = QGroupBox("Allocation Mode")
         mg_layout = QVBoxLayout(mode_grp)
 
-        from PySide6.QtWidgets import QRadioButton, QButtonGroup
+        from PySide6.QtWidgets import QRadioButton
         self.rb_mode_a = QRadioButton(
             "Mode A — Singular Lifetime Allocation  "
             "(one optimised portfolio held throughout, no rebalancing)")

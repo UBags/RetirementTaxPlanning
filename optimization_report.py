@@ -22,21 +22,33 @@ Shows a rich multi-tab report after optimize_sticky_portfolio() runs:
 """
 
 from __future__ import annotations
-from typing import List, Optional, Dict, TYPE_CHECKING
 
-from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QTabWidget, QWidget,
-    QTableWidget, QTableWidgetItem, QHeaderView, QLabel,
-    QPushButton, QScrollArea, QGroupBox, QSizePolicy,
-    QAbstractItemView, QFrame, QGridLayout
-)
+from typing import TYPE_CHECKING, Dict, List, Optional
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QDialog,
+    QFrame,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QPushButton,
+    QScrollArea,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
+
 from models import _first_available
 
 if TYPE_CHECKING:
-    from models import AppState, GlidePath
-    from engine import YearSummary
+    from models import AppState
 
 
 # ─── Palette ──────────────────────────────────────────────────────────────────

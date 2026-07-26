@@ -24,7 +24,6 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-
 # ─── Project root ─────────────────────────────────────────────────────────────
 
 def get_project_root() -> Path:

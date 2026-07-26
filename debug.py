@@ -55,6 +55,7 @@ print(f"huf_other_chunks: {huf_other}")
 
 # Load via AppState
 from models import AppState
+
 state = AppState.from_dict(raw)
 
 print("\n=== APPSTATE CHECK ===")
@@ -69,6 +70,7 @@ for f in init_funds:
 
 # Run engine and check month 0
 from engine import Engine
+
 engine = Engine(state)
 p_rows, yearly, _, _ = engine.run()
 

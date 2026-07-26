@@ -48,7 +48,6 @@ from __future__ import annotations
 import argparse
 import csv
 import re
-import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -282,7 +281,7 @@ def reclassify(
         html = _fetch_page(url, timeout=timeout)
 
         if html is None:
-            _emit(f"    → NOT FOUND (404 or connection error)")
+            _emit("    → NOT FOUND (404 or connection error)")
             unresolved.append((legacy_type, fund_name, url, "page_not_found"))
             time.sleep(delay * 0.5)  # shorter delay for 404s
             continue
@@ -292,21 +291,21 @@ def reclassify(
         _emit(f"    SIP status: {sip_status}")
 
         if sip_status == "not_supported":
-            _emit(f"    → CLOSED (SIP not supported)")
+            _emit("    → CLOSED (SIP not supported)")
             closed.append((legacy_type, fund_name, url))
             time.sleep(delay * 0.5)
             continue
 
         if sip_status == "unknown":
             # Page exists but couldn't parse SIP status — try instrument detection anyway
-            _emit(f"    ⚠ Could not determine SIP status — checking instrument type")
+            _emit("    ⚠ Could not determine SIP status — checking instrument type")
 
         # Detect instrument type
         instrument = _detect_instrument_type(html)
         _emit(f"    Instrument type: {instrument or 'unknown'}")
 
         if instrument is None and sip_status == "unknown":
-            _emit(f"    → UNRESOLVED (no SIP status, no instrument type)")
+            _emit("    → UNRESOLVED (no SIP status, no instrument type)")
             unresolved.append((legacy_type, fund_name, url, "unparseable"))
             time.sleep(delay)
             continue

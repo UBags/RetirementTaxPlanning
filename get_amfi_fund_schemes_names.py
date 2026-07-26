@@ -591,7 +591,7 @@ def _cleanup_fund_types(
     if parts:
         _emit(f"  Cleanup: {'; '.join(parts)}.")
     else:
-        _emit(f"  Cleanup: no changes needed.")
+        _emit("  Cleanup: no changes needed.")
 
     return deduped, unclassified, closed_end
 
@@ -856,7 +856,7 @@ def fetch_scheme_fund_names_filtered(
     # Import here so the module works even if fetch_amfi_aum.py is absent
     # (fetch_scheme_fund_names without filtering still works)
     try:
-        from fetch_amfi_aum import fetch_amfi_aum, _default_report_date
+        from fetch_amfi_aum import _default_report_date, fetch_amfi_aum
     except ImportError as e:
         raise ImportError(
             "fetch_amfi_aum.py must be in the same directory as "

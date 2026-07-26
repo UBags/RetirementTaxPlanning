@@ -26,7 +26,6 @@ import inspect
 import numpy as np
 import pytest
 
-
 FY = 30
 
 
@@ -219,6 +218,7 @@ def test_mc_bounds_do_not_reach_the_engine(scenario):
     the snapshot comparison to run.
     """
     import copy
+
     from engine import Engine
     label, state = scenario
     _, y1, _, _ = Engine(copy.deepcopy(state)).run()
@@ -231,6 +231,7 @@ def test_mc_bounds_do_not_reach_the_engine(scenario):
 def _sensitivity_dialog(state):
     pytest.importorskip("PySide6")
     from PySide6.QtWidgets import QApplication
+
     from dialogs import SensitivityDialog
     app = QApplication.instance() or QApplication([])   # noqa: F841
     return SensitivityDialog(state)
@@ -270,6 +271,7 @@ def test_run_sensitivity_still_accepts_an_arbitrary_list(scenario):
     run_sensitivity() must keep taking whatever list it is handed.
     """
     import copy
+
     from engine import run_sensitivity
     label, state = scenario
     alt = [copy.deepcopy(c) for c in state.return_chunks]

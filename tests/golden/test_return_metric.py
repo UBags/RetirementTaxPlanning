@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import pytest
 
-
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 def _mk_fund(**kw):

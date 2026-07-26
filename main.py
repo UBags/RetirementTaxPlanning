@@ -17,7 +17,11 @@ Changes vs v2:
   3. Each output table has a "Show Chart" button above it that opens a
      non-modal chart pop-up window (using matplotlib).
 """
-import sys, json, csv, subprocess, traceback
+import csv
+import json
+import subprocess
+import sys
+import traceback
 from datetime import date
 from pathlib import Path
 from typing import List, Optional
