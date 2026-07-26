@@ -2127,8 +2127,22 @@ class Engine:
                 h_equity.invest(huf_inflow * se,  h_nav_e, m)
                 h_other.invest(huf_inflow * so,   h_nav_o, m)
 
-            # ── HUF annual aggregate sync (every April) ───────────────────────
-            if cm == 4 and fy >= 1:
+            # ── HUF aggregate sync (EVERY month, not just April) ──────────────
+            #
+            # Issue #4. Mirrors the personal fix. The aggregates are derived
+            # state: h_fund_buckets is the source of truth. Two things pushed
+            # the two views apart between annual syncs --
+            #
+            #   1. the aggregates grow at a blended per-category rate while the
+            #      per-fund buckets grow at each fund's own CAGR;
+            #   2. inflows above are invested per-fund at fund-allocation
+            #      weights but into the aggregates at the policy split, which
+            #      are not the same weighting.
+            #
+            # Scenario 0: 217 diverging full-snapshot months, worst 4.3194L.
+            # Re-deriving monthly bounds divergence to zero. Safe because the
+            # inflow reaches h_fund_buckets above, so nothing is discarded.
+            if True:
                 _h_sync_d = sum(
                     h_fund_buckets[fn].current_value(p_fund_navs[fn])
                     for fn in h_fund_buckets
