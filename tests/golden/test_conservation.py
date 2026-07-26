@@ -133,38 +133,58 @@ def test_monthly_corpus_flow_balances(scenario):
             )
 
 
-def test_aggregate_matches_per_fund_when_all_funds_touched(scenario):
-    """
-    When the withdrawal waterfall touches every held fund, the aggregate corpus
-    must equal the sum of the per-fund detail.
+def _assert_aggregate_matches_per_fund(label, rows, entity):
+    """Shared body: aggregate corpus must equal the sum of per-fund detail.
 
     Months where the waterfall concentrates on a few over-weight funds are
     excluded: engine.py skips funds with amt_f < 0.01, so fund_withdrawals is a
     record of withdrawals, not a portfolio snapshot. Comparing the two in those
     months compares different sets of funds.
     """
-    label, state = scenario
-    p_rows, _, _, _ = _run(state)
-
-    n_full = max((len(r.fund_withdrawals) for r in p_rows), default=0)
+    n_full = max((len(r.fund_withdrawals) for r in rows), default=0)
     if n_full == 0:
-        pytest.skip(f"{label}: no per-fund detail recorded")
+        pytest.skip(f"{label}/{entity}: no per-fund detail recorded")
 
     checked = 0
-    for r in p_rows:
+    for r in rows:
         if len(r.fund_withdrawals) != n_full:
             continue        # waterfall concentrated; not a full snapshot
         agg = r.corpus_debt_end + r.corpus_equity_end + r.corpus_other_end
         det = sum(fd.corpus_end for fd in r.fund_withdrawals)
         tol = max(0.01, 1e-6 * abs(agg))
         assert abs(agg - det) <= tol, (
-            f"{label} m{r.month_idx} (FY{r.fy_year}): aggregate {agg:.6f} vs "
-            f"per-fund {det:.6f} across all {n_full} funds — the two views of "
-            f"the same money have diverged."
+            f"{label}/{entity} m{r.month_idx} (FY{r.fy_year}): aggregate "
+            f"{agg:.6f} vs per-fund {det:.6f} across all {n_full} funds — the "
+            f"two views of the same money have diverged."
         )
         checked += 1
 
-    assert checked > 0, f"{label}: no full-snapshot months to check"
+    assert checked > 0, f"{label}/{entity}: no full-snapshot months to check"
+
+
+def test_aggregate_matches_per_fund_when_all_funds_touched(scenario):
+    """When the waterfall touches every held fund, personal aggregate ==
+    sum of per-fund detail. Regression guard for issue #3."""
+    label, state = scenario
+    p_rows, _, _, _ = _run(state)
+    _assert_aggregate_matches_per_fund(label, p_rows, "personal")
+
+
+def test_aggregate_matches_per_fund_huf(scenario):
+    """Issue #4 — the same invariant for the HUF entity.
+
+    Expected to fail: the HUF aggregate buckets grow at a blended per-category
+    rate while the per-fund buckets grow at each fund's own CAGR, so the two
+    views drift apart between annual syncs. Identical in shape to issue #3,
+    which was fixed for the personal side only.
+
+    Registered in conftest.KNOWN_BUGS as xfail(strict=True) — fixing the engine
+    makes this pass unexpectedly and breaks the build until the entry is
+    removed, which is the intended signal.
+    """
+    label, state = scenario
+    _, _, h_rows, _ = _run(state)
+    _assert_aggregate_matches_per_fund(label, h_rows, "huf")
 
 
 def test_transfer_recorded_equals_transfer_reported(scenario):

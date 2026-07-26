@@ -12,7 +12,9 @@
 !pytest.ini
 !requirements.txt
 !requirements-dev.txt
-!.github/workflows/*.yml
+!*.yml
+!*.yaml
+!*.config
 !ReadMe.md
 !docs/*.md
 

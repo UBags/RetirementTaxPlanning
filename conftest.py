@@ -35,8 +35,16 @@ def config_path(project_root: Path) -> Path:
 # removed. Applied here rather than as decorators so test_swp_engine.py keeps
 # working as a standalone script without a pytest dependency.
 #
-# Currently empty — issues #1, #2 and #3 are all fixed.
-KNOWN_BUGS: dict[str, str] = {}
+# Issues #1, #2 and #3 are fixed. #4 is filed and open.
+KNOWN_BUGS: dict[str, str] = {
+    "test_aggregate_matches_per_fund_huf": (
+        "Issue #4 — HUF aggregate buckets drift from the per-fund buckets "
+        "within each FY and snap back at the April re-sync. Same defect family "
+        "as #1-#3: two mutable representations of the same money updated by "
+        "different rules. Retired for good by making the aggregates a computed "
+        "property over the per-fund buckets (Phase 3.1)."
+    ),
+}
 
 
 def pytest_collection_modifyitems(config, items):
