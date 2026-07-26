@@ -140,15 +140,7 @@ class AllocationChunk:
         total = weight = 0.0
         for f in self.funds:
             if f.allocation > 0:
-                avg_cagrs = [c for c in (f.avg_cagr_3, f.avg_cagr_5,
-                                         f.avg_cagr_7, f.avg_cagr_10)
-                             if c is not None and c > 0]
-                if avg_cagrs:
-                    cagr = min(avg_cagrs)
-                else:
-                    cagrs = [c for c in (f.cagr_3, f.cagr_5, f.cagr_7, f.cagr_10)
-                             if c is not None and c > 0]
-                    cagr = min(cagrs) if cagrs else 7.0
+                cagr = f.expected_return(default=7.0)
                 total  += cagr * f.allocation
                 weight += f.allocation
         return (total / weight / 100) if weight > 0 else 0.07
@@ -165,15 +157,7 @@ class AllocationChunk:
         for fname, w in self.target_weights.items():
             f = fund_map.get(fname)
             if f and w > 0:
-                avg_cagrs = [c for c in (f.avg_cagr_3, f.avg_cagr_5,
-                                         f.avg_cagr_7, f.avg_cagr_10)
-                             if c is not None and c > 0]
-                if avg_cagrs:
-                    cagr = min(avg_cagrs)
-                else:
-                    cagrs = [c for c in (f.cagr_3, f.cagr_5, f.cagr_7, f.cagr_10)
-                             if c is not None and c > 0]
-                    cagr = min(cagrs) if cagrs else 7.0
+                cagr = f.expected_return(default=7.0)
                 total  += cagr * w
                 weight += w
         return (total / weight / 100) if weight > 0 else self.portfolio_yield()
@@ -224,15 +208,7 @@ class AllocationChunk:
         total = weight = 0.0
         for f in self.funds:
             if f.allocation > 0 and f.fund_type == fund_type:
-                avg_cagrs = [c for c in (f.avg_cagr_3, f.avg_cagr_5,
-                                         f.avg_cagr_7, f.avg_cagr_10)
-                             if c is not None and c > 0]
-                if avg_cagrs:
-                    cagr = min(avg_cagrs)
-                else:
-                    cagrs = [c for c in (f.cagr_3, f.cagr_5, f.cagr_7, f.cagr_10)
-                             if c is not None and c > 0]
-                    cagr = min(cagrs) if cagrs else 7.0
+                cagr = f.expected_return(default=7.0)
                 total  += cagr * f.allocation
                 weight += f.allocation
         return (total / weight / 100) if weight > 0 else None
@@ -271,6 +247,13 @@ class FundEntry:
     avg_cagr_5:  Optional[float] = None
     avg_cagr_7:  Optional[float] = None
     avg_cagr_10: Optional[float] = None
+    # HANDOVER 2.5 -- Pth percentile of each rolling window's CAGR series,
+    # in percent.  None when get_funds_data judged the window to have too few
+    # readings to support a percentile; see expected_return().
+    pctile_cagr_3: Optional[float] = None
+    pctile_cagr_5: Optional[float] = None
+    pctile_cagr_7: Optional[float] = None
+    pctile_cagr_10: Optional[float] = None
     # Conservative-mode return: Worst_Exp_Ret_% from fund analyser
     # = min historical rolling CAGR minus STT adjustment (annualised %).
     # None when fund metrics haven't been imported yet.
@@ -281,6 +264,44 @@ class FundEntry:
     # fund_type is the TAX category ("debt"/"equity"/"other");
     # amfi_fund_type is the AMFI regulatory sub-category.
     amfi_fund_type: Optional[str] = None
+
+    def expected_return(self, default: Optional[float] = None) -> Optional[float]:
+        """This fund's expected annual return, in PERCENT.
+
+        THE single definition.  Before HANDOVER 2.5 this logic was copied into
+        six methods in this module and one in engine.py -- and spec 2.1 exists
+        precisely because two of those copies had drifted apart, so the
+        planner projected one number on screen and simulated another.  Seven
+        copies is seven chances for the next revision to miss one, and there
+        has now been a metric revision two days running.
+
+        Preference order, worst-first within each tier:
+
+          1. min(Pctile_CAGR_3/5/7/10Y) -- the Pth percentile of each rolling
+             window, the metric agreed in 2.5.  Windows with too few readings
+             arrive as None from get_funds_data and are skipped here, so a
+             fund with a single 10Y window cannot win the min() on one noisy
+             number.
+          2. min(Avg_CAGR_3/5/7/10Y) -- the spec 2.1 metric.  Retained so a
+             project saved before 2.5 projects exactly as it did.
+          3. min(cagr_3/5/7/10) -- point-in-time, for data predating the
+             rolling columns entirely.
+          4. `default`.
+
+        Returns None rather than guessing when nothing is available and no
+        default is given; callers that need a number pass one.
+        """
+        for tier in (
+            (self.pctile_cagr_3, self.pctile_cagr_5,
+             self.pctile_cagr_7, self.pctile_cagr_10),
+            (self.avg_cagr_3, self.avg_cagr_5,
+             self.avg_cagr_7, self.avg_cagr_10),
+            (self.cagr_3, self.cagr_5, self.cagr_7, self.cagr_10),
+        ):
+            usable = [c for c in tier if c is not None and c > 0]
+            if usable:
+                return min(usable)
+        return default
 
 @dataclass
 class OtherIncome:
@@ -762,6 +783,18 @@ class AppState:
             c7  = _f("7Y_CAGR");  fund.cagr_7  = (c7  * 100) if c7  is not None else None
             c10 = _f("10Y_CAGR"); fund.cagr_10 = (c10 * 100) if c10 is not None else None
             ac3  = _f("Avg_CAGR_3Y");  fund.avg_cagr_3  = (ac3  * 100) if ac3  is not None else None
+            # HANDOVER 2.5
+            pc3  = _f("Pctile_CAGR_3Y");  fund.pctile_cagr_3  = (pc3  * 100) if pc3  is not None else None
+            pc5  = _f("Pctile_CAGR_5Y");  fund.pctile_cagr_5  = (pc5  * 100) if pc5  is not None else None
+            pc7  = _f("Pctile_CAGR_7Y");  fund.pctile_cagr_7  = (pc7  * 100) if pc7  is not None else None
+            pc10 = _f("Pctile_CAGR_10Y"); fund.pctile_cagr_10 = (pc10 * 100) if pc10 is not None else None
+            # The AMFI regulatory sub-category. Present in column 1 of the CSV
+            # since the beginning and never read until now, so amfi_fund_type
+            # was always None -- which is why liquid funds had to be
+            # identified by name.
+            _ft = (row.get("Fund Type") or "").strip()
+            if _ft:
+                fund.amfi_fund_type = _ft
             ac5  = _f("Avg_CAGR_5Y");  fund.avg_cagr_5  = (ac5  * 100) if ac5  is not None else None
             ac7  = _f("Avg_CAGR_7Y");  fund.avg_cagr_7  = (ac7  * 100) if ac7  is not None else None
             ac10 = _f("Avg_CAGR_10Y"); fund.avg_cagr_10 = (ac10 * 100) if ac10 is not None else None
@@ -815,15 +848,7 @@ class AppState:
             debt_alloc = eq_alloc = 0.0
             for f in active:
                 w = f.allocation / total_alloc
-                avg_cagrs = [c for c in (f.avg_cagr_3, f.avg_cagr_5,
-                                         f.avg_cagr_7, f.avg_cagr_10)
-                             if c is not None and c > 0]
-                if avg_cagrs:
-                    cagr = min(avg_cagrs)
-                else:
-                    cagrs = [c for c in (f.cagr_3, f.cagr_5, f.cagr_7, f.cagr_10)
-                             if c is not None and c > 0]
-                    cagr = min(cagrs) if cagrs else 7.0  # percentages
+                cagr = f.expected_return(default=7.0)  # percentages
                 w_return   += w * cagr
                 w_sharpe   += w * f.sharpe
                 w_combined += w * f.combined_ratio
@@ -932,15 +957,7 @@ class AppState:
         weight = 0.0
         for f in self.funds:
             if f.allocation > 0:
-                avg_cagrs = [c for c in (f.avg_cagr_3, f.avg_cagr_5,
-                                         f.avg_cagr_7, f.avg_cagr_10)
-                             if c is not None and c > 0]
-                if avg_cagrs:
-                    cagr = min(avg_cagrs)
-                else:
-                    cagrs = [c for c in (f.cagr_3, f.cagr_5, f.cagr_7, f.cagr_10)
-                             if c is not None and c > 0]
-                    cagr = min(cagrs) if cagrs else 7.0
+                cagr = f.expected_return(default=7.0)
                 total += cagr * f.allocation
                 weight += f.allocation
         return (total / weight / 100) if weight > 0 else 0.07
@@ -951,15 +968,7 @@ class AppState:
         total = weight = 0.0
         for f in self.funds:
             if f.allocation > 0 and f.fund_type == fund_type:
-                avg_cagrs = [c for c in (f.avg_cagr_3, f.avg_cagr_5,
-                                         f.avg_cagr_7, f.avg_cagr_10)
-                             if c is not None and c > 0]
-                if avg_cagrs:
-                    cagr = min(avg_cagrs)
-                else:
-                    cagrs = [c for c in (f.cagr_3, f.cagr_5, f.cagr_7, f.cagr_10)
-                             if c is not None and c > 0]
-                    cagr = min(cagrs) if cagrs else 7.0
+                cagr = f.expected_return(default=7.0)
                 total += cagr * f.allocation
                 weight += f.allocation
         return (total / weight / 100) if weight > 0 else None

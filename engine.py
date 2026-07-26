@@ -706,11 +706,9 @@ class Engine:
         # Historical mode — HANDOVER 2.1: standardise on min(Avg_CAGR_*).
         # Same metric as AllocationChunk.optimized_yield(), which feeds
         # return_chunks, the UI, and the Monte Carlo deterministic mean.
-        _avgs = [c for c in (fund.avg_cagr_3, fund.avg_cagr_5,
-                             fund.avg_cagr_7, fund.avg_cagr_10)
-                 if c is not None and c > 0]
-        if _avgs:
-            return min(_avgs) / 100.0
+        _pct = fund.expected_return()
+        if _pct is not None and _pct > 0:
+            return _pct / 100.0
         # Fallback: the pre-2.1 chain, kept verbatim so a FundEntry loaded
         # from a project file that predates the Avg_CAGR_* columns projects
         # exactly as it used to.

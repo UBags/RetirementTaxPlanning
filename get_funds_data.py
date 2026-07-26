@@ -1571,10 +1571,23 @@ def _rolling_stats(nav: pd.Series, ret: pd.Series, window_months: int) -> dict:
     except Exception:
         _pct = 33.0
 
+    # Reading-count guard (HANDOVER 2.5).  A window with too few rolling
+    # samples gets no percentile at all rather than a noisy one: FundEntry
+    # stores four scalars and no counts, so a consumer cannot apply this rule
+    # later, and expected_return() takes a MIN -- an under-resolved 10Y value
+    # is selected exactly when its noise happens to be low.
+    try:
+        from percentile_metrics import MIN_READINGS as _MIN_READINGS
+    except Exception:
+        _MIN_READINGS = {"3Y": 24, "5Y": 18, "7Y": 12, "10Y": 12}
+    _label = {36: "3Y", 60: "5Y", 84: "7Y", 120: "10Y"}.get(window_months)
+    _floor = _MIN_READINGS.get(_label, 12)
+    _pctile = float(np.percentile(cagrs, _pct)) if len(cagrs) >= _floor else None
+
     return {
         "avg_cagr":     float(np.mean(cagrs)),
         "min_cagr":     float(np.min(cagrs)),
-        "pctile_cagr":  float(np.percentile(cagrs, _pct)),
+        "pctile_cagr":  _pctile,
         "pctile_used":  _pct,
         # Window end dates, aligned 1:1 with _cagrs below.
         "_cagr_dates":  [str(d.date()) if hasattr(d, "date") else str(d)

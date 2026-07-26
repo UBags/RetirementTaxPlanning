@@ -74,6 +74,7 @@ from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 __all__ = [
     "DEFAULT_PERCENTILE",
+    "MIN_READINGS",
     "configured",
     "LIQUID_MARKERS",
     "EXCLUDED_MARKERS",
@@ -85,6 +86,18 @@ __all__ = [
 ]
 
 DEFAULT_PERCENTILE = 33.0
+
+# Minimum rolling windows a series must have before its percentile is worth
+# quoting.  Ten years of monthly history gives the 3Y series ~85 readings and
+# the 10Y series ~13; a percentile of thirteen is the fourth value.  Because
+# the per-fund metric takes a MIN across the four windows, an under-resolved
+# long window is selected precisely when its noise happens to be low.
+#
+# Applied at the point of MEASUREMENT (get_funds_data emits nothing for a
+# window below its threshold) so the CSV carries only figures worth
+# trusting, and FundEntry -- which stores four scalars and no counts --
+# never has to re-derive a judgement it lacks the data to make.
+MIN_READINGS = {"3Y": 24, "5Y": 18, "7Y": 12, "10Y": 12}
 
 # Matched as a substring, case-insensitively, against the AMFI "Fund Type"
 # and then the fund name.  Deliberately NOT the full "Debt Scheme - Liquid
@@ -216,7 +229,7 @@ def fund_expected_return(
     min() on the strength of a dozen data points -- see the resolution
     warning in the module docstring.  Returns None if no window qualifies.
     """
-    floors = min_readings or {"3Y": 24, "5Y": 18, "7Y": 12, "10Y": 12}
+    floors = min_readings or MIN_READINGS
     candidates = []
     for label, series in rolling_by_window.items():
         p = percentile_of(series, percentile,
