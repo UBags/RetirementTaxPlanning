@@ -34,6 +34,10 @@ exclude = [
     "allocate_funds_v0.9.py",
     # Legacy scratch scripts, not part of the application.
     "test/",
+    # Superseded code kept for the record.  Linting it would demand that dead
+    # code satisfy live standards, which is the opposite of why it is there.
+    # See archive/README.md.
+    "archive/",
 ]
 
 [lint]

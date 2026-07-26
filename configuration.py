@@ -35,6 +35,71 @@ def get_project_root() -> Path:
 
 _CONFIG_FILENAME = "RetirementTaxPlanning.configuration"
 
+# Every key the application reads at runtime.  Validated as a set when the
+# file loads, so a missing key is one error at startup naming all of them,
+# not an AttributeError from whatever line happened to touch it first.
+#
+# This list lives here, beside the loader, because tests/test_smoke.py used to
+# keep its own copy and the copy drifted: it named 16 keys while the file held
+# 23.  A copy of a list is not a check on the list.  test_smoke.py now imports
+# this one.
+#
+# ADDING A KEY: add it here and to RetirementTaxPlanning.configuration in the
+# same commit.  The suite will tell you if you forget the second half.
+REQUIRED_KEYS = frozenset({
+    # Tax
+    "cess_rate",
+    "fallback_equity_ltcg_rate",
+    "fallback_other_ltcg_rate",
+    "fallback_debt_top_rate",
+    "fallback_stcg_rate",
+    # Fund / portfolio
+    "stcg_holding_months",
+    "exit_load_fraction",
+    "swp_start_month",
+    "smart_withdrawal_start_month",
+    "max_simulation_years",
+    # Bounded smart withdrawal
+    "drift_cap_personal",
+    "drift_cap_huf",
+    "weight_drift_threshold",
+    # AMFI
+    "amfi_sleep_between_calls",
+    # File paths
+    "allocator_default_input",
+    "allocator_default_output",
+    # Allocation-chunk defaults (HANDOVER 2.4).  The through-the-cycle liquid
+    # fund yield, written by the fund importer -- see percentile_metrics.py.
+    "risk_free_rate",
+    # Tunables for those metrics.  Two separate percentiles on purpose: they
+    # are equal today and are not the same decision.  Lowering the first
+    # loosens the MILP return floors; lowering the second lowers the
+    # projection itself.
+    "risk_free_rate_percentile",
+    "fund_return_percentile",
+    "risk_free_min_funds",
+})
+
+# Keys present in RetirementTaxPlanning.configuration that NO module reads.
+#
+# Six of them configure the Tax-Optimal Split Optimizer, which exists and runs
+# but does not take its parameters from here -- editing them changes nothing,
+# silently.  They are not validated (requiring a key nothing reads is
+# pointless) and not deleted from the file, because deciding whether the
+# optimiser ought to read them belongs to whoever owns that feature.
+#
+# Verified by test_no_required_key_is_silently_unused, which greps every
+# module.  If one of these acquires a reader, move it into REQUIRED_KEYS.
+UNUSED_KEYS = frozenset({
+    "default_cagr_fallback",
+    "optimizer_default_user_cap",
+    "optimizer_min_personal_fraction",
+    "optimizer_max_huf_corpus_drain",
+    "optimizer_grid_step",
+    "optimizer_default_iterations",
+    "rebalance_no_trade_band",
+})
+
 
 class _Configuration:
     """
@@ -66,14 +131,33 @@ class _Configuration:
         self._loaded = True
         config_path = get_project_root() / _CONFIG_FILENAME
         if not config_path.exists():
-            import warnings
-            warnings.warn(
-                f"Configuration file not found: {config_path}. "
-                "Using built-in defaults.",
-                stacklevel=2,
+            # There are no built-in defaults.  The previous code warned and
+            # continued, leaving _data empty, so the next attribute access
+            # raised AttributeError with no mention of this file -- and since
+            # engine.py does `CESS = config.cess_rate` at module scope, that
+            # surfaced as an unexplained import failure.
+            self._loaded = False
+            raise FileNotFoundError(
+                f"Configuration file not found: {config_path}\n"
+                "There are no built-in defaults. The application cannot start "
+                "without it. Restore it from git:\n"
+                f"    git checkout -- {_CONFIG_FILENAME}"
             )
-            return
         self._data = _parse_properties(config_path)
+
+        missing = sorted(REQUIRED_KEYS - self._data.keys())
+        if missing:
+            # All of them, once.  Reporting the first only would mean one
+            # edit-run cycle per missing key.
+            self._loaded = False
+            raise KeyError(
+                f"{config_path} is missing {len(missing)} required "
+                f"key(s):\n    " + "\n    ".join(missing) +
+                "\n\nNo defaults are supplied: a plausible-looking wrong tax "
+                "rate produces a plausible-looking wrong plan. Add the keys "
+                "listed above, or remove them from configuration.REQUIRED_KEYS "
+                "if they are genuinely no longer read."
+            )
 
     # ── Attribute access ──────────────────────────────────────────────────────
 

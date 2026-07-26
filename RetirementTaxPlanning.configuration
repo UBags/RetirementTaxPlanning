@@ -79,3 +79,34 @@ allocator_default_output = allocation_result.csv
 
 # Default CAGR fallback (%) when no CAGR data is available for a fund
 default_cagr_fallback = 7.0
+
+# ─── Allocation Chunk Defaults ───────────────────────────────────────
+# Risk-free rate: the yield offered by liquid funds, as a fraction.
+# Anchors the per-Option default chunk min_return (see chunk_defaults.py):
+#     min_return = risk_free_rate + spread
+#
+# PLACEHOLDER — replace with the measured figure.  After importing a fund
+# CSV, chunk_defaults.suggest_risk_free_rate(state.funds) reports what this
+# should say, computed as the mean of min(Avg_CAGR_*) across liquid funds.
+# Stored rather than computed on the fly so that saved plans stay
+# reproducible: a default that moved with every CSV reimport would mean a
+# project opened six months later no longer matches the structure it was
+# built against.
+risk_free_rate = 0.0665
+
+# ─── Through-the-cycle percentile metrics ─────────────────────────────────
+# Percentile of the cross-fund monthly average of liquid-fund rolling 3Y CAGR,
+# used as risk_free_rate. At 33 there is roughly a two-in-three chance the
+# realised rate is higher, so plans come in ahead of projection rather than
+# behind.
+risk_free_rate_percentile = 33
+
+# Percentile applied to each fund's 3Y/5Y/7Y/10Y rolling CAGR series; the
+# fund's expected return is the lowest of the four.
+fund_return_percentile = 33
+
+# Minimum liquid funds that must have data in a calendar month before that
+# month contributes to the risk-free average. Early months are covered by a
+# handful of long-lived schemes whose average describes those schemes rather
+# than the category.
+risk_free_min_funds = 10
