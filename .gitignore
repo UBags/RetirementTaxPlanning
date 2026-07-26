@@ -30,3 +30,6 @@ allocate_funds_v0.9.py
 test/portfolio_allocator.py
 .idea/
 .venv/
+
+# project_to_md.py — generated bundle output
+Code packaged into MDs for LLMs/
