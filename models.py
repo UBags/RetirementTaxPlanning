@@ -4,7 +4,8 @@
 """
 Data models for SWP Financial Planner
 """
-from dataclasses import dataclass, field
+import dataclasses
+from dataclasses import dataclass, field, fields
 from datetime import date
 from typing import Dict, List, Optional
 
@@ -313,6 +314,56 @@ class OtherIncome:
     other_taxable: float = 0.0
     other_non_taxable: float = 0.0
 
+    # HANDOVER 2.3 -- growth rates, % per annum, applied from FY2 onward.
+    # Per stream rather than one overall rate because they genuinely differ:
+    # rent tracks one index, a pension may be flat for life, and salary stops
+    # entirely at retirement.  Defaulting every one to 0.0 means an existing
+    # project loads and projects exactly as it did.
+    salary_growth: float = 0.0
+    taxable_interest_growth: float = 0.0
+    tax_free_interest_growth: float = 0.0
+    pension_growth: float = 0.0
+    rental_growth: float = 0.0
+    other_taxable_growth: float = 0.0
+    other_non_taxable_growth: float = 0.0
+
+    #: (amount field, growth field) for each taxable stream.
+    _TAXABLE = (("salary", "salary_growth"),
+                ("taxable_interest", "taxable_interest_growth"),
+                ("pension", "pension_growth"),
+                ("rental", "rental_growth"),
+                ("other_taxable", "other_taxable_growth"))
+    #: (amount field, growth field) for each non-taxable stream.
+    _NON_TAXABLE = (("tax_free_interest", "tax_free_interest_growth"),
+                    ("other_non_taxable", "other_non_taxable_growth"))
+
+    def _grown(self, amount_field: str, growth_field: str, fy: int) -> float:
+        base = float(getattr(self, amount_field, 0.0) or 0.0)
+        rate = float(getattr(self, growth_field, 0.0) or 0.0)
+        if base == 0.0 or rate == 0.0:
+            return base
+        return base * ((1.0 + rate / 100.0) ** (max(1, fy) - 1))
+
+    def taxable(self, fy: int = 1) -> float:
+        """Taxable other income for financial year *fy*, grown per stream.
+
+        FY1 is the base year, so `taxable(1)` returns the figures as entered.
+
+        THE single definition.  The engine flattened these five fields inline
+        in four places and the HUF pair in a fifth; with growth rates that
+        becomes five copies of a compounding expression, each free to drift.
+        This is the same shape as the seven copies of the expected-return
+        metric collapsed in spec 2.5, and the same reasoning applies.
+        """
+        return sum(self._grown(a, g, fy) for a, g in self._TAXABLE)
+
+    def non_taxable(self, fy: int = 1) -> float:
+        """Non-taxable other income for financial year *fy*, grown per stream."""
+        return sum(self._grown(a, g, fy) for a, g in self._NON_TAXABLE)
+
+    def total(self, fy: int = 1) -> float:
+        return self.taxable(fy) + self.non_taxable(fy)
+
 @dataclass
 class WindfallEntry:
     year: int
@@ -472,8 +523,7 @@ class AppState:
     glide_path: Optional["GlidePath"] = field(default=None, compare=False)
 
     def to_dict(self):
-        import dataclasses
-        # Fields that should NOT be persisted to JSON
+                # Fields that should NOT be persisted to JSON
         _skip = {"glide_path"}
         def convert(obj):
             if isinstance(obj, date):
@@ -516,7 +566,15 @@ class AppState:
                 out.append(FundEntry(**f))
             return out
         def make_income(d2):
-            return OtherIncome(**d2) if d2 else OtherIncome()
+            # Filtered rather than **d2: a project file written by a newer
+            # build, or hand-edited, would otherwise raise TypeError on an
+            # unknown key and take the whole load down.  Missing keys fall to
+            # the dataclass defaults, which is how a pre-2.3 file gets
+            # growth = 0.0 on every stream and projects exactly as it did.
+            if not d2:
+                return OtherIncome()
+            valid = {f.name for f in fields(OtherIncome)}
+            return OtherIncome(**{k: v for k, v in d2.items() if k in valid})
         def make_windfalls(lst):
             return [WindfallEntry(**w) for w in lst]
         def make_huf_wd(lst):

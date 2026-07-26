@@ -7,7 +7,7 @@ import copy
 from typing import List
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtGui import QColor, QDoubleValidator, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -16,10 +16,12 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -377,32 +379,87 @@ class SplitDialog(QDialog):
 # ─────────────────────────────────────────────────────────────
 # Other income sources
 # ─────────────────────────────────────────────────────────────
-def _income_form(income: OtherIncome) -> tuple:
-    """Returns (widget, getter_callable)."""
-    w = QWidget()
-    form = QFormLayout(w)
+INCOME_STREAMS = [
+    ("salary", "Salary (L/yr)"),
+    ("taxable_interest", "Taxable Interest (L/yr)"),
+    ("tax_free_interest", "Tax-Free Interest (L/yr)"),
+    ("pension", "Pension (L/yr)"),
+    ("rental", "Rental Income (L/yr)"),
+    ("other_taxable", "Other Taxable (L/yr)"),
+    ("other_non_taxable", "Other Non-Taxable (L/yr)"),
+]
 
-    fields = {}
-    labels = [
-        ("salary", "Salary (L/yr)"),
-        ("taxable_interest", "Taxable Interest (L/yr)"),
-        ("tax_free_interest", "Tax-Free Interest (L/yr)"),
-        ("pension", "Pension (L/yr)"),
-        ("rental", "Rental Income (L/yr)"),
-        ("other_taxable", "Other Taxable (L/yr)"),
-        ("other_non_taxable", "Other Non-Taxable (L/yr)"),
-    ]
-    for key, label in labels:
+
+def parse_growth(text: str) -> float:
+    """Parse a growth-rate cell.  Empty reads as 0.0; anything else must be a
+    number in [-100, 100].
+
+    Raises ValueError on bad input rather than silently zeroing.  A typo that
+    quietly became 0% would flatten a stream for thirty years and show no sign
+    of having done so.
+    """
+    s = (text or "").strip().rstrip("%").strip()
+    if not s:
+        return 0.0
+    value = float(s)          # ValueError propagates
+    if not -100.0 <= value <= 100.0:
+        raise ValueError(f"growth rate {value} is outside -100..100")
+    return value
+
+
+def _income_form(income: OtherIncome) -> tuple:
+    """Returns (widget, getter_callable).
+
+    HANDOVER 2.3: three columns -- label | amount | growth % p.a.  Growth is a
+    free-text QLineEdit with a validator rather than a spin box, so an empty
+    cell stays visibly empty instead of displaying a misleading 0.00.
+    """
+    w = QWidget()
+    grid = QGridLayout(w)
+
+    hdr_amt = QLabel("<b>Amount</b>")
+    hdr_gr = QLabel("<b>Growing @ % p.a.</b>")
+    hdr_gr.setToolTip(
+        "Compounded from FY2 onward; FY1 is the base year.\n"
+        "Blank or 0 keeps the stream flat for all 30 years.\n"
+        "Negative rates are allowed \u2014 a pension that is not "
+        "index-linked loses real value.")
+    grid.addWidget(hdr_amt, 0, 1)
+    grid.addWidget(hdr_gr, 0, 2)
+
+    fields, growths = {}, {}
+    for row, (key, label) in enumerate(INCOME_STREAMS, start=1):
         spin = QDoubleSpinBox()
         spin.setRange(0, 99999)
         spin.setDecimals(2)
         spin.setSuffix(" L")
         spin.setValue(getattr(income, key, 0.0))
-        form.addRow(label + ":", spin)
+
+        edit = QLineEdit()
+        edit.setValidator(QDoubleValidator(-100.0, 100.0, 2, edit))
+        edit.setMaximumWidth(90)
+        edit.setPlaceholderText("0.00")
+        rate = getattr(income, key + "_growth", 0.0) or 0.0
+        if rate:
+            edit.setText(f"{rate:g}")
+
+        grid.addWidget(QLabel(label + ":"), row, 0)
+        grid.addWidget(spin, row, 1)
+        grid.addWidget(edit, row, 2)
         fields[key] = spin
+        growths[key] = edit
+
+    grid.setColumnStretch(0, 1)
 
     def getter():
-        return OtherIncome(**{k: v.value() for k, v in fields.items()})
+        kw = {k: v.value() for k, v in fields.items()}
+        for k, e in growths.items():
+            try:
+                kw[k + "_growth"] = parse_growth(e.text())
+            except ValueError as exc:
+                label = dict(INCOME_STREAMS)[k]
+                raise ValueError(f"{label}: {exc}") from exc
+        return OtherIncome(**kw)
 
     return w, getter
 

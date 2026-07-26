@@ -1177,9 +1177,7 @@ class Engine:
             # ── FY boundary: compute prior FY's tax ───────────────────────────
             if fy != prev_fy and 1 <= prev_fy <= 30:
                 a = acc_get(p_acc, prev_fy)
-                pi = state.personal_income
-                taxable_other = (pi.salary + pi.taxable_interest +
-                                 pi.pension + pi.rental + pi.other_taxable)
+                taxable_other = state.personal_income.taxable(prev_fy)
                 total_slab_income = taxable_other + a["gain_d"]
                 dc = state.get_debt_tax_chunk(prev_fy, "individual")
                 ind_debt_tax = compute_slab_tax(total_slab_income, dc, "individual") if dc else 0.0
@@ -1299,10 +1297,8 @@ class Engine:
                         # that minimises additional tax.
                         def _estimate_rebal_tax(gd, ge, go):
                             """Estimate total tax for given gain breakdown."""
-                            pi = state.personal_income
-                            taxable_other = (pi.salary + pi.taxable_interest +
-                                             pi.pension + pi.rental + pi.other_taxable)
                             prev_fy_tax = fy - 1  # rebalancing happens at FY boundary
+                            taxable_other = state.personal_income.taxable(prev_fy_tax)
                             dc = state.get_debt_tax_chunk(prev_fy_tax, "individual")
                             dtax = compute_slab_tax(taxable_other + gd, dc, "individual") if dc else 0.0
                             ec = state.get_equity_tax_chunk(prev_fy_tax, "individual")
@@ -2424,10 +2420,10 @@ class Engine:
 
             pi = state.personal_income
             hi = state.huf_income
-            taxable_other     = pi.salary + pi.taxable_interest + pi.pension + pi.rental + pi.other_taxable
-            non_taxable_other = pi.tax_free_interest + pi.other_non_taxable
-            huf_taxable_other = hi.salary + hi.taxable_interest + hi.pension + hi.rental + hi.other_taxable
-            huf_nontax_other  = hi.tax_free_interest + hi.other_non_taxable
+            taxable_other     = pi.taxable(fy)
+            non_taxable_other = pi.non_taxable(fy)
+            huf_taxable_other = hi.taxable(fy)
+            huf_nontax_other  = hi.non_taxable(fy)
 
             this_fy_pend  = pending_by_fy.get(fy, {})
             this_fy_tax   = this_fy_pend.get("ind_tax",   0.0)
@@ -2620,16 +2616,19 @@ def optimize_withdrawal_split(
                                    + ys.corpus_equity_huf
                                    + ys.corpus_other_huf)
 
-        # ── Personal other taxable income (constant) ──────────────────────
+        # ── Personal other taxable income ─────────────────────────────────
+        # Was hoisted out of the per-FY loop below and computed once, which was
+        # correct only while these streams were flat for all 30 years.  With
+        # HANDOVER 2.3 growth rates it varies by FY, so it is resolved inside
+        # the loop instead.
         pi = state.personal_income
-        taxable_other = (pi.salary + pi.taxable_interest
-                         + pi.pension + pi.rental + pi.other_taxable)
 
         # ── Compute optimal δ for each FY ─────────────────────────────────
         opt_personal: Dict[int, float] = {}
         opt_huf: Dict[int, float] = {}
 
         for fy in range(1, 31):
+            taxable_other = pi.taxable(fy)
             req = 0.0
             for y in sorted(original_personal_reqs.keys()):
                 if y <= fy:
