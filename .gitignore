@@ -18,6 +18,11 @@
 !ReadMe.md
 !docs/*.md
 
+# archive/ holds superseded code kept ON PURPOSE, each file carrying
+# its own provenance. Distinct from older_versions/ below, which is
+# deliberately untracked. The .py files come in via !*.py above.
+!archive/*.md
+
 # Golden baseline
 !tests/golden/snapshots/*.csv
 
