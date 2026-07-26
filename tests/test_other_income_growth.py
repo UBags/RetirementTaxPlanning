@@ -154,7 +154,10 @@ def test_the_optimiser_resolves_income_inside_the_fy_loop(project_root):
     src = (project_root / "engine.py").read_text(encoding="utf-8")
     assert "# ── Personal other taxable income (constant) ──" not in src, (
         "the optimiser still describes other income as constant")
-    idx = src.find("taxable_other = pi.taxable(fy)")
+    # Match the call, not its argument list: A2 added a months argument and
+    # split it across lines. What matters is that the resolution happens per
+    # FY, not how many arguments it takes.
+    idx = src.find("taxable_other = pi.taxable(")
     assert idx != -1, "the optimiser does not resolve income per FY"
     # Match the loop by what it is, not by one spelling of it. This used to
     # look for the literal `for fy in range(1, 31):` and broke when Phase A1

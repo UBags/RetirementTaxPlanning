@@ -54,6 +54,7 @@ from models import (
     TaxChunk,
     _first_available,
 )
+from pro_rated_utils import months_in_fy, plan_months, prorate_annual
 
 CESS = config.cess_rate
 
@@ -889,6 +890,15 @@ class Engine:
         total = inv.year * 12 + (inv.month - 1) + m
         return total // 12, total % 12 + 1
 
+    def months_in_fy(self, fy: int) -> int:
+        """Months of financial year *fy* this plan actually spans.
+
+        THE definition every annual-to-monthly conversion in this class must
+        use. FY1 is short unless the plan starts in April; every later FY is
+        twelve. Delegates to pro_rated_utils so the arithmetic has one home.
+        """
+        return months_in_fy(self.state.investment_date, fy)
+
     def _fy_year_for_month(self, m: int) -> int:
         cy, cm = self._calendar_date_for_month(m)
         cal_fy = cy if cm >= 4 else cy - 1
@@ -1166,7 +1176,10 @@ class Engine:
         # drains retiring funds pro-rata, and the rebalancer only handles
         # weight shifts.  The two mechanisms work independently.
 
-        total_months = (horizon + 2) * 12
+        # Run to 31 March of the final FY, plus one further FY so the final
+        # year's tax -- paid the following April -- is still computed inside
+        # the loop. The old 32*12 ran up to 23 months past the break.
+        total_months = plan_months(state.investment_date, horizon) + 12
         prev_fy      = -1
         _topup_needed = 0.0   # personal shortfall to top up from HUF each month
 
@@ -1180,7 +1193,8 @@ class Engine:
             # ── FY boundary: compute prior FY's tax ───────────────────────────
             if fy != prev_fy and 1 <= prev_fy <= horizon:
                 a = acc_get(p_acc, prev_fy)
-                taxable_other = state.personal_income.taxable(prev_fy)
+                taxable_other = state.personal_income.taxable(
+                    prev_fy, self.months_in_fy(prev_fy))
                 total_slab_income = taxable_other + a["gain_d"]
                 dc = state.get_debt_tax_chunk(prev_fy, "individual")
                 ind_debt_tax = compute_slab_tax(total_slab_income, dc, "individual") if dc else 0.0
@@ -1190,9 +1204,13 @@ class Engine:
                 ind_other_tax = compute_ltcg_other_individual(a["gain_o"], oc)
                 ind_total = ind_debt_tax + ind_eq_tax + ind_other_tax
 
-                # FD benchmark: static corpus × per-year FD rate
+                # FD benchmark: static corpus × per-year FD rate, pro-rated
+                # to the months the FY actually spans. A one-month FY1 earns
+                # one month of interest, not twelve.
                 fd_rate_fy = state.get_fd_rate(prev_fy)
-                fd_interest = fd_corpus_fixed * fd_rate_fy
+                fd_interest = prorate_annual(
+                    fd_corpus_fixed * fd_rate_fy,
+                    state.investment_date, prev_fy)
                 fd_total_income = fd_interest + taxable_other
                 fd_tax = compute_slab_tax(fd_total_income, dc, "individual") if dc else 0.0
 
@@ -1301,7 +1319,8 @@ class Engine:
                         def _estimate_rebal_tax(gd, ge, go):
                             """Estimate total tax for given gain breakdown."""
                             prev_fy_tax = fy - 1  # rebalancing happens at FY boundary
-                            taxable_other = state.personal_income.taxable(prev_fy_tax)
+                            taxable_other = state.personal_income.taxable(
+                                prev_fy_tax, self.months_in_fy(prev_fy_tax))
                             dc = state.get_debt_tax_chunk(prev_fy_tax, "individual")
                             dtax = compute_slab_tax(taxable_other + gd, dc, "individual") if dc else 0.0
                             ec = state.get_equity_tax_chunk(prev_fy_tax, "individual")
@@ -2423,10 +2442,11 @@ class Engine:
 
             pi = state.personal_income
             hi = state.huf_income
-            taxable_other     = pi.taxable(fy)
-            non_taxable_other = pi.non_taxable(fy)
-            huf_taxable_other = hi.taxable(fy)
-            huf_nontax_other  = hi.non_taxable(fy)
+            _m_fy             = self.months_in_fy(fy)
+            taxable_other     = pi.taxable(fy, _m_fy)
+            non_taxable_other = pi.non_taxable(fy, _m_fy)
+            huf_taxable_other = hi.taxable(fy, _m_fy)
+            huf_nontax_other  = hi.non_taxable(fy, _m_fy)
 
             this_fy_pend  = pending_by_fy.get(fy, {})
             this_fy_tax   = this_fy_pend.get("ind_tax",   0.0)
@@ -2632,7 +2652,8 @@ def optimize_withdrawal_split(
         opt_huf: Dict[int, float] = {}
 
         for fy in state.fy_range():
-            taxable_other = pi.taxable(fy)
+            taxable_other = pi.taxable(
+                fy, months_in_fy(state.investment_date, fy))
             req = 0.0
             for y in sorted(original_personal_reqs.keys()):
                 if y <= fy:

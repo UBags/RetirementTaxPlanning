@@ -351,10 +351,15 @@ class OtherIncome:
             return base
         return base * ((1.0 + rate / 100.0) ** (max(1, fy) - 1))
 
-    def taxable(self, fy: int = 1) -> float:
+    def taxable(self, fy: int = 1, months: int = 12) -> float:
         """Taxable other income for financial year *fy*, grown per stream.
 
         FY1 is the base year, so `taxable(1)` returns the figures as entered.
+
+        *months* is how many months of *fy* the plan actually spans -- see
+        pro_rated_utils.months_in_fy(). It scales the RESULT only; the growth
+        exponent is untouched, so a short FY1 does not shrink FY2 onward.
+        Defaulting to 12 keeps every caller that does not care unchanged.
 
         THE single definition.  The engine flattened these five fields inline
         in four places and the HUF pair in a fifth; with growth rates that
@@ -362,14 +367,19 @@ class OtherIncome:
         This is the same shape as the seven copies of the expected-return
         metric collapsed in spec 2.5, and the same reasoning applies.
         """
-        return sum(self._grown(a, g, fy) for a, g in self._TAXABLE)
+        annual = sum(self._grown(a, g, fy) for a, g in self._TAXABLE)
+        return annual * (max(0, int(months)) / 12.0)
 
-    def non_taxable(self, fy: int = 1) -> float:
-        """Non-taxable other income for financial year *fy*, grown per stream."""
-        return sum(self._grown(a, g, fy) for a, g in self._NON_TAXABLE)
+    def non_taxable(self, fy: int = 1, months: int = 12) -> float:
+        """Non-taxable other income for financial year *fy*, grown per stream.
 
-    def total(self, fy: int = 1) -> float:
-        return self.taxable(fy) + self.non_taxable(fy)
+        *months* pro-rates the result exactly as in taxable().
+        """
+        annual = sum(self._grown(a, g, fy) for a, g in self._NON_TAXABLE)
+        return annual * (max(0, int(months)) / 12.0)
+
+    def total(self, fy: int = 1, months: int = 12) -> float:
+        return self.taxable(fy, months) + self.non_taxable(fy, months)
 
 @dataclass
 class WindfallEntry:
@@ -456,7 +466,12 @@ class AppState:
     # ──────────────────────────────────────────────────────────────────────────
 
     # Investment start  [SHARED across scenarios]
-    investment_date: date = field(default_factory=lambda: date(date.today().year, 3, 1))
+    #: Defaults to today. The financial year containing today is therefore the
+    #: investment FY by construction, which is what "the start month is
+    #: constrained to the current FY" requires. Was date(today.year, 3, 1) --
+    #: March hardcoded, so a plan created in July silently began four months
+    #: in the past, in the PREVIOUS financial year.
+    investment_date: date = field(default_factory=date.today)
 
     #: Last financial year of the plan.  [SHARED across scenarios]
     #: The plan ends 31 March of (investment FY + horizon_years).  Stored
@@ -671,7 +686,8 @@ class AppState:
         }
         d = {k: v for k, v in d.items() if k in known_keys}
 
-        inv_date = date_cls.fromisoformat(d.get("investment_date", date_cls(date_cls.today().year,3,1).isoformat()))
+        inv_date = date_cls.fromisoformat(
+            d.get("investment_date", date_cls.today().isoformat()))
         result = cls(
             investment_date=inv_date,
             horizon_years=int(d.get("horizon_years") or DEFAULT_HORIZON_YEARS),
