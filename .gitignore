@@ -104,3 +104,6 @@ Thumbs.db
 
 # Superseded optimiser copy — kept on disk, never tracked
 test/portfolio_allocator.py
+
+__pycache__/
+*.py[cod]

@@ -1,9 +1,14 @@
 """
 Fixtures for the golden-master suite.
 
-The saved projects in Uddipan/ are the fixture corpus. Uddipan_project.swp.json
-carries four scenarios covering 1, 2, 3 and 4 allocation chunks respectively,
-so glide-path interpolation is exercised at every arity.
+The fixture corpus lives in tests/golden/fixtures/ — frozen copies of the saved
+projects. Uddipan_project.swp.json carries four scenarios covering 1, 2, 3 and 4
+allocation chunks respectively, so glide-path interpolation is exercised at
+every arity.
+
+These are copies on purpose. The originals under Uddipan/ are the owner's live
+working files; the GUI rewrites them on save, and pointing the suite at them
+made every plan edit look like an engine regression.
 
 Snapshots live in tests/golden/snapshots/ and compare with a tight tolerance:
 Engine.run() is deterministic, so movement is a real behaviour change.
@@ -24,12 +29,17 @@ import pytest
 
 SNAPSHOT_DIR = Path(__file__).parent / "snapshots"
 
+# Frozen copies of the saved projects. Deliberately NOT Uddipan/ — that is the
+# owner's live working file and the GUI rewrites it on every save, which would
+# make this suite red on plan edits rather than on code changes.
+FIXTURE_DIR = Path(__file__).parent / "fixtures"
+
 SCENARIOS = [
-    ("Uddipan/Uddipan_project.swp.json", 0, "s0_1chunk"),
-    ("Uddipan/Uddipan_project.swp.json", 1, "s1_2chunk"),
-    ("Uddipan/Uddipan_project.swp.json", 2, "s2_3chunk"),
-    ("Uddipan/Uddipan_project.swp.json", 3, "s3_4chunk"),
-    ("Uddipan/Uddipan_project_8yr_hist.swp.json", 2, "hist_8yr"),
+    ("Uddipan_project.swp.json", 0, "s0_1chunk"),
+    ("Uddipan_project.swp.json", 1, "s1_2chunk"),
+    ("Uddipan_project.swp.json", 2, "s2_3chunk"),
+    ("Uddipan_project.swp.json", 3, "s3_4chunk"),
+    ("Uddipan_project_8yr_hist.swp.json", 2, "hist_8yr"),
 ]
 
 # Config keys that change engine output. Recorded in every snapshot header so a
@@ -69,11 +79,21 @@ def config_fingerprint() -> str:
 
 
 def load_scenario(project_root: Path, rel_path: str, index: int):
+    """Load one scenario from the frozen fixture corpus.
+
+    *project_root* is accepted for signature stability but deliberately unused:
+    fixtures resolve against FIXTURE_DIR so that editing a plan in the GUI can
+    never move a golden snapshot.
+    """
     from models import AppState
 
-    path = project_root / rel_path
+    path = FIXTURE_DIR / rel_path
     if not path.exists():
-        pytest.skip(f"fixture not present: {rel_path}")
+        pytest.skip(
+            f"golden fixture missing: {path.relative_to(Path(__file__).parent.parent.parent)}\n"
+            "Freeze one with:\n"
+            "    git show <snapshot-commit>:Uddipan/<file> > tests/golden/fixtures/<file>"
+        )
 
     data = json.loads(path.read_text(encoding="utf-8"))
     scenarios = data.get("scenarios")
