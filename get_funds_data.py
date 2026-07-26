@@ -1484,9 +1484,18 @@ def _rolling_stats(nav: pd.Series, ret: pd.Series, window_months: int) -> dict:
     nav_aligned = nav_clean
 
     # First pass: collect raw values
+    # One record per window, NaNs kept in place, so the four series stay
+    # positionally aligned.  They used to be appended conditionally, which
+    # desynced them whenever a window had a finite std but a non-finite CAGR
+    # -- see patch_percentile_wiring.py for the full description.
     raw_cagrs = []
     raw_stds  = []
     raw_dds   = []
+    raw_dates = []
+
+    # Window end dates, for aligning this fund's series against other funds'
+    # by calendar month.  ret.index is a monthly DatetimeIndex.
+    _idx = list(ret.index)
 
     for start in range(0, n - window_months + 1):
         end   = start + window_months      # exclusive
@@ -1512,9 +1521,11 @@ def _rolling_stats(nav: pd.Series, ret: pd.Series, window_months: int) -> dict:
         else:
             dd = np.nan
 
-        if np.isfinite(cagr): raw_cagrs.append(cagr)
-        if np.isfinite(sd):   raw_stds.append(sd)
-        if np.isfinite(dd):   raw_dds.append(dd)
+        # Unconditional: position i is the same window in all four lists.
+        raw_cagrs.append(cagr)
+        raw_stds.append(sd)
+        raw_dds.append(dd)
+        raw_dates.append(_idx[end - 1] if end - 1 < len(_idx) else None)
 
     # Second pass: remove outlier windows caused by NAV split artefacts.
     # A single bad NAV data point inflates the std of every window
@@ -1525,18 +1536,24 @@ def _rolling_stats(nav: pd.Series, ret: pd.Series, window_months: int) -> dict:
     # inflated in windows where multiple nearby months show elevated
     # volatility as the fund re-rated around the consolidation date.
     STD_OUTLIER_FACTOR = 5.0
-    if len(raw_stds) >= 4:
-        med_std = float(np.median(raw_stds))
+    finite_stds = [s for s in raw_stds if np.isfinite(s)]
+    if len(finite_stds) >= 4:
+        med_std = float(np.median(finite_stds))
         std_ceil = STD_OUTLIER_FACTOR * med_std if med_std > 1e-9 else 0.50
-        clean_idx = [i for i, s in enumerate(raw_stds) if s <= std_ceil]
-        cagrs   = [raw_cagrs[i] for i in clean_idx if i < len(raw_cagrs)]
-        std_devs = [raw_stds[i]  for i in clean_idx]
-        # Keep all DDs (drawdown less affected by the single bad point)
-        max_dds  = raw_dds
+        # Indices now index the SAME window in every list, so a window
+        # rejected on its std really is the window whose CAGR is dropped.
+        clean_idx = [i for i, s in enumerate(raw_stds)
+                     if np.isfinite(s) and s <= std_ceil]
     else:
-        cagrs    = raw_cagrs
-        std_devs = raw_stds
-        max_dds  = raw_dds
+        clean_idx = list(range(len(raw_stds)))
+
+    cagr_pairs = [(raw_dates[i], raw_cagrs[i]) for i in clean_idx
+                  if np.isfinite(raw_cagrs[i])]
+    cagrs      = [c for _d, c in cagr_pairs]
+    cagr_dates = [d for d, _c in cagr_pairs]
+    std_devs   = [raw_stds[i] for i in clean_idx if np.isfinite(raw_stds[i])]
+    # Keep all DDs (drawdown less affected by the single bad point)
+    max_dds    = [d for d in raw_dds if np.isfinite(d)]
 
     if not cagrs:
         return {}
@@ -1545,9 +1562,23 @@ def _rolling_stats(nav: pd.Series, ret: pd.Series, window_months: int) -> dict:
     cagrs_pct  = [round(v * 100, 4) for v in cagrs]
     stds_pct   = [round(v * 100, 4) for v in std_devs]
     dds_pct    = [round(v * 100, 4) for v in max_dds]
+    # Percentile of the rolling series: between the mean (too kind, it
+    # averages the good windows in) and the minimum (one window, and one bad
+    # month in the NAV history can own it).
+    try:
+        from configuration import config
+        _pct = float(config.fund_return_percentile)
+    except Exception:
+        _pct = 33.0
+
     return {
         "avg_cagr":     float(np.mean(cagrs)),
         "min_cagr":     float(np.min(cagrs)),
+        "pctile_cagr":  float(np.percentile(cagrs, _pct)),
+        "pctile_used":  _pct,
+        # Window end dates, aligned 1:1 with _cagrs below.
+        "_cagr_dates":  [str(d.date()) if hasattr(d, "date") else str(d)
+                         for d in cagr_dates],
         "avg_std_dev":  float(np.mean(std_devs)) if std_devs else np.nan,
         "max_std_dev":  float(np.max(std_devs)) if std_devs else np.nan,
         "worst_max_dd": float(np.min(max_dds))  if max_dds  else np.nan,
@@ -1812,6 +1843,11 @@ def compute_metrics(eom: pd.DataFrame, fund_type: str) -> dict:
         r = rolling[label]
         out[f"Avg_CAGR_{label}"]     = _r(r.get("avg_cagr"))
         out[f"Min_CAGR_{label}"]     = _r(r.get("min_cagr"))
+        out[f"Pctile_CAGR_{label}"]  = _r(r.get("pctile_cagr"))
+        # Self-describing: the percentile is configurable, so record which one
+        # produced these columns rather than encoding it in the column name.
+        if r.get("pctile_used") is not None:
+            out["Return_Pctile"] = r.get("pctile_used")
         out[f"Avg_Std_Dev_{label}"]  = _r(r.get("avg_std_dev"))
         out[f"Max_Std_Dev_{label}"]  = _r(r.get("max_std_dev"))
         out[f"Worst_Max_DD_{label}"] = _r(r.get("worst_max_dd"))
@@ -1821,6 +1857,7 @@ def compute_metrics(eom: pd.DataFrame, fund_type: str) -> dict:
     out["_rolling_series"] = {
         label: {
             "cagrs": rolling[label].get("_cagrs", []),
+            "cagr_dates": rolling[label].get("_cagr_dates", []),
             "stds":  rolling[label].get("_stds",  []),
             "dds":   rolling[label].get("_dds",   []),
         }
