@@ -4,14 +4,16 @@
 Additional dialogs for SWP Planner.
 """
 import copy
+from datetime import date
 from typing import List
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QDate, Qt
 from PySide6.QtGui import QColor, QDoubleValidator, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
+    QDateEdit,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
@@ -670,6 +672,146 @@ class HUFWithdrawalDialog(QDialog):
 
     def _save(self):
         self.state.huf_withdrawal_chunks = [copy.deepcopy(c) for c in self.chunks]
+        self.accept()
+
+
+# ─────────────────────────────────────────────────────────────
+# Plan Period — when the plan starts and how long it runs
+# ─────────────────────────────────────────────────────────────
+class PlanPeriodDialog(QDialog):
+    """Choose the investment start month and the length of the plan.
+
+    Two decisions that were previously unreachable. The start month was
+    settable only through the toolbar date picker, and the horizon was not
+    settable at all -- AppState.horizon_years existed, round-tripped and was
+    honoured everywhere, but nothing could change it from 30.
+
+    DELIBERATELY NOT CONSTRAINED TO THE CURRENT FINANCIAL YEAR. A plan
+    already running legitimately started in a previous FY -- the live project
+    starts 1 March 2026, which is FY2025-26 -- and clamping the control to
+    the current FY would silently move it and shift every projection. The
+    dialog names the FY the chosen month lands in, and says when that is not
+    the current one, but it does not overrule the user.
+    """
+
+    def __init__(self, state: AppState, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Plan Period")
+        self.resize(560, 340)
+        self.state = state
+
+        from configuration import config
+        self._floor = int(config.min_simulation_years)
+        self._ceiling = int(config.max_simulation_years)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(
+            "The plan starts on the first of the chosen month and ends on "
+            "31 March\nof the final financial year."))
+
+        form = QGridLayout()
+        form.addWidget(QLabel("Start:"), 0, 0)
+        self.date_edit = QDateEdit()
+        self.date_edit.setDisplayFormat("MMMM yyyy")
+        self.date_edit.setCalendarPopup(True)
+        inv = state.investment_date
+        self.date_edit.setDate(QDate(inv.year, inv.month, 1))
+        self.date_edit.dateChanged.connect(self._refresh)
+        form.addWidget(self.date_edit, 0, 1)
+        self.lbl_fy = QLabel("")
+        form.addWidget(self.lbl_fy, 0, 2)
+
+        form.addWidget(QLabel("Length:"), 1, 0)
+        self.spin = QSpinBox()
+        self.spin.setRange(self._floor, self._ceiling)
+        self.spin.setValue(state.horizon)
+        self.spin.setSuffix(" financial years")
+        self.spin.valueChanged.connect(self._refresh)
+        form.addWidget(self.spin, 1, 1)
+        self.lbl_end = QLabel("")
+        form.addWidget(self.lbl_end, 1, 2)
+        layout.addLayout(form)
+
+        self.lbl_first = QLabel("")
+        self.lbl_first.setWordWrap(True)
+        layout.addWidget(self.lbl_first)
+
+        self.lbl_cover = QLabel("")
+        self.lbl_cover.setWordWrap(True)
+        layout.addWidget(self.lbl_cover)
+
+        self.chk_extend = QCheckBox(
+            "Extend the final chunk of each short list to cover the new period")
+        self.chk_extend.setChecked(True)
+        layout.addWidget(self.chk_extend)
+
+        layout.addStretch()
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok
+                                | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(self._save)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+
+        self._refresh()
+
+    # ── live feedback ────────────────────────────────────────────────────
+    def _chosen_start(self) -> date:
+        qd = self.date_edit.date()
+        return date(qd.year(), qd.month(), 1)
+
+    def _preview_state(self) -> AppState:
+        """A copy carrying the pending choices, for coverage checks."""
+        import copy as _copy
+        s = _copy.copy(self.state)
+        s.investment_date = self._chosen_start()
+        s.horizon_years = int(self.spin.value())
+        return s
+
+    def _refresh(self, *_):
+        from pro_rated_utils import financial_year_of, months_in_fy
+        start = self._chosen_start()
+        fy = financial_year_of(start)
+        today_fy = financial_year_of(date.today())
+        self.lbl_fy.setText(f"FY{fy}-{str(fy + 1)[2:]}")
+        if fy != today_fy:
+            when = "a previous" if fy < today_fy else "a future"
+            self.lbl_fy.setText(
+                f"FY{fy}-{str(fy + 1)[2:]}  ({when} financial year)")
+
+        years = int(self.spin.value())
+        self.lbl_end.setText(f"ends 31 March {fy + years}")
+
+        m = months_in_fy(start, 1)
+        if m == 12:
+            self.lbl_first.setText("FY1 is a full twelve months.")
+        else:
+            self.lbl_first.setText(
+                f"FY1 is {m} month{'s' if m != 1 else ''} long, so annual "
+                "figures — other income, the FD benchmark, withdrawals — are "
+                f"pro-rated to {m}/12 in that year only.")
+
+        short = self._preview_state().chunks_short_of_horizon()
+        if not short:
+            self.lbl_cover.setText("\u2713 Every chunk list covers the full period.")
+            self.lbl_cover.setStyleSheet("color: green;")
+            self.chk_extend.setEnabled(False)
+        else:
+            names = ", ".join(f"{label} (to FY{last})" for _a, label, last in short)
+            self.lbl_cover.setText(
+                f"\u26a0 These stop before the end of the plan: {names}. "
+                "Years past their final chunk take no tax band, no HUF "
+                "withdrawal and the legacy FD rate — the projection would be "
+                "wrong, not merely incomplete.")
+            self.lbl_cover.setStyleSheet("color: #b9770e;")
+            self.chk_extend.setEnabled(True)
+
+    def _save(self):
+        self.state.investment_date = self._chosen_start()
+        self.state.horizon_years = int(self.spin.value())
+        if self.chk_extend.isEnabled() and self.chk_extend.isChecked():
+            self.extended = self.state.extend_chunks_to_horizon()
+        else:
+            self.extended = []
         self.accept()
 
 

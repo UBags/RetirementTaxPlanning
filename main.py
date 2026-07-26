@@ -1305,6 +1305,8 @@ class MainWindow(QMainWindow):
         cm = mb.addMenu("Configuration")
         # ── Shared (applies to ALL scenarios) ──
         cm.addSection("── Shared (all scenarios) ──")
+        self._act(cm, "Plan Period (start & length)...", self._open_plan_period)
+        cm.addSeparator()
         self._act(cm, "Tax Rules (Individual & HUF)...", self._open_tax_rules)
         self._act(cm, "Annual Withdrawal Requirements...", self._open_requirements)
         self._act(cm, "FD Interest Rate Chunks...",        self._open_fd_rate_chunks)
@@ -1558,6 +1560,38 @@ class MainWindow(QMainWindow):
         from dialogs import RebalancingConstraintsDialog
         dlg = RebalancingConstraintsDialog(self.state, self)
         dlg.exec()
+    def _open_plan_period(self):
+        """Start month and plan length -- previously unreachable.
+
+        horizon_years existed, round-tripped and was honoured everywhere,
+        but nothing could change it from 30. Changing either invalidates the
+        computed results, so the toolbar date picker is resynced and the
+        status line refreshed; the user re-runs to see the effect.
+        """
+        from dialogs import PlanPeriodDialog
+        dlg = PlanPeriodDialog(self.state, self)
+        if not dlg.exec():
+            return
+        # Keep the toolbar picker in step; it holds the same field.
+        inv = self.state.investment_date
+        self.date_edit.blockSignals(True)
+        self.date_edit.setDate(QDate(inv.year, inv.month, inv.day))
+        self.date_edit.blockSignals(False)
+        self._propagate_shared_fields()
+        self._update_status()
+        extended = getattr(dlg, "extended", [])
+        if extended:
+            lines = "\n".join(f"  \u2022 {label}: FY{old} \u2192 FY{new}"
+                               for label, old, new in extended)
+            QMessageBox.information(
+                self, "Chunks extended",
+                "The final chunk of each of these was extended to cover the "
+                "new plan period:\n\n" + lines +
+                "\n\nReview them: the last tax band, return rate or "
+                "withdrawal level has been assumed to continue.")
+        self._log(f"Plan period: starts {inv.isoformat()}, "
+                  f"{self.state.horizon} financial years.")
+
     def _open_fd_rate_chunks(self):
         from dialogs import FDRateChunksDialog
         if FDRateChunksDialog(self.state, self).exec():
@@ -2239,6 +2273,7 @@ class MainWindow(QMainWindow):
         # simpler and gives immediate, reliable feedback.
         try:
             from monte_carlo import (
+                MonteCarloHorizonUnsupported,
                 _fetch_debt_index_annual_returns,
                 _fetch_nifty50_annual_returns,
                 run_monte_carlo,
@@ -2276,6 +2311,15 @@ class MainWindow(QMainWindow):
             _stage("Calculating percentiles & ruin statistics…", 5)
             _stage("Done.", 6)
 
+        except MonteCarloHorizonUnsupported as exc:
+            # Not a crash: the module refuses a horizon its 30-element arrays
+            # cannot represent, rather than returning thirty numbers for a
+            # plan of another length. Lifting this is Phase D.
+            prog.close()
+            QMessageBox.warning(self, "Monte Carlo unavailable", str(exc))
+            self.statusBar().showMessage(
+                "Monte Carlo unavailable at this plan length.")
+            return
         except Exception:
             prog.close()
             QMessageBox.critical(self, "Monte Carlo Error", traceback.format_exc())

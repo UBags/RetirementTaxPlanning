@@ -7,7 +7,7 @@ Data models for SWP Financial Planner
 import dataclasses
 from dataclasses import dataclass, field, fields
 from datetime import date
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 # Plan length in financial years for a state that does not say otherwise --
 # both the dataclass default and the value a pre-horizon save file loads as.
@@ -584,6 +584,75 @@ class AppState:
     def fy_range(self) -> range:
         """1..horizon inclusive.  Replaces range(1, 31)."""
         return range(1, self.horizon + 1)
+
+    #: Chunk lists that must span the whole plan, and what they decide.
+    #: Every one of these is looked up by financial year, and every lookup
+    #: returns None (or 0.0) for a year no chunk covers -- so a plan whose
+    #: horizon runs past its chunks is silently TAX-FREE from that point,
+    #: takes no HUF withdrawals, and falls back to the legacy FD scalar.
+    #: Latent while the horizon was fixed at 30 and chunks conventionally
+    #: covered 1-30; reachable the moment the horizon can be chosen.
+    _SPANNING_CHUNKS = (
+        ("individual_debt_chunks",   "Individual debt tax bands"),
+        ("individual_equity_chunks", "Individual equity tax bands"),
+        ("individual_other_chunks",  "Individual 'other' tax bands"),
+        ("huf_debt_chunks",          "HUF debt tax bands"),
+        ("huf_equity_chunks",        "HUF equity tax bands"),
+        ("huf_other_chunks",         "HUF 'other' tax bands"),
+        ("return_chunks",            "Portfolio return rates"),
+        ("fd_rate_chunks",           "FD benchmark rates"),
+        ("huf_withdrawal_chunks",    "HUF withdrawal schedule"),
+    )
+
+    def chunk_coverage(self) -> Dict[str, int]:
+        """Last financial year covered by each spanning chunk list.
+
+        A list that is empty reports 0.  Only lists that are non-empty AND
+        stop short matter: an empty one usually means the feature is unused
+        and its lookup already returns a sensible default.
+        """
+        out: Dict[str, int] = {}
+        for attr, _label in self._SPANNING_CHUNKS:
+            chunks = getattr(self, attr, None) or []
+            out[attr] = max((c.year_to for c in chunks), default=0)
+        return out
+
+    def chunks_short_of_horizon(self) -> List[Tuple[str, str, int]]:
+        """(attr, human label, last covered FY) for every list that stops early.
+
+        Empty lists are excluded -- there is nothing to extend, and their
+        absence is a separate decision the user has already made.
+        """
+        horizon = self.horizon
+        short = []
+        for attr, label in self._SPANNING_CHUNKS:
+            chunks = getattr(self, attr, None) or []
+            if not chunks:
+                continue
+            last = max(c.year_to for c in chunks)
+            if last < horizon:
+                short.append((attr, label, last))
+        return short
+
+    def extend_chunks_to_horizon(self) -> List[Tuple[str, int, int]]:
+        """Stretch the final chunk of each short list to the horizon.
+
+        Returns (human label, old end, new end) for each list changed, so a
+        caller can show exactly what it did rather than claiming success.
+
+        Extending the LAST chunk rather than inventing a new one is the
+        conservative reading: the final tax band, return rate or withdrawal
+        level continues. It is still an assumption, which is why this is
+        never automatic -- the Plan Period dialog asks.
+        """
+        horizon = self.horizon
+        changed: List[Tuple[str, int, int]] = []
+        for attr, label, last in self.chunks_short_of_horizon():
+            chunks = getattr(self, attr)
+            final = max(chunks, key=lambda c: c.year_to)
+            final.year_to = horizon
+            changed.append((label, last, horizon))
+        return changed
 
     def to_dict(self):
                 # Fields that should NOT be persisted to JSON
