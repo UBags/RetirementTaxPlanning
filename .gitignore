@@ -15,7 +15,11 @@
 !*.yml
 !*.yaml
 !*.config
-!ReadMe.md
+# Root-level markdown: ReadMe.md and HANDOVER.md are both documents the
+# repo cannot be understood without. A pattern rather than another
+# exact-name rule, because this allowlist has now silently swallowed
+# three files (mc_history.json, archive/README.md, HANDOVER.md).
+!/*.md
 !docs/*.md
 
 # archive/ holds superseded code kept ON PURPOSE, each file carrying
