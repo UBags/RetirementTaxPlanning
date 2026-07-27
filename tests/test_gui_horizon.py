@@ -102,3 +102,54 @@ def test_layout_constants_were_not_swept_up():
     src = pathlib.Path("main.py").read_text(encoding="utf-8")
     assert src.count("addSpacing(30)") == 2, (
         "the toolbar spacing constants were rewritten by a horizon pass")
+
+
+# ── A3-i missed two files; these pin them ────────────────────────────────────
+
+@pytest.mark.parametrize("horizon", HORIZONS)
+def test_tax_chunk_editors_span_the_plan(qtbot, horizon):
+    """With a 40-year plan the editor could not cover FY31-40 at all.
+
+    That is the chunk-coverage defect A3-ii guards against, reachable
+    straight from the GUI: a tax band list that stops short leaves those
+    years with no band, and the engine then applies no slab to them.
+    """
+    from tax_dialog import TaxRulesDialog
+    state = _state(horizon)
+    dlg = TaxRulesDialog(state)
+    qtbot.addWidget(dlg)
+    for ed in (dlg.ind_debt_ed, dlg.huf_debt_ed):
+        assert ed.horizon == horizon
+    for ed in (dlg.ind_eq_ed, dlg.huf_eq_ed):
+        assert ed.horizon == horizon
+
+
+def test_the_87a_column_is_marked_unavailable_for_an_huf(qtbot):
+    """s.87A is a resident-individual rebate.
+
+    compute_slab_tax() gates it on entity == "individual", so anything typed
+    into that column for an HUF changes nothing. A control that silently does
+    nothing is the pattern HANDOVER 9.2 objects to.
+    """
+    from tax_dialog import DebtTaxEditor
+    ind = DebtTaxEditor("individual"); qtbot.addWidget(ind)
+    huf = DebtTaxEditor("huf"); qtbot.addWidget(huf)
+    assert "87A Limit" in ind.chunk_table.horizontalHeaderItem(2).text()
+    assert "n/a" in huf.chunk_table.horizontalHeaderItem(2).text()
+
+
+def test_needs_assessment_year_spinboxes_span_the_plan(qtbot):
+    from needs_assessment import NeedsAssessmentDialog
+    state = _state(20)
+    dlg = NeedsAssessmentDialog(state)
+    qtbot.addWidget(dlg)
+    src = __import__("pathlib").Path("needs_assessment.py").read_text()
+    assert "ys.setRange(1, 30)" not in src and "ye.setRange(1, 30)" not in src
+
+
+def test_row_height_constants_were_not_swept_up():
+    """setRowHeight(..., 30) is PIXELS, like main.py's addSpacing(30)."""
+    import pathlib
+    src = pathlib.Path("needs_assessment.py").read_text()
+    assert src.count("setRowHeight(0, 30)") == 1
+    assert src.count("setRowHeight(r, 30)") == 1

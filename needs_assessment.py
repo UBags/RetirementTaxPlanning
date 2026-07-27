@@ -200,7 +200,7 @@ def _load_items_from_state(state) -> List[ExpenseItem]:
                 frequency=d.get("frequency", FREQ_MONTHLY),
                 inflation=float(d.get("inflation", DEFAULT_INFLATION)),
                 year_start=int(d.get("year_start", 1)),
-                year_end=int(d.get("year_end", 30)),
+                year_end=int(d.get("year_end", state.horizon)),
                 notes=d.get("notes", ""),
                 enabled=bool(d.get("enabled", False)),
             ))
@@ -417,6 +417,8 @@ class NeedsAssessmentDialog(QDialog):
         return outer, tbl
 
     def _populate_row(self, tbl: QTableWidget, row: int, item: ExpenseItem) -> None:
+        # The year spinboxes must span the plan, not a fixed 30.
+        horizon = self.state.horizon
         """Fill one table row with widgets for the given ExpenseItem."""
         # ── Col 0: enable checkbox ────────────────────────────────────────────
         chk = QCheckBox()
@@ -481,14 +483,14 @@ class NeedsAssessmentDialog(QDialog):
 
         # ── Col 6: year start ─────────────────────────────────────────────────
         ys = QSpinBox()
-        ys.setRange(1, 30)
+        ys.setRange(1, horizon)
         ys.setValue(item.year_start)
         ys.setToolTip("Plan year when this expense begins (1 = retirement start)")
         tbl.setCellWidget(row, _COL_YS, ys)
 
         # ── Col 7: year end ───────────────────────────────────────────────────
         ye = QSpinBox()
-        ye.setRange(1, 30)
+        ye.setRange(1, horizon)
         ye.setValue(item.year_end)
         ye.setToolTip("Plan year when this expense ends (30 = end of plan)")
         tbl.setCellWidget(row, _COL_YE, ye)

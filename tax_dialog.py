@@ -100,9 +100,10 @@ class SlabTableWidget(QWidget):
 
 class DebtTaxEditor(QWidget):
     """Editor for a list of TaxChunk (debt fund tax rules)."""
-    def __init__(self, entity: str, parent=None):
+    def __init__(self, entity: str, parent=None, horizon: int = 30):
         super().__init__(parent)
         self.entity = entity
+        self.horizon = int(horizon)
         self.chunks: List[TaxChunk] = []
         self._build_ui()
 
@@ -125,7 +126,13 @@ class DebtTaxEditor(QWidget):
         left_l.addLayout(btn_bar)
 
         self.chunk_table = QTableWidget(0, 3)
-        self.chunk_table.setHorizontalHeaderLabels(["From", "To", "87A Limit(L)"])
+        # s.87A rebate is available to resident INDIVIDUALS only.
+        # compute_slab_tax() gates it on entity == "individual", so the column
+        # is inert for an HUF -- say so rather than offering a control that
+        # silently does nothing.
+        self.chunk_table.setHorizontalHeaderLabels(
+            ["From", "To",
+             "87A Limit(L)" if self.entity == "individual" else "87A (n/a)"])
         self.chunk_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.chunk_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.chunk_table.selectionModel().selectionChanged.connect(self._on_chunk_selected)
@@ -206,10 +213,12 @@ class DebtTaxEditor(QWidget):
             new_from = last.year_to + 1
         else:
             new_from = 1
-        if new_from > 30:
-            QMessageBox.warning(self, "Limit", "Already covers all 30 years.")
+        if new_from > self.horizon:
+            QMessageBox.warning(
+                self, "Limit",
+                f"Already covers all {self.horizon} years.")
             return
-        new_to = min(new_from + 4, 30)
+        new_to = min(new_from + 4, self.horizon)
         prev_chunk = self.chunks[-1] if self.chunks else None
         default_slabs = copy.deepcopy(prev_chunk.slabs) if prev_chunk else [
             TaxSlab(0, 4, 0), TaxSlab(4, 8, 0.05), TaxSlab(8, 12, 0.10),
@@ -227,6 +236,7 @@ class DebtTaxEditor(QWidget):
 
 
 class EquityTaxEditor(QWidget):
+    #: horizon is set by TaxRulesDialog; see DebtTaxEditor for why.
     """Editor for list of EquityTaxChunk."""
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -303,7 +313,12 @@ class EquityTaxEditor(QWidget):
         if self.chunks:
             last = self.chunks[-1]
             new_from = last.year_to + 1
-            new_to = min(new_from + 4, 30)
+            horizon = getattr(self, "horizon", 30)
+            if new_from > horizon:
+                QMessageBox.warning(
+                    self, "Limit", f"Already covers all {horizon} years.")
+                return
+            new_to = min(new_from + 4, horizon)
             self.chunks.append(EquityTaxChunk(new_from, new_to, last.tax_rate, last.exempt_limit))
         else:
             self.chunks.append(EquityTaxChunk(1, 5, 0.125, 1.25))
@@ -328,22 +343,25 @@ class TaxRulesDialog(QDialog):
         tabs = QTabWidget()
 
         # Individual debt
-        self.ind_debt_ed = DebtTaxEditor("individual")
+        _h = state.horizon
+        self.ind_debt_ed = DebtTaxEditor("individual", horizon=_h)
         self.ind_debt_ed.set_chunks(state.individual_debt_chunks)
         tabs.addTab(self.ind_debt_ed, "Individual – Debt Fund Tax")
 
         # Individual equity
         self.ind_eq_ed = EquityTaxEditor()
+        self.ind_eq_ed.horizon = _h
         self.ind_eq_ed.set_chunks(state.individual_equity_chunks)
         tabs.addTab(self.ind_eq_ed, "Individual – Equity/Arb LTCG")
 
         # HUF debt
-        self.huf_debt_ed = DebtTaxEditor("huf")
+        self.huf_debt_ed = DebtTaxEditor("huf", horizon=_h)
         self.huf_debt_ed.set_chunks(state.huf_debt_chunks)
         tabs.addTab(self.huf_debt_ed, "HUF – Debt Fund Tax")
 
         # HUF equity
         self.huf_eq_ed = EquityTaxEditor()
+        self.huf_eq_ed.horizon = _h
         self.huf_eq_ed.set_chunks(state.huf_equity_chunks)
         tabs.addTab(self.huf_eq_ed, "HUF – Equity/Arb LTCG")
 
