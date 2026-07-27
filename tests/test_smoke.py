@@ -16,7 +16,7 @@ REQUIRED_CONFIG_KEYS = [
     "fallback_equity_ltcg_rate", "fallback_other_ltcg_rate",
     "fallback_stcg_rate", "max_simulation_years",
     "smart_withdrawal_start_month", "stcg_holding_months",
-    "swp_start_month", "weight_drift_threshold",
+    "weight_drift_threshold",
 ]
 
 HEADLESS_MODULES = ["configuration", "models", "engine", "glide_path"]

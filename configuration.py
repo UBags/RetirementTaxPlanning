@@ -56,7 +56,6 @@ REQUIRED_KEYS = frozenset({
     # Fund / portfolio
     "stcg_holding_months",
     "exit_load_fraction",
-    "swp_start_month",
     "smart_withdrawal_start_month",
     "max_simulation_years",
     "min_simulation_years",

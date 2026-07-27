@@ -981,7 +981,6 @@ class Engine:
     def run(self) -> Tuple[List[MonthlyRow], List[YearSummary],
                            List[MonthlyRow], List[YearSummary]]:
         state = self.state
-        SWP_START = config.swp_start_month
         # Plan length.  Every 30 that used to be spelled literally below is
         # this value; at horizon 30 the arithmetic is unchanged throughout.
         horizon = state.horizon
@@ -1782,7 +1781,7 @@ class Engine:
             prin_d = gain_d = prin_e = gain_e = prin_o = gain_o = 0.0
             fund_details: List[FundWithdrawalDetail] = []
 
-            if m >= SWP_START and fy <= horizon:
+            if fy <= horizon:
                 req_annual  = state.get_requirement(fy)
                 req_monthly = req_annual / 12
 
@@ -1962,7 +1961,7 @@ class Engine:
             # If the personal corpus was insufficient for the full monthly
             # requirement, record the gap so the HUF withdrawal block can fund it.
             # _topup_needed is consumed inside the HUF WD section below.
-            if m >= SWP_START and fy <= horizon:
+            if fy <= horizon:
                 _personal_actual = wd_d + wd_e + wd_o
                 _topup_needed    = max(0.0, req_monthly - _personal_actual - 1e-6)
             else:

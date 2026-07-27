@@ -223,7 +223,7 @@ def test_missing_keys_are_reported_all_at_once(tmp_path, monkeypatch):
         fresh._ensure_loaded()
 
     msg = str(exc.value)
-    assert "risk_free_rate" in msg and "swp_start_month" in msg, (
+    assert "risk_free_rate" in msg and "max_simulation_years" in msg, (
         "the error should name every missing key, not just the first")
     assert "cess_rate" not in msg, "the one key that IS present was reported"
 

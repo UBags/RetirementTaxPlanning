@@ -28,9 +28,6 @@ stcg_holding_months = 12
 # Exit load fraction for redemptions within stcg_holding_months
 exit_load_fraction = 0.01
 
-# Month index at which SWP withdrawals begin (month 3 = third month after investment)
-swp_start_month = 3
-
 # Month index at which Bounded Smart Withdrawal activates (corpus needs time to drift)
 smart_withdrawal_start_month = 18
 

@@ -46,7 +46,7 @@ SCENARIOS = [
 CONFIG_FINGERPRINT_KEYS = [
     "cess_rate", "stcg_holding_months", "exit_load_fraction",
     "drift_cap_personal", "drift_cap_huf", "weight_drift_threshold",
-    "max_simulation_years", "swp_start_month", "smart_withdrawal_start_month",
+    "max_simulation_years", "smart_withdrawal_start_month",
     "fallback_equity_ltcg_rate", "fallback_other_ltcg_rate",
     "fallback_stcg_rate", "fallback_debt_top_rate",
 ]
