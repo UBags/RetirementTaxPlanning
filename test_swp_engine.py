@@ -318,47 +318,6 @@ def test_glide_path_single_chunk():
     _check("Single chunk: no transition years", len(gp.transition_years()) == 0)
 
 
-def test_glide_path_interpolation_correctness():
-    _section("GlidePath — Interpolation (Bug #3 fix): true fractional spread")
-    from glide_path import build_glide_path
-    from models import AllocationChunk
-
-    c1 = AllocationChunk(year_from=1, year_to=10, funds=[])
-    c1.target_weights = {"Eq": 1.0}
-    c2 = AllocationChunk(year_from=11, year_to=30, funds=[])
-    c2.target_weights = {"Debt": 1.0}
-
-    gp = build_glide_path([c1, c2], spread_years=4)
-    # Boundary at Year 10/11.  4-year window should be Years 9,10,11,12
-    # With the fix: t(9)=0.25, t(10)=0.50, t(11)=0.75, t(12)=1.00
-    # Old bug: t(9)=0.00, t(10)=0.33, t(11)=0.67, t(12)=1.00
-
-    w9  = gp.weights_for_year(9)
-    w10 = gp.weights_for_year(10)
-    w11 = gp.weights_for_year(11)
-    w12 = gp.weights_for_year(12)
-
-    # Eq weight should be: y9=0.75, y10=0.50, y11=0.25, y12=0.00
-    eq9  = w9.get("Eq", 0.0)
-    eq10 = w10.get("Eq", 0.0)
-    eq11 = w11.get("Eq", 0.0)
-    eq12 = w12.get("Eq", 0.0)
-
-    _check("Year 9: Eq = 75% (fractional spread)",
-           _approx(eq9, 0.75, 0.01), f"Eq@9={eq9:.4f}")
-    _check("Year 10: Eq = 50%",
-           _approx(eq10, 0.50, 0.01), f"Eq@10={eq10:.4f}")
-    _check("Year 11: Eq = 25%",
-           _approx(eq11, 0.25, 0.01), f"Eq@11={eq11:.4f}")
-    _check("Year 12: Eq = 0% (fully transitioned)",
-           _approx(eq12, 0.00, 0.01), f"Eq@12={eq12:.4f}")
-
-    # Year 8 must still be 100% Eq (outside window)
-    eq8 = gp.weights_for_year(8).get("Eq", 0.0)
-    _check("Year 8: still 100% Eq (outside window)",
-           _approx(eq8, 1.00, 0.01), f"Eq@8={eq8:.4f}")
-
-
 def test_glide_path_year1_and_year30_are_clean():
     _section("GlidePath — Year 1 never in transition, Year 30 fully anchored")
     from glide_path import build_glide_path
@@ -648,7 +607,6 @@ ALL_TESTS = [
     test_engine_windfall,
     test_engine_no_trade_threshold,
     test_glide_path_single_chunk,
-    test_glide_path_interpolation_correctness,
     test_glide_path_year1_and_year30_are_clean,
     test_glide_path_zero_spread,
     test_optimizer_empty_universe,

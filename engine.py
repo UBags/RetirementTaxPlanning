@@ -1127,7 +1127,6 @@ class Engine:
 
         # Track which FYs we have already rebalanced the HUF portfolio
         h_rebalanced_set:   set = set()
-        h_glide_rebalanced: set = set()
 
         # ── Accumulators ──────────────────────────────────────────────────────
         p_acc: Dict[int, dict] = {}
@@ -1168,12 +1167,8 @@ class Engine:
         # Force it flat so the engine doesn't apply phantom rebalancing.
         if gp is not None and not gp.is_flat() and len(state.allocation_chunks) <= 1:
             gp = None
-        glide_rebalanced_set: set = set()   # FYs where glide rebalancing was done
         # Accumulate RebalanceCost objects per FY for glide-path micro-rebalances
         glide_costs_by_fy: Dict[int, RebalanceCost] = {}
-        # Lookahead tax budget per boundary:
-        #   glide_tax_budget[b_start_yr] = total_transition_tax / spread_years
-        glide_tax_budget: Dict[int, float] = {}
         # fund_types_map is already built above (line ~733) from all_active.
         # DO NOT re-declare here — it would wipe the correctly-built map.
 
@@ -1238,13 +1233,7 @@ class Engine:
             # or vice versa). Gains from the sell side are accumulated in the
             # PREVIOUS FY's tax accumulators (rebalancing happens at FY start).
             #
-            # GLIDE-PATH OVERRIDE: If a smooth glide path is active (non-flat),
-            # we SKIP this hard instant switch entirely.  The glide path's
-            # transition window spreads the switch over multiple years via the
-            # micro-rebalancing block below, using SWP-assisted drawdown to
-            # avoid a single large CGT event at the boundary.
-            is_smooth_glide = (gp is not None and not gp.is_flat())
-            if fy in rebalance_years and fy not in rebalanced_set and not is_smooth_glide:
+            if fy in rebalance_years and fy not in rebalanced_set:
                 rebalanced_set.add(fy)
                 new_funds = state.get_funds_for_year(fy)
                 new_active = [f for f in new_funds if f.allocation > 0]
@@ -1469,134 +1458,6 @@ class Engine:
                             p_equity_agg.invest(agg_eq_val, p_nav_e, m)
                         if agg_oth_val > 0:
                             p_other_agg.invest(agg_oth_val, p_nav_o, m)
-
-            # ── Glide-path micro-rebalancing — Tax-Budget Mode (v8) ──────────
-            # Fires once per FY (first month).  Before executing the sell,
-            # computes a lookahead tax budget = total_transition_tax / spread_years
-            # and passes it to _rebalance_portfolio, which stops selling mid-lot
-            # the moment running tax hits the budget.  This distributes the full
-            # transition tax evenly across the window years in rupee terms.
-            if (gp is not None and not gp.is_flat()
-                    and fy >= 2 and fy <= horizon
-                    and fy not in glide_rebalanced_set
-                    and fy not in rebalanced_set):
-                target_w = gp.weights_for_year(fy)
-                prior_w  = gp.weights_for_year(fy - 1)
-                if target_w != prior_w:
-                    glide_rebalanced_set.add(fy)
-
-                    # ── Find the true first year of this transition window ────
-                    # Walk backwards from fy to find the earliest year whose
-                    # weights differ from the pre-window stable weights.
-                    # The pre-window stable weights are those of the last year
-                    # BEFORE the window where weights were constant.
-                    pre_window_w = gp.weights_for_year(fy - 1)
-                    # Keep walking back as long as weights are still transitioning
-                    b_start_yr = fy
-                    for probe in range(fy - 1, 1, -1):
-                        pw = gp.weights_for_year(probe)
-                        pwm1 = gp.weights_for_year(probe - 1)
-                        if pw == pwm1:
-                            # probe is stable → window starts at probe+1
-                            pre_window_w = pw
-                            b_start_yr = probe + 1
-                            break
-                    else:
-                        # Reached year 2 without finding a stable year
-                        pre_window_w = gp.weights_for_year(1)
-                        b_start_yr = 2
-
-                    # Find the post-window stable weights (first year after
-                    # the window where weights stop changing)
-                    post_window_w = target_w
-                    for probe in range(fy + 1, horizon + 1):
-                        pw_next = gp.weights_for_year(probe)
-                        pw_curr = gp.weights_for_year(probe - 1)
-                        if pw_next == pw_curr:
-                            post_window_w = pw_next
-                            break
-                    else:
-                        post_window_w = gp.weights_for_year(horizon)
-
-                    # Compute lookahead budget once per boundary (keyed by b_start_yr).
-                    # CRITICAL: estimate tax for the FULL transition
-                    # (pre_window_w → post_window_w), not just one year's step.
-                    # Dividing by spread_years gives the correct per-year budget.
-                    if b_start_yr not in glide_tax_budget:
-                        spread = max(1, state.rebalance_spread_years)
-                        tot_tax = self._estimate_transition_tax(
-                            pre_window_w, post_window_w, p_fund_buckets,
-                            p_fund_navs, fund_types_map, m,
-                        )
-                        glide_tax_budget[b_start_yr] = tot_tax / spread
-                        _log.debug(
-                            f"  [TaxBudget] Boundary {b_start_yr}: "
-                            f"full_transition_tax={tot_tax:.2f}L / {spread}yr "
-                            f"= {glide_tax_budget[b_start_yr]:.2f}L/yr"
-                        )
-
-                    annual_tax_budget = glide_tax_budget[b_start_yr]
-                    # SWP-assisted rebalancing is NOT used during glide-path
-                    # transitions.  The rebalancer handles weight shifts only
-                    # (sells over-weighted, buys under-weighted).  The monthly
-                    # SWP loop independently redeems from ALL active funds
-                    # (including retiring chunk funds) pro-rata, so they drain
-                    # naturally over the transition window.
-                    #
-                    # Passing swp_cash_needed > 0 would pre-raise cash that
-                    # reduces the portfolio corpus without being tracked as
-                    # monthly withdrawal income, breaking the accounting.
-                    cost, gp_gains, gp_swp_proceeds = _rebalance_portfolio(
-                        target_weights    = target_w,
-                        prior_weights     = prior_w,
-                        fund_buckets      = p_fund_buckets,
-                        fund_navs         = p_fund_navs,
-                        fund_types        = fund_types_map,
-                        state             = state,
-                        fy                = fy,
-                        month_idx         = m,
-                        swp_cash_needed   = 0.0,
-                        annual_tax_budget = annual_tax_budget,
-                    )
-                    glide_costs_by_fy[fy] = cost
-                    # Accumulate rebalancing gains into tax accumulators
-                    a_gp = acc_get(p_acc, fy)
-                    a_gp["gain_d"] += gp_gains.get('d', 0.0)
-                    a_gp["gain_e"] += gp_gains.get('e', 0.0)
-                    a_gp["gain_o"] += gp_gains.get('o', 0.0)
-                    existing = rebal_gains_by_fy.get(fy, {})
-                    rebal_gains_by_fy[fy] = {
-                        'd': existing.get('d', 0.0) + gp_gains.get('d', 0.0),
-                        'e': existing.get('e', 0.0) + gp_gains.get('e', 0.0),
-                        'o': existing.get('o', 0.0) + gp_gains.get('o', 0.0),
-                    }
-                    # Sync aggregate buckets using ALL funds with non-zero value.
-                    # Must include retiring chunk funds (not just current chunk) so
-                    # the agg bucket correctly reflects total portfolio value.
-                    agg_d2 = sum(
-                        bk.current_value(p_fund_navs[fn])
-                        for fn, bk in p_fund_buckets.items()
-                        if fn in p_fund_navs
-                        and all_funds_map.get(fn) is not None
-                        and all_funds_map[fn].fund_type == "debt"
-                    )
-                    agg_e2 = sum(
-                        bk.current_value(p_fund_navs[fn])
-                        for fn, bk in p_fund_buckets.items()
-                        if fn in p_fund_navs
-                        and all_funds_map.get(fn) is not None
-                        and all_funds_map[fn].fund_type == "equity"
-                    )
-                    agg_o2 = sum(
-                        bk.current_value(p_fund_navs[fn])
-                        for fn, bk in p_fund_buckets.items()
-                        if fn in p_fund_navs
-                        and all_funds_map.get(fn) is not None
-                        and all_funds_map[fn].fund_type == "other"
-                    )
-                    p_debt_agg   = FIFOBucket(); p_debt_agg.invest(agg_d2,   p_nav_d, m)
-                    p_equity_agg = FIFOBucket(); p_equity_agg.invest(agg_e2, p_nav_e, m)
-                    p_other_agg  = FIFOBucket(); p_other_agg.invest(agg_o2,  p_nav_o, m)
 
             # ── Grow NAVs (per-fund and per-category rates) ────────────────
             safe_fy = min(fy, horizon)
@@ -2020,7 +1881,7 @@ class Engine:
 
             # ── HUF chunk-boundary rebalancing ───────────────────────────────
             # Mirror the personal chunk-boundary rebalancing exactly.
-            if fy in rebalance_years and fy not in h_rebalanced_set and not is_smooth_glide:
+            if fy in rebalance_years and fy not in h_rebalanced_set:
                 h_rebalanced_set.add(fy)
                 new_funds = state.get_funds_for_year(fy)
                 new_active_h = [f for f in new_funds if f.allocation > 0]
@@ -2107,66 +1968,6 @@ class Engine:
                         h_debt   = FIFOBucket(); h_debt.invest(_h_agg_d,   h_nav_d, m)
                         h_equity = FIFOBucket(); h_equity.invest(_h_agg_e, h_nav_e, m)
                         h_other  = FIFOBucket(); h_other.invest(_h_agg_o,  h_nav_o, m)
-
-            # ── HUF glide-path micro-rebalancing ──────────────────────────────
-            if (gp is not None and not gp.is_flat()
-                    and fy >= 2 and fy <= horizon
-                    and fy not in h_glide_rebalanced
-                    and fy not in h_rebalanced_set):
-                target_w_h = gp.weights_for_year(fy)
-                prior_w_h  = gp.weights_for_year(fy - 1)
-                if target_w_h != prior_w_h:
-                    h_glide_rebalanced.add(fy)
-                    # Use the same annual_tax_budget computed for personal rebalancing
-                    annual_tax_budget_h = glide_tax_budget.get(
-                        min(k for k in glide_tax_budget if k <= fy) if glide_tax_budget else fy,
-                        float('inf')
-                    )
-                    h_cost, h_gp_gains, _ = _rebalance_portfolio(
-                        target_weights    = target_w_h,
-                        prior_weights     = prior_w_h,
-                        fund_buckets      = h_fund_buckets,
-                        fund_navs         = p_fund_navs,
-                        fund_types        = fund_types_map,
-                        state             = state,
-                        fy                = fy,
-                        month_idx         = m,
-                        swp_cash_needed   = 0.0,
-                        annual_tax_budget = annual_tax_budget_h,
-                    )
-                    a_h_gp = acc_get(h_acc, fy)
-                    a_h_gp["gain_d"] += h_gp_gains.get('d', 0.0)
-                    a_h_gp["gain_e"] += h_gp_gains.get('e', 0.0)
-                    a_h_gp["gain_o"] += h_gp_gains.get('o', 0.0)
-                    # Record HUF glide-path rebalancing gains for tax attribution
-                    existing_hg = h_rebal_gains_by_fy.get(fy, {})
-                    h_rebal_gains_by_fy[fy] = {
-                        'd': existing_hg.get('d', 0.0) + h_gp_gains.get('d', 0.0),
-                        'e': existing_hg.get('e', 0.0) + h_gp_gains.get('e', 0.0),
-                        'o': existing_hg.get('o', 0.0) + h_gp_gains.get('o', 0.0),
-                    }
-                    # Sync HUF aggregates
-                    _h2_d = sum(
-                        h_fund_buckets[fn].current_value(p_fund_navs[fn])
-                        for fn in h_fund_buckets
-                        if fn in p_fund_navs and all_funds_map.get(fn) is not None
-                        and all_funds_map[fn].fund_type == "debt"
-                    )
-                    _h2_e = sum(
-                        h_fund_buckets[fn].current_value(p_fund_navs[fn])
-                        for fn in h_fund_buckets
-                        if fn in p_fund_navs and all_funds_map.get(fn) is not None
-                        and all_funds_map[fn].fund_type == "equity"
-                    )
-                    _h2_o = sum(
-                        h_fund_buckets[fn].current_value(p_fund_navs[fn])
-                        for fn in h_fund_buckets
-                        if fn in p_fund_navs and all_funds_map.get(fn) is not None
-                        and all_funds_map[fn].fund_type == "other"
-                    )
-                    h_debt   = FIFOBucket(); h_debt.invest(_h2_d,   h_nav_d, m)
-                    h_equity = FIFOBucket(); h_equity.invest(_h2_e, h_nav_e, m)
-                    h_other  = FIFOBucket(); h_other.invest(_h2_o,  h_nav_o, m)
 
             # ── HUF inflows (April transfer + windfall) ───────────────────────
             huf_inflow = 0.0

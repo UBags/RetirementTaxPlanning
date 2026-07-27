@@ -136,104 +136,24 @@ def build_glide_path(
         w = _effective_weights(chunks[0])
         return GlidePath(schedule={y: w for y in range(1, horizon + 1)})
 
-    # spread_years <= 1 means a hard cut at each boundary: no transition
-    # window, every year simply carries its owning chunk's weights.
-    # (Previously max(2, spread_years) forced a 2-year ramp, so 0, 1 and 2 all
-    # produced identical schedules and a hard cut was unreachable.)
-    if spread_years <= 1:
-        schedule = {}
-        for y in range(1, horizon + 1):
-            for c in chunks:
-                if c.year_from <= y <= c.year_to:
-                    schedule[y] = _effective_weights(c)
-                    break
-            else:
-                schedule[y] = _effective_weights(chunks[-1])
-        return GlidePath(schedule=schedule)
-
-    spread = spread_years
-
-    # ── Pre-compute transition windows for each boundary ──────────────────────
-    boundaries: list[tuple[int, int, int, dict, dict]] = []
-
-    for k in range(len(chunks) - 1):
-        left_chunk  = chunks[k]
-        right_chunk = chunks[k + 1]
-
-        w_left_eff  = _effective_weights(left_chunk)
-        w_right_eff = _effective_weights(right_chunk)
-        if not w_left_eff or not w_right_eff:
-            continue
-
-        B = left_chunk.year_to  # last year of left chunk
-
-        # ── FIXED window formula ───────────────────────────────────────────
-        # FIX 1: Correct math for both even and odd spreads
-        # spread=4: half=2 → left_start=B-1, right_end=B+2  (4 years)
-        # spread=5: half=2 → left_start=B-1, right_end=B+3  (5 years)
-        left_start = B - (spread // 2) + 1
-        right_end  = left_start + spread - 1
-
-        # Clip rules.  The intent is "the first year is a clean buy and the
-        # last year is held to end", not the literals 2 and 29 -- those were
-        # how it was spelled when the horizon was fixed at 30.
-        left_start = max(left_start, 2)                # year 1 is clean buy
-        right_end  = min(right_end, horizon - 1)       # last year is hold-to-end
-        if boundaries:
-            prev_right = boundaries[-1][1]
-            left_start = max(left_start, prev_right + 1)
-        right_end = max(right_end, left_start)
-
-        boundaries.append((left_start, right_end, B, w_left_eff, w_right_eff))
-
-    # ── Build schedule year by year ───────────────────────────────────────────
-    year_to_boundary: dict[int, tuple] = {}
-    for bnd in boundaries:
-        l_start, r_end, _B, _wl, _wr = bnd
-        for y in range(l_start, r_end + 1):
-            year_to_boundary[y] = bnd
-
-    def _owning_weights(year: int) -> dict:
-        for c in chunks:
-            if c.year_from <= year <= c.year_to:
-                return _effective_weights(c)
-        return _effective_weights(chunks[-1])
-
-    schedule: dict[int, dict[str, float]] = {}
-
+    # Every year carries its owning chunk's weights.
+    #
+    # The linear interpolation that used to run here was retired in Phase 2.
+    # Measured on the golden fixtures it smoothed gain across progressive
+    # slabs rather than harvesting free capacity — it turned two zero-tax
+    # years into 10.75L of tax while ~21L of headroom sat unused in each.
+    # Its replacement schedules against each year's remaining tax-free
+    # headroom instead. See HANDOVER §4.3.
+    #
+    # `spread_years` is accepted and ignored: callers in main.py and
+    # allocate_funds.py still pass state.rebalance_spread_years, and the
+    # parameter will mean something again when Phase 6 lands.
+    schedule = {}
     for y in range(1, horizon + 1):
-        if y == 1:
-            schedule[y] = _owning_weights(1)
-            continue
-        if y == horizon:
-            schedule[y] = _owning_weights(horizon)
-            continue
-
-        bnd = year_to_boundary.get(y)
-        if bnd is None:
-            schedule[y] = _owning_weights(y)
+        for c in chunks:
+            if c.year_from <= y <= c.year_to:
+                schedule[y] = _effective_weights(c)
+                break
         else:
-            l_start, r_end, B, w_l, w_r = bnd
-
-            # ── LINEAR INTERPOLATION (The Core Glide Path Fix) ─────────────
-            # We smoothly shift from old weights to new weights over the
-            # transition window. This is required for SWP tax-alpha to work.
-            actual_spread = r_end - l_start + 1
-            if actual_spread <= 1:
-                t = 1.0 if y > B else 0.0
-            else:
-                # Step 1 is the first year of the window
-                step = y - l_start + 1
-                t = step / actual_spread
-
-            # Blend the weights
-            interp = {}
-            all_funds = set(w_l.keys()) | set(w_r.keys())
-            for f in all_funds:
-                val = w_l.get(f, 0.0) * (1 - t) + w_r.get(f, 0.0) * t
-                if val > 1e-6:
-                    interp[f] = val
-
-            schedule[y] = interp
-
+            schedule[y] = _effective_weights(chunks[-1])
     return GlidePath(schedule=schedule)
