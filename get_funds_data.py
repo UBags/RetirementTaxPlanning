@@ -757,7 +757,16 @@ def get_rf_monthly() -> pd.Series:
     else:
         fallback = pd.Series(dtype=float)
 
-    rf_full   = pd.concat([fallback, overnight_rf]).sort_index()
+    # Exclude empty entries before concatenating. pandas is deprecating the
+    # behaviour where empties are ignored when working out the result dtype,
+    # and either side is legitimately empty here -- no overnight fund data,
+    # or a cutover earlier than 2000. Concatenating only the non-empty parts
+    # is what the deprecation notice asks for and is exactly equivalent:
+    # pd.concat of two empty float Series and pd.Series(dtype=float) are the
+    # same object for every use below.
+    _parts    = [s for s in (fallback, overnight_rf) if not s.empty]
+    rf_full   = (pd.concat(_parts) if _parts
+                 else pd.Series(dtype=float)).sort_index()
     rf_full   = rf_full[~rf_full.index.duplicated(keep="last")]
     # Final safety: ensure no inf values remain (would corrupt all downstream Sharpe/Sortino)
     n_bad = np.isinf(rf_full).sum()

@@ -390,3 +390,36 @@ def test_excluded_categories_are_still_excluded_by_type():
     for t in ("Debt Scheme - Overnight Fund", "Debt Scheme - Ultra Short Duration",
               "Debt Scheme - Low Duration Fund", "Debt Scheme - Money Market Fund"):
         assert not pm.is_liquid_fund(t, "ACME Liquid Fund"), t
+
+
+# ── the risk-free series builder emits no deprecation warnings ───────────────
+
+def test_rf_series_concat_is_not_deprecated(recwarn):
+    """pandas FutureWarning at get_funds_data.py:760.
+
+    pd.concat([fallback, overnight_rf]) with an empty entry relied on
+    behaviour pandas is removing: empties ignored when working out the result
+    dtype. Either side is legitimately empty -- no overnight fund data, or a
+    cutover earlier than 2000 -- so this fired on every run of the debt
+    benchmark path the Monte Carlo bootstrap depends on.
+
+    recwarn rather than filterwarnings("error"): the assertion is about THIS
+    call site, and turning every FutureWarning in the process into an error
+    would fail on unrelated pandas churn elsewhere.
+    """
+    import get_funds_data as gfd
+
+    gfd._rf_cache = None
+    try:
+        gfd.get_rf_monthly()
+    except Exception:
+        pytest.skip("rf series unavailable in this environment")
+    finally:
+        gfd._rf_cache = None
+
+    offenders = [w for w in recwarn
+                 if issubclass(w.category, (FutureWarning, DeprecationWarning))
+                 and "concat" in str(w.message).lower()]
+    assert not offenders, (
+        "concat deprecation warning is back: "
+        + "; ".join(str(w.message)[:120] for w in offenders))
