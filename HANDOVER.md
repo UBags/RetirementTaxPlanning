@@ -161,85 +161,205 @@ drifted above target in six to thirteen years. `solve_schedule` gets this right
 
 ---
 
-## 4. THE LARGEST OPPORTUNITY — tax-free harvesting across chunk boundaries
+## 4. TAX MINIMISATION — what was measured, and what to build
 
-Found by analysis after B1d-ii was reverted. It is worth more than anything
-else outstanding and is not in any earlier plan.
+Everything here was measured with a standalone model, not the engine. It runs
+FIFO lots at NAV, solves each year's withdrawal against its own tax, and
+verifies in every year that
 
-### Where the tax actually comes from
+    withdrawals + other income - tax - loads  ==  the stated requirement
 
-`s0_1chunk` has **zero lifetime tax**. Every multi-chunk scenario has a large
-one. The cause is not the withdrawals — it is the **chunk boundaries**.
+That identity check is not decoration. It caught two over-delivery bugs mid-run
+that the tax totals alone hid — the same failure mode as B1d-ii's
+`converged = not shortfalls`. **Any successor must carry the same check.** A
+schedule that delivers 44.6 against a requirement of 42.5 will look like a
+brilliant tax result.
 
-`s1_2chunk` moves from a 15-fund portfolio to a 13-fund one at FY16, with 9
-funds in common. Six funds holding 40% of the corpus are sold outright in a
-single year:
+Parameters used (the live plan, not the scrubbed fixtures): personal corpus
+350, requirement 35 rising to 50 in five-year steps, other income 15.8 growing
+by an increment that ramps 0.50 -> 0.15 per year, assessable share held at
+5.95/15.8, HUF seeded with an inherited 190 at FY5 earning 7.0%, statutory
+ladders as stored. All figures Rs lakh over 30 years.
 
-```
-FY16 tax  54.21      of a 57.40 lifetime total
-```
+### 4.1 The four levers, ranked by what they actually deliver
 
-`s3_4chunk` has boundaries at FY9, FY17 and FY24; FY24 alone carries 62.56 of
-its 77.03. The tax is not spread — it is concentrated in single years.
+| lever | lifetime tax |
+|---|---|
+| baseline: personal purse only | 69.67 |
+| split withdrawals across both purses | 6.55 |
+| **ration the HUF over the horizon** | **0.29** |
+| schedule chunk transitions against free capacity | 50.38 -> 0.19 |
+| separate folios by vintage (3 of them) | 0.29 -> 0.00 |
 
-The `rebalance_tax_paid` column **understates this**. It is a pro-rata
-attribution of the year's tax by gain share, showing 60-70%. The *marginal*
-cause is closer to 100%: without the boundary there is no taxable year at all,
-which is exactly what `s0_1chunk` demonstrates.
+Two of these were not in any earlier plan and neither was predicted.
 
-### The capacity that is going unused
+### 4.2 Ration the HUF. This is the biggest single finding.
 
-Every financial year, both entities can realise gain with **zero** tax:
+A split optimiser that minimises **this year's** tax drains the HUF as fast as
+it looks locally cheap. The HUF then empties around FY25-29 and the personal
+purse carries everything alone at an 85-88% gain fraction, which is where every
+rupee of late-plan tax comes from.
 
-```
-personal debt gain    8.638     s.87A — no tax until total income reaches 12L
-personal equity       1.250     LTCG exemption
-HUF debt gain         4.000     nil band, no other income against it
-HUF equity            1.250
-                     ------
-per year             15.138 L
-```
+Capping the HUF draw so the corpus lasts the horizon — roughly
+`1.2 x huf_value / years_remaining` — takes lifetime tax from 6.55 to 0.29.
+Under the greedy rule, multi-folio harvesting was *actively harmful* (15.78 vs
+6.55) and the folio-count sensitivity was non-monotonic, which is what exposed
+the problem: more folios cannot make things worse, so the fault lay elsewhere.
 
-Over FY1-15 that is **272.7 L** of capacity, of which the current plan uses
-**43.3 L**. The spare is **229.4 L**.
+**Rule: the HUF is a budget spent over thirty years, not a cheaper purse to
+drain first.** Any per-year optimiser will get this wrong. Whatever replaces
+`optimize_withdrawal_split` needs a horizon-aware constraint, not a better
+annual objective.
 
-The gain embedded in the funds dropped at FY16 is **152.7 L**.
+### 4.3 Schedule chunk transitions against capacity, not against a calendar
 
-**The spare capacity covers the entire boundary, with 77 L left over.** The
-54.21 L spike is not reducible — it is *eliminable*.
+A 2-chunk plan (7.5% then 7.0%) with 25% turnover at an FY16 boundary:
 
-### What the mechanism would be
+| when the 25% moves | tax | end corpus |
+|---|---|---|
+| all in FY16 | 50.38 | 1804.6 |
+| evenly over FY12-20 | 23.91 | 1872.2 |
+| capacity-driven, FY4-26 | **0.19** | **1934.1** |
 
-Not withdrawing more to spend. **Selling and immediately rebuying**: sell from
-funds the next chunk drops, buy into funds it keeps, in annual slices sized to
-the remaining tax-free headroom. The portfolio transition executed early and
-free, instead of in one taxable lump.
+129 of corpus between the first row and the last, for the same portfolio
+outcome. A capacity-driven transition is **free**: 25% reallocated gives the
+same tax and the same end corpus, to one decimal, as not transitioning at all.
 
-Four constraints shape it:
+Capacity-driven means: each year, after the cash withdrawal has taken its share
+of the exemption, move only as much as the remaining headroom permits, and
+carry the balance forward. Instalments track capacity, not a schedule — in the
+measured run they went 4.15, 10.26, 6.96, 5.44, 2.41, 1.20 as headroom opened
+and closed.
 
-- **Exit load** — `exit_load_fraction` applies within `stcg_holding_months`
-  (12). Harvest only lots older than that and it costs nothing.
-- **STCG** — the same cut-off. One rule handles both.
-- **Capacity does not carry forward.** Unused headroom in FY1 is gone. That is
-  what makes this a schedule rather than a one-off.
-- **Basis steps up** as you harvest, shrinking future gains. That is the
-  benefit, not a cost.
+**The window length is the price.** FY4-26 (19 years) completes 25% turnover at
+zero tax; FY6-20 costs 7.55; FY12-20 costs 23.91. The transition must start
+years before the boundary and finish years after it.
 
-The boundary year itself can also slide by a year or two, which is a further
-degree of freedom. With 229 L against 153 L it is not needed here; it would
-matter on a tighter plan.
+This supersedes the existing glide path entirely. Measured on the golden
+fixtures, that glide path turned two zero-tax years into 10.75 of tax
+(`s1_2chunk` FY14-15) — it smooths brackets, it does not harvest capacity. It
+is to be replaced, not repaired.
 
-### Why this reframes B1d-ii
+### 4.4 One headroom pool, shared
 
-B1d-ii tried to minimise tax on a **fixed** set of realised gains by choosing
-which purse they came from. The dominant lever is not allocation but
-**timing** — *when* gain is realised, so that it lands in years with unused
-free capacity. Timing dominates allocation by an order of magnitude here, which
-is why optimising the split gained nothing and cost accuracy.
+The single most important structural fact. The annual exemption is consumed by
+the ordinary SWP withdrawal **first**; the transition and the harvest compete
+for what is left. In the measured table the harvest column is **zero from FY4
+to FY21** because the transition took all of it.
 
-Do this before revisiting B1d-ii.
+Consequences:
 
----
+- Transition and harvest do not add. Combining a capacity-driven transition
+  with 3 folios moved lifetime tax only from 0.19 to 0.00.
+- With two boundaries, windows overlap — a boundary at FY8 (window FY3-10) and
+  one at FY15 (window FY7-17) share FY7-10. That capacity can be spent once. It
+  must be **allocated** across the competing windows, not offered to each.
+  Double-spending produces a schedule that reports success while over-committing.
+
+### 4.5 Multi-folio: two orderings, deliberately opposite
+
+Within a folio FIFO is forced, so the only lever is **which folio**. Two rules,
+and they point opposite ways — which is precisely why separate folios earn
+their keep:
+
+- **cash withdrawal** -> the folio whose front lot has the **lowest** gain
+  fraction. Minimises taxable gain per rupee raised.
+- **harvest** -> the folio whose front lot has the **highest** gain fraction.
+  Maximises gain realised per rupee churned, and retires the units that would
+  cost most later.
+
+A single "pick the cheapest folio" scan gets only half of this.
+
+**Single-folio harvesting does not work, and is worse than not harvesting.**
+Measured: 16.47 with FIFO harvesting against 6.55 without. The gain fraction
+was *identical* in every year — 7%, 13%, 30%, 50%, 65%, 75%, 83%, 88% — because
+rebuying appends to the back of the queue while the front remains the rest of
+the same original lot. The corpus grows faster than it is drawn (350 -> 1900+),
+so roughly 200 of the original 350 units are ever consumed and the front never
+advances past original-basis stock.
+
+**Three folios is enough.** Monotone and saturating: 1 folio 0.29, 2 folios
+0.04, 3 folios 0.00, 4 and 5 folios 0.00. Take 5-year cohorts — cohort length
+barely changes the result and longer blocks mean fewer folio openings.
+
+Personal gain fraction on withdrawals falls from 88% to 64% at FY30. That is
+the real prize: not the headline tax, but the **margin**. Without it the zero
+sits exactly on the exemption line with no buffer; a rupee more of income or
+requirement tips it over.
+
+### 4.6 Legality of the folio split
+
+Capital gains are computed FIFO **per folio**, not across a PAN — CBDT Circular
+704 (1995) establishes FIFO; the account-level boundary is what makes cohorts
+independent ledgers. Redeeming from a younger folio is tax planning, not
+evasion. Three practical constraints:
+
+- AMCs reserve the right in their SAI to **consolidate folios** under the same
+  PAN, name and bank account. Few deliberate folios, possibly across different
+  platforms, rather than many.
+- **GAAR (s.95)** is a theoretical risk if the arrangement's only purpose is a
+  tax benefit. Meaningful 3-5 year cohorts, not monthly micro-folios. Three
+  folios in 5-year blocks is well inside this.
+- The engine must hold **a ledger per cohort**, not one pool per fund.
+
+### 4.7 s.64(2) — the constraint that sizes the HUF
+
+Income from property a member transfers to his HUF is clubbed back into the
+member's income, not taxed at HUF rates. This matters because the entire
+strategy rests on the HUF's separate bands.
+
+Current position, which resolves it favourably: the 190 windfall is **inherited
+directly by the HUF under a will**, so it is not a member transfer and s.64(2)
+does not attach. Under the scheme now adopted, tax savings stay in the personal
+purse rather than being transferred to the HUF, so no tainted capital is created
+at all.
+
+**If that ever changes** — any member contribution to the HUF — the exposure
+returns, and the model would need to track transferred-in capital separately
+from the HUF's own accretions, by vintage. That is a structural change, not a
+parameter. It should be confirmed with a CA before any such transfer is made,
+not after.
+
+### 4.8 Thumb rules for water-filling
+
+1. Fill both nil bands first, then both 5% bands, and so on — but **subject to
+   the HUF ration**, which binds before the marginal-rate logic does.
+2. The HUF gets **no s.87A rebate** (`engine.py:82`, the rebate branch is
+   `if entity == "individual"`). Under the old regime it steps 5% -> 20% at
+   twice the exemption, so HUF income above the nil band gets expensive fast.
+   Keep HUF income inside its nil band and stop.
+3. Personal free capacity is `exempt_limit - assessable_other_income`, and
+   assessable other income **grows**, so the capacity shrinks over the plan.
+4. The withdrawal's own gain is charged against the headroom before anything
+   else. Harvest and transition get the remainder.
+5. Harvest only lots older than `stcg_holding_months`. Selling oldest-first
+   satisfies this automatically and avoids the exit load.
+6. Early harvesting is nearly worthless — stepping basis from NAV 1.00 to 1.07
+   is a 7% step. Headroom is largest early and worth least early. The two are
+   anti-correlated; do not assume more harvesting is better.
+7. A transition instalment is itself a redemption and partly funds that year's
+   cash need. Sell-and-rebuy and sell-for-cash are the same operation.
+8. Cross-purse funding is **asymmetric**: HUF -> personal is free (distributions
+   to members carry no further incidence); personal -> HUF is a member transfer
+   and re-opens 4.7.
+
+### 4.9 What to build, in order
+
+1. **Corpus representation**: a ledger per cohort folio per fund, with a
+   redemption-order policy. Everything else sits on top of this, so it comes
+   first — building the transition scheduler on the present one-bucket-per-fund
+   model means writing it twice.
+2. **Horizon-aware split** replacing the per-year optimiser, with the HUF ration
+   as a constraint.
+3. **Capacity-driven transition scheduler** replacing the glide path, with
+   straddling windows and explicit allocation of shared headroom where windows
+   overlap.
+4. **The identity check** as a test on every scenario, every year.
+
+Golden coverage first: there is currently no numeric pin on the glided engine
+path at all (`glide_path` is `None` in every fixture, and `test_swp_engine.py`'s
+five glide tests are all two-chunk, single-boundary, personal-only, with no
+snapshot). Add a multi-boundary glided scenario before touching any of this.
 
 ## 5. Phase F — investment profile and staggered deployment
 
