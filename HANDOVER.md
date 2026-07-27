@@ -13,11 +13,11 @@ last session and is written up in §4 — it is not in any earlier plan.
 
 ## 0. Do these first
 
-1. `ruff check .` then `python3 -m pytest -q -n 4`. Expect **650 passing**, no
-   warnings summary. About 65 seconds under `-n 4`, 88 sequential:
-   `project_plan()` runs the engine four to ten times per projection, and five
-   golden scenarios each pay that. Run `python3 -m pytest`, never bare
-   `pytest` — see §9.12.
+1. `ruff check .` then `python3 -m pytest -q -n 4`. Expect **677 passing**, no
+   warnings summary. Three minutes under `-n 4`: since the cash identity
+   changed, `project_plan()` needs twenty to forty passes on some scenarios
+   rather than four, and each pass is a full engine run. Run
+   `python3 -m pytest`, never bare `pytest` — see §9.12.
 2. Read §1 (what changed), then §4 (what to do next), then §9 (gotchas).
    §9 is not optional. Every entry in it cost real time.
 
@@ -44,7 +44,7 @@ verification had all passed. See §9.9.
 
 ## 1. What changed, and why
 
-Eighteen commits. Tests 382 → 650. Grouped by what they were for.
+Twenty-three commits. Tests 382 → 677. Grouped by what they were for.
 
 ### Phase A — a flexible calendar and a variable horizon (complete)
 
@@ -72,7 +72,18 @@ Eighteen commits. Tests 382 → 650. Grouped by what they were for.
 | **B1c** `99b6300` | The Monte Carlo goldens pin what the app runs. |
 | **B1d-i** `12646dd` | `best_cash_split()` — splitting *cash* rather than gain. |
 
+### Phase C — the cash identity (complete)
+
+| | |
+|---|---|
+| **C1** `87051b1` | `pytest-xdist` pinned and run in CI. It was used by the documented workflow and credited with finding `a965e4a`, but declared nowhere and exercised by no job. |
+| **C2** `ac41ad7` | Per-year requirement-delivery guard across all five golden scenarios. 25 items. The invariant every later phase is measured against. |
+| **C3** `bfbf226` | The glide-path transition scheduler retired to a hard cut. Measured, it turned two zero-tax years into 10.75L of tax — it smoothed brackets rather than harvesting capacity. 341 lines removed, no snapshot moved. |
+| **C4** `3a3813c` | Secant step in `solve_schedule`, gated so it cannot fire under the old identity. Inert; no snapshot moved. |
+| **C5** | The final identity: no transfer to the HUF, rebalancing tax counted as tax paid, `PLAN_TOL = 1e-2`. Uncovered a double debit that predated all of it — see §9.13. All ten snapshots moved. |
+
 ### Defects found and fixed along the way
+
 
 - `a965e4a` — `is_liquid_fund` fell through to the fund NAME when the fund
   TYPE was merely unrecognised, so a Corporate Bond Fund named "…Liquid Fund"
@@ -345,21 +356,37 @@ not after.
 
 ### 4.9 What to build, in order
 
+**Status after Phase 3.** Item 4 landed first, deliberately, as `ac41ad7`:
+`tests/golden/test_requirement_delivery.py` asserts per year, per scenario,
+that the plan delivers the stated requirement. It is the guard every later
+phase is measured against and it should never be allowed to go red.
+
 1. **Corpus representation**: a ledger per cohort folio per fund, with a
    redemption-order policy. Everything else sits on top of this, so it comes
    first — building the transition scheduler on the present one-bucket-per-fund
-   model means writing it twice.
+   model means writing it twice. **Next.**
 2. **Horizon-aware split** replacing the per-year optimiser, with the HUF ration
    as a constraint.
-3. **Capacity-driven transition scheduler** replacing the glide path, with
-   straddling windows and explicit allocation of shared headroom where windows
-   overlap.
-4. **The identity check** as a test on every scenario, every year.
+3. **Capacity-driven transition scheduler**, with straddling windows and
+   explicit allocation of shared headroom where windows overlap. The old glide
+   path is already retired (`bfbf226`), so this builds into an empty socket
+   rather than around a live one.
+4. ~~The identity check as a test on every scenario, every year.~~ Done.
 
-Golden coverage first: there is currently no numeric pin on the glided engine
-path at all (`glide_path` is `None` in every fixture, and `test_swp_engine.py`'s
-five glide tests are all two-chunk, single-boundary, personal-only, with no
-snapshot). Add a multi-boundary glided scenario before touching any of this.
+**Before item 1, write the missing conservation test.** Nothing in the suite
+crosses the boundary between the corpus and the user's hand. `test_conservation
+.py::test_monthly_corpus_flow_balances` balances the corpus against *itself*
+(`corpus_end == corpus_start - withdrawal`), which held perfectly for years
+while a rupee a year was being destroyed — see §9.13. The invariant that was
+missing is:
+
+    what leaves both corpora, plus other income
+      == cash delivered + tax paid + transfers out
+
+Item 1 rewrites how withdrawals are chosen. Going in without that guard is
+going in blind to the one class of defect this codebase has actually had.
+
+Golden coverage for the glided path is no longer needed: that code is gone.
 
 ## 5. Phase F — investment profile and staggered deployment
 
@@ -526,6 +553,29 @@ holding, that part is wiring rather than a new feature.
     reported green with all 34 widget-driving tests silently skipped. That is
     §9.8 arriving by another route. `which -a pytest` shows the shadowing;
     activating the venv fixes it; `python3 -m pytest` is immune either way.
+
+13. **The review IS the diagnostic, not a formality after it.** Phase 3 was
+    chased through five rounds of instrumentation on four successive wrong
+    hypotheses — s.87A marginal relief, a secant fix, cross-purse
+    double-counting, and "no HUF column moved" (asserted from pytest output
+    that had truncated at 25 of 37 lines). What found the actual defect was
+    `--regen-golden` followed by `git diff` on the snapshots: one pass, whole
+    answer, nothing confounded. Regenerate and read the diff EARLY, not after
+    the probes fail.
+
+    The defect it found had been there a long time. `net_p` subtracted
+    `this_fy_saved`, so the solver withdrew an extra X to still deliver the
+    requirement; the engine then separately debited X from the per-fund buckets
+    as the actual transfer. Departing the corpus: `W + X`. Arriving anywhere:
+    `W + OI - X` to the user plus `X` to the HUF, so `W + OI`. **X destroyed
+    every year**, compounding to 114L over thirty years on `s0_1chunk`.
+
+    `test_conservation.py::test_monthly_corpus_flow_balances` was blind to it by
+    construction: it balances the corpus against *itself*, and both outflows
+    were recorded as withdrawals, so its residual stayed at 5.7e-14 throughout.
+    Its docstring claims it catches "exactly how the tax and HUF-transfer leaks
+    manifested." It cannot. A conservation test that never crosses the boundary
+    between the corpus and the user's hand is not a conservation test.
 
 ---
 
