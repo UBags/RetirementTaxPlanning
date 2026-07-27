@@ -46,3 +46,14 @@ test/portfolio_allocator.py
 
 # project_to_md.py — generated bundle output
 Code packaged into MDs for LLMs/
+# Added by code-review-graph
+.code-review-graph/
+
+# AI assistant instruction files — local to each machine, not shared.
+# Root-level .md is admitted by `!/*.md` above for HANDOVER.md, so these
+# need explicit denies here, after it. Last match wins.
+/AGENTS.md
+/CLAUDE.md
+/CODEBUDDY.md
+/GEMINI.md
+/QODER.md
