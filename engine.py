@@ -612,7 +612,8 @@ class YearSummary:
 class Engine:
     def __init__(self, state: AppState, alt_return_chunks=None,
                  conservative_mode: bool = False,
-                 glide_path: Optional[GlidePath] = None):
+                 glide_path: Optional[GlidePath] = None,
+                 gross_schedule: Optional[Dict[int, float]] = None):
         """
         Parameters
         ----------
@@ -625,6 +626,14 @@ class Engine:
             min(Avg_CAGR_3/5/7/10Y) — the same figure the UI displays.
             The two modes therefore differ only by the STT adjustment;
             "conservative" is a misnomer.  See _fund_annual_return().
+        gross_schedule : FY -> annual amount to WITHDRAW, overriding
+            state.annual_requirements. The two mean different things since
+            Phase B: annual_requirements is a NET target, cash the plan must
+            leave in hand, while the engine has always consumed a GROSS
+            withdrawal. net_income_plan.solve_schedule() converts one to the
+            other, and passes the result here. Left None, the engine reads
+            annual_requirements as gross, which is what it did before Phase B
+            and what the conservation and metric tests still rely on.
         glide_path : Optional GlidePath from the sticky-portfolio optimizer.
             When provided and not flat, triggers annual micro-rebalancing at
             glide-path transition years (Mode B — chunked_sticky).
@@ -635,6 +644,7 @@ class Engine:
         self.alt_return_chunks = alt_return_chunks
         self.conservative_mode = conservative_mode
         self.glide_path = glide_path
+        self.gross_schedule = dict(gross_schedule) if gross_schedule else None
 
     def _annual_return(self, fy: int) -> float:
         """Blended portfolio return (used as fallback)."""
@@ -1782,7 +1792,15 @@ class Engine:
             fund_details: List[FundWithdrawalDetail] = []
 
             if fy <= horizon:
-                req_annual  = state.get_requirement(fy)
+                # The GROSS amount to withdraw. Since Phase B,
+                # state.annual_requirements is a NET target -- cash the plan
+                # must leave in hand -- and the schedule that delivers it is
+                # solved outside the engine and passed in. With no schedule
+                # the engine reads the requirement as gross, which is what it
+                # did before Phase B.
+                req_annual  = (self.gross_schedule.get(fy, 0.0)
+                               if self.gross_schedule is not None
+                               else state.get_requirement(fy))
                 req_monthly = req_annual / 12
 
                 # Use ALL funds with non-zero bucket value (not just current chunk).

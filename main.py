@@ -59,7 +59,6 @@ from PySide6.QtWidgets import (
 )
 
 from engine import (
-    Engine,
     FundWithdrawalDetail,
     MonthlyRow,
     YearSummary,
@@ -1672,11 +1671,22 @@ class MainWindow(QMainWindow):
             )
 
         try:
-            p_monthly, p_yearly, h_monthly, _ = Engine(
+            # annual_requirements is a NET target since Phase B -- cash the
+            # plan must leave in hand. The withdrawal schedule that delivers
+            # it is solved here, then projected.
+            from net_income_plan import project_plan
+            p_monthly, p_yearly, h_monthly, _, self._plan_solution = project_plan(
                 self.state,
                 conservative_mode=conservative,
                 glide_path=self.state.glide_path,
-            ).run()
+            )
+            if self._plan_solution.shortfalls:
+                worst = self._plan_solution.worst_year()
+                self._log(
+                    f"⚠  The plan cannot meet its target in "
+                    f"{len(self._plan_solution.shortfalls)} year(s); worst is "
+                    f"FY{worst}, short by "
+                    f"{self._plan_solution.shortfalls[worst]:.2f} L.")
 
             # ── Tax-optimal HUF–Personal withdrawal split ─────────────────
             # Only runs when the user has explicitly enabled the checkbox.
@@ -2300,11 +2310,16 @@ class MainWindow(QMainWindow):
 
             _stage("Computing 30-year corpus paths…", 4)
 
+            # Monte Carlo stress-tests the schedule the deterministic solve
+            # chose; it does not re-plan per path. Without this it would read
+            # the NET target as a gross withdrawal.
+            _sol = getattr(self, "_plan_solution", None)
             mc_kwargs = dict(
                 n_sims=n_sims, sigma_override=sigma_override,
                 floor_multiplier=floor_multiplier,
                 cap_multiplier=cap_multiplier,
                 seed=seed, use_bootstrap=use_bootstrap, block_length=block_length,
+                gross_schedule=(_sol.gross if _sol is not None else None),
             )
             res = run_monte_carlo(self.state, **mc_kwargs)
 

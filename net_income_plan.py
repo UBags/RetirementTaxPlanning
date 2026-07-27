@@ -1,0 +1,224 @@
+# Copyright (c) 2025 Uddipan Bagchi. All rights reserved.
+# See LICENSE in the project root for license information.
+
+"""
+net_income_plan.py
+==================
+Find the withdrawal schedule that delivers a required cash-in-hand target in
+every financial year of the plan.
+
+WHY AN OUTER LOOP RATHER THAN SURGERY ON THE ENGINE
+---------------------------------------------------
+The engine runs monthly and is path dependent: this month's withdrawal
+changes next month's corpus, the glide path rebalances at year boundaries,
+and tax for a year is only known once the year has finished. Solving each
+year in place would mean being able to re-run a single financial year, which
+the engine cannot do -- state is mutated as it goes. Decomposing it is Phase
+3.1's job.
+
+So this wraps the engine whole. It proposes a GROSS withdrawal schedule,
+projects it, compares the cash in hand against the targets, and corrects.
+Nothing inside Engine.run() changes.
+
+WHY IT CONVERGES
+----------------
+Cash in hand in year k responds mostly to that year's own withdrawal, and
+only weakly to earlier years through the corpus. The Jacobian is close to
+lower triangular and strongly diagonal, and the diagonal is
+
+    d(net)/d(gross) = 1 - marginal_rate x gain_fraction
+
+which sits between about 0.7 and 1.0 in practice. A plain correction --
+add the shortfall to the requirement -- therefore contracts by roughly
+|1 - that|, and two or three passes reach a rupee. There is no need for a
+Jacobian or a line search, and adding one would obscure the failures below.
+
+TWO WAYS A YEAR CAN REFUSE TO CONVERGE
+--------------------------------------
+Both are real, both appear on the live project, and both used to make a
+naive iteration run away.
+
+1.  THE TARGET MUST BE PRO-RATED. A plan starting in March has a one-month
+    FY1, which needs one month of living costs, not twelve. Feeding it a
+    full year's target asks for twelve months of spending out of one month
+    of withdrawals, and the requirement climbs without limit. The target is
+    scaled by months_in_fy, exactly as A2a scales every other annual figure.
+
+2.  A YEAR MAY NOT BE ABLE TO RESPOND AT ALL. The usual cause is an
+    exhausted corpus: there is nothing left to withdraw, so raising the
+    requirement changes nothing. This also used to happen in FY1, because
+    config.swp_start_month delayed the first withdrawal by three months and
+    a March-start FY1 is one month long -- that key has since been removed
+    as an artefact of the original design, but the failure mode it revealed
+    is real and remains. The correction has no effect, and a solver that
+    keeps applying it diverges.
+
+    So the response of each year is measured across successive passes, and a
+    year that does not move is FROZEN at its current requirement and
+    reported as a shortfall. A plan that cannot pay should say so.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Callable, Dict, List, Mapping
+
+__all__ = [
+    "PlanSolution",
+    "project_plan",
+    "prorated_targets",
+    "solve_schedule",
+]
+
+#: Rs lakhs. Convergence is declared when every year is within this.
+TOL = 1e-4
+
+#: A year whose cash in hand moves by less than this per unit of extra
+#: requirement is treated as unable to respond.
+_DEAD_RESPONSE = 1e-6
+
+
+@dataclass
+class PlanSolution:
+    """The schedule, what it achieves, and where it could not."""
+
+    gross: Dict[int, float]
+    net: Dict[int, float]
+    targets: Dict[int, float]
+    #: FY -> amount by which cash in hand falls short. Only years that could
+    #: not respond appear here.
+    shortfalls: Dict[int, float] = field(default_factory=dict)
+    iterations: int = 0
+    converged: bool = False
+
+    @property
+    def total_shortfall(self) -> float:
+        return sum(self.shortfalls.values())
+
+    def worst_year(self) -> int | None:
+        if not self.shortfalls:
+            return None
+        return max(self.shortfalls, key=lambda fy: self.shortfalls[fy])
+
+
+def prorated_targets(annual: Mapping[int, float], investment_date,
+                     years) -> Dict[int, float]:
+    """Scale each annual target to the months that financial year spans.
+
+    Only FY1 is ever short, and only when the plan does not start in April.
+    """
+    from pro_rated_utils import months_in_fy
+    return {fy: float(annual.get(fy, 0.0))
+            * months_in_fy(investment_date, fy) / 12.0
+            for fy in years}
+
+
+def solve_schedule(
+    targets: Mapping[int, float],
+    project: Callable[[Dict[int, float]], Dict[int, float]],
+    initial: Mapping[int, float] | None = None,
+    scale: Mapping[int, float] | None = None,
+    tol: float = TOL,
+    max_iter: int = 25,
+) -> PlanSolution:
+    """Gross schedule whose projected cash in hand meets *targets*.
+
+    *project* takes a gross schedule and returns cash in hand per year -- in
+    practice a full engine run. It is called once per pass, so the cost is a
+    handful of projections rather than one per year.
+
+    *scale* converts a shortfall in cash into an adjustment of the ANNUAL
+    requirement. The engine spends a requirement at one twelfth per elapsed
+    month, so a short FY1 only spends a fraction of it; the correction has to
+    be divided by that fraction or the year never catches up. Pass
+    12 / months_in_fy(fy). Defaults to 1.
+
+    Years that stop responding are frozen and reported in shortfalls rather
+    than chased.
+    """
+    years: List[int] = sorted(targets)
+    gross: Dict[int, float] = {
+        fy: float(initial[fy]) if initial and fy in initial else float(targets[fy])
+        for fy in years
+    }
+    step = {fy: float((scale or {}).get(fy, 1.0)) for fy in years}
+    frozen: Dict[int, bool] = {fy: False for fy in years}
+    prev_gross: Dict[int, float] = {}
+    prev_net: Dict[int, float] = {}
+    net: Dict[int, float] = {}
+
+    it = 0
+    for it in range(1, max_iter + 1):
+        net = project(gross)
+        errors = {fy: targets[fy] - net.get(fy, 0.0) for fy in years}
+
+        # Freeze any year that did not move when its requirement did.
+        for fy in years:
+            if frozen[fy] or fy not in prev_gross:
+                continue
+            dg = gross[fy] - prev_gross[fy]
+            dn = net.get(fy, 0.0) - prev_net.get(fy, 0.0)
+            if abs(dg) > tol and abs(dn) <= _DEAD_RESPONSE:
+                frozen[fy] = True
+
+        live = [fy for fy in years if not frozen[fy]]
+        if all(abs(errors[fy]) <= tol for fy in live):
+            break
+
+        prev_gross = dict(gross)
+        prev_net = dict(net)
+        for fy in live:
+            if abs(errors[fy]) <= tol:
+                continue
+            gross[fy] = max(0.0, gross[fy] + errors[fy] * step[fy])
+
+    shortfalls = {fy: targets[fy] - net.get(fy, 0.0)
+                  for fy in years
+                  if frozen[fy] and targets[fy] - net.get(fy, 0.0) > tol}
+    converged = all(
+        abs(targets[fy] - net.get(fy, 0.0)) <= tol
+        for fy in years if not frozen[fy]
+    )
+    return PlanSolution(gross=gross, net=net, targets=dict(targets),
+                        shortfalls=shortfalls, iterations=it,
+                        converged=converged)
+
+
+def project_plan(state, **engine_kwargs):
+    """Solve the schedule, then project the plan that delivers it.
+
+    THE Phase B entry point. Returns the engine's usual four sequences plus
+    the PlanSolution, so a caller can see the schedule that was chosen and
+    any year that could not be met.
+
+    state.annual_requirements is read as a NET target -- cash the plan must
+    leave in hand after tax and after the transfer into the HUF, which is
+    what the engine reports as net_cash_total. Targets are pro-rated for a
+    short FY1 exactly as every other annual figure is.
+
+    Cost is one engine run per pass, and it converges in three or four on the
+    live project. Anything calling this in a loop should hold the result.
+    """
+    import copy
+
+    from engine import Engine
+    from pro_rated_utils import months_in_fy
+
+    years = list(state.fy_range())
+    targets = prorated_targets(
+        {fy: state.get_requirement(fy) for fy in years},
+        state.investment_date, years)
+    # A requirement is spent at one twelfth per elapsed month, so a short FY1
+    # only spends part of it; the correction must be divided by that fraction
+    # or the year never catches up.
+    scale = {fy: 12.0 / months_in_fy(state.investment_date, fy) for fy in years}
+
+    def project(gross):
+        probe = copy.copy(state)
+        _, yearly, _, _ = Engine(probe, gross_schedule=gross,
+                                 **engine_kwargs).run()
+        return {y.year: y.net_cash_total for y in yearly}
+
+    solution = solve_schedule(targets, project, scale=scale)
+    p_monthly, p_yearly, h_monthly, h_yearly = Engine(
+        state, gross_schedule=solution.gross, **engine_kwargs).run()
+    return p_monthly, p_yearly, h_monthly, h_yearly, solution

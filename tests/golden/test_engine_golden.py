@@ -30,8 +30,12 @@ YEARLY_FIELDS = [
 
 
 def _run(state):
-    from engine import Engine
-    return Engine(state).run()
+    # project_plan, not Engine: annual_requirements is a NET target since
+    # Phase B, and the app solves for the schedule that delivers it. A golden
+    # file generated from Engine alone would pin behaviour nothing runs.
+    from net_income_plan import project_plan
+    p_monthly, p_yearly, h_monthly, h_yearly, _ = project_plan(state)
+    return p_monthly, p_yearly, h_monthly, h_yearly
 
 
 def _yearly_to_csv(rows, fingerprint: str) -> str:

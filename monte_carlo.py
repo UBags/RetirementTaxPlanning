@@ -745,6 +745,7 @@ def run_monte_carlo(
     seed:           int   = 42,
     use_bootstrap:  bool  = True,
     block_length:   int   = 3,
+    gross_schedule: Optional[dict] = None,
 ) -> MCResults:
     """
     Run Monte Carlo sequence-of-returns simulation.
@@ -840,7 +841,10 @@ def run_monte_carlo(
 
     # ── Deterministic base from engine ───────────────────────────────────────
     from engine import Engine
-    _, det_y, h_mon, _ = Engine(state).run()
+    # The deterministic spine every simulated path is scaled against. It has
+    # to use the same withdrawal schedule the paths do, or the baseline and
+    # the simulation are describing different plans.
+    _, det_y, h_mon, _ = Engine(state, gross_schedule=gross_schedule).run()
     det_corpus   = np.array([r.corpus_debt_personal + r.corpus_equity_personal +
                               r.corpus_other_personal for r in det_y])
     det_huf_corp = np.array([r.corpus_debt_huf + r.corpus_equity_huf +
@@ -850,7 +854,17 @@ def run_monte_carlo(
     det_net_huf  = np.array([r.net_cash_huf      for r in det_y])
     det_tax_pers = np.array([r.tax_personal   for r in det_y])
     det_tax_sav  = np.array([r.tax_saved      for r in det_y])
-    det_req      = np.array([state.get_requirement(fy) for fy in range(1, 31)])
+    # The GROSS withdrawal per FY, not the requirement. Since Phase B
+    # state.annual_requirements is a NET target -- cash the plan must leave
+    # in hand -- and the schedule delivering it is solved deterministically
+    # by net_income_plan.project_plan(), then stress-tested here across
+    # return paths. Reading the target as a withdrawal would understate the
+    # draw by whatever other income contributes, which on the live project is
+    # most of it. With no schedule the old reading stands, which is what the
+    # bootstrap snapshots were taken under.
+    det_req      = np.array([
+        (gross_schedule or {}).get(fy, state.get_requirement(fy))
+        for fy in range(1, MC_FIXED_HORIZON + 1)])
 
     # ── HUF absolute cash flows (do NOT scale by simulated corp_p) ───────────
     # HUF inflows and outflows are POLICY-FIXED (tax-savings transfers, windfall,
