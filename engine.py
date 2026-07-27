@@ -1521,7 +1521,11 @@ class Engine:
                 if pend:
                     raw_ind_tax   = pend["ind_tax"]
                     fd_tax_this   = pend["fd_tax"]
-                    huf_xfer_this = pend["tax_saved"]
+                    # Phase 3: no transfer. The tax saving stays in the
+                    # personal corpus, which is where the money already is —
+                    # tax not paid is simply tax not withdrawn. tax_saved and
+                    # fd_tax_benchmark survive as reported comparisons only.
+                    huf_xfer_this = 0.0
 
                     # ── Personal tax: bounded by personal corpus ──────────────
                     # Value from the PER-FUND buckets, which are the source of
@@ -1572,28 +1576,6 @@ class Engine:
 
                     ind_tax_this = _p_tax_payable + (
                         _huf_covers if _p_tax_shortfall > 1e-6 else 0.0)
-
-                    # ── HUF transfer: bounded by personal corpus ──────────────
-                    # The HUF transfer (tax saving) is a cash transfer OUT of
-                    # personal into HUF.  Cap it at available personal corpus.
-                    _p_corpus_after_tax = sum(
-                        bk.current_value(p_fund_navs.get(fn, 1.0))
-                        for fn, bk in p_fund_buckets.items())
-                    huf_xfer_this = min(huf_xfer_this, max(0.0, _p_corpus_after_tax))
-
-                    # Debit the transfer from the per-fund buckets. Without
-                    # this the amount was credited to the HUF and never
-                    # removed from Personal -- money created from nothing.
-                    if huf_xfer_this > 1e-9:
-                        _xf_pr, _xf_gn, _xf_gbf = _redeem_pro_rata(
-                            p_fund_buckets, p_fund_navs, huf_xfer_this)
-                        if ACCRUE_REDEMPTION_GAINS and _xf_gn > 1e-12:
-                            _a_xf = acc_get(p_acc, fy)
-                            for _fn, _g in _xf_gbf.items():
-                                _ft = fund_types_map.get(_fn, "debt")
-                                _a_xf["gain_e" if _ft == "equity"
-                                      else "gain_o" if _ft == "other"
-                                      else "gain_d"] += _g
 
             # ── Annual aggregate sync (every April) ─────────────────────────
             # The per-fund buckets grow at each fund's own CAGR; the aggregate
@@ -2126,9 +2108,9 @@ class Engine:
             # The top-up amount was withdrawn from the HUF corpus; it now arrives
             # in the personal portfolio as additional monthly cash income.
             # We record it in p_acc["topup_from_huf"] so net_cash_personal includes it.
-            # We also track topup's proportional share of the HUF gains so those
-            # gains can be excluded from HUF's own swp_only_tax (topup gains belong
-            # to the transfer, not to HUF's disposable income).
+            # gains can be excluded from HUF's own SWP tax. Phase 3 deducts the
+            # full HUF tax, so that exclusion has gone; the topup gain split is
+            # kept because it is still reported.
             if h_topup_this > 0.001:
                 a_p = acc_get(p_acc, fy)
                 a_p["topup_from_huf"] = a_p.get("topup_from_huf", 0.0) + h_topup_this
@@ -2299,12 +2281,15 @@ class Engine:
             glide_cost = glide_costs_by_fy.get(fy)
             glide_exit_loads = glide_cost.exit_loads_paid if glide_cost else 0.0
 
-            swp_only_tax = this_fy_tax - rebal_tax_fy
             # ann_topup_p: cash received from HUF when personal corpus was exhausted.
             # Included in personal net_cash as it supplements the monthly income.
+            #
+            # Phase 3: the FULL tax is deducted, rebalancing tax included. It
+            # is real cash leaving the plan, so the solver must redeem more to
+            # cover it. And there is no longer a transfer to the HUF to net off.
             net_p = (ann_wd_p + ann_topup_p
                      + taxable_other + non_taxable_other
-                     - this_fy_saved - swp_only_tax)
+                     - this_fy_tax)
 
             # ── HUF tax ───────────────────────────────────────────────────────
             huf_debt_income = huf_assessable_other + ha["gain_d"]
@@ -2318,33 +2303,12 @@ class Engine:
                              if (hoc and hdc) else 0.0)
             huf_total_tax = huf_debt_tax + huf_eq_tax + huf_other_tax
 
-            # ── HUF rebalancing tax exclusion ─────────────────────────────────
-            # Rebalancing tax is portfolio-self-funded; exclude it from net_cash_huf
-            # exactly as done for personal.  We compute the SWP-only tax DIRECTLY
-            # (not via a linear fraction) to handle progressive slabs correctly:
-            # SWP gains may fall entirely below the exemption even when the combined
-            # SWP+rebalancing gain is large and highly taxed.
-            h_rg = h_rebal_gains_by_fy.get(fy, {})
-            # Also exclude topup redemption gains — those belong to the personal
-            # transfer, not to HUF's own scheduled withdrawal income.
-            h_swp_gd = max(0.0, ha["gain_d"] - h_rg.get("d", 0.0)
-                                              - ha.get("topup_gain_d", 0.0))
-            h_swp_ge = max(0.0, ha["gain_e"] - h_rg.get("e", 0.0)
-                                              - ha.get("topup_gain_e", 0.0))
-            h_swp_go = max(0.0, ha["gain_o"] - h_rg.get("o", 0.0)
-                                              - ha.get("topup_gain_o", 0.0))
-
-            h_swp_debt_income = huf_assessable_other + h_swp_gd
-            huf_swp_debt_tax  = compute_slab_tax(h_swp_debt_income, hdc, "huf") if hdc else 0.0
-            huf_swp_eq_tax    = (compute_ltcg_huf(h_swp_ge, hec, h_swp_debt_income, hdc)
-                                  if (hec and hdc) else 0.0)
-            huf_swp_oth_tax   = (compute_ltcg_other_huf(h_swp_go, hoc, h_swp_debt_income, hdc)
-                                  if (hoc and hdc) else 0.0)
-            huf_swp_only_tax  = huf_swp_debt_tax + huf_swp_eq_tax + huf_swp_oth_tax
-
             # Subtract top-up transferred to personal — that is not HUF's own income.
             ann_topup_h = a.get("topup_from_huf", 0.0)  # same FY's topup
-            net_h = (ann_wd_h - ann_topup_h) + huf_taxable_other + huf_nontax_other - huf_swp_only_tax
+            # Phase 3: the FULL HUF tax is deducted, rebalancing included,
+            # symmetrically with personal above. The SWP-only exclusion that
+            # used to sit here has gone with it.
+            net_h = (ann_wd_h - ann_topup_h) + huf_taxable_other + huf_nontax_other - huf_total_tax
 
             yearly.append(YearSummary(
                 year=fy,

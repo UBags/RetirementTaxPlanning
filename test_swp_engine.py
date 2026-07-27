@@ -197,22 +197,36 @@ def test_engine_zero_allocation_funds():
            all(y.corpus_equity_personal == 0 for y in yearly))
 
 
-def test_engine_rebalancing_tax_self_funded():
-    _section("Engine — Bug #1: Rebalancing Tax Must Not Reduce Net Cash (self-funded)")
+def test_rebalancing_tax_reduces_cash_and_the_solver_covers_it():
+    _section("Engine — rebalancing tax is paid out of cash, and covered")
     """
-    Create two chunks with very different allocations (forces large rebalance)
-    and verify that net_cash_personal in the rebalance year is NOT reduced
-    by the rebalancing tax — it should be portfolio-self-funded.
+    Phase 3 reversed the old "self-funded" rule.
+
+    That rule was itself a fix for a real bug: net cash going negative in a
+    rebalance year. But it treated the symptom. Rebalancing tax is real money
+    leaving the plan, so it MUST reduce cash in hand; the cause of the negative
+    was the absent compensating redemption, not the deduction.
+
+    So there are two properties now, and this pins both:
+
+      1. Run the engine directly, with no solver, and the rebalancing tax bites
+         — net cash falls below the requirement. That is correct: nothing is
+         redeeming more to cover it.
+      2. Run the same plan through project_plan, and the solver redeems enough
+         extra that the requirement is still met to within PLAN_TOL.
+
+    The second is the one that matters. It is the design intent the old test
+    could not express, because under the old identity the tax never bit.
     """
     from glide_path import build_glide_path
-    from models import AllocationChunk, ReturnChunk, SplitChunk
+    from models import AllocationChunk
 
     state = _make_state(funds=[
         _make_fund("Debt Big", "debt", 160.0),
         _make_fund("Eq Big",   "equity", 40.0),
     ], req_annual=8.0)
 
-    # Two-chunk: Year 1-10 heavy equity, Year 11-30 heavy debt → forces big rebalance
+    # Two chunks with very different allocations, to force a large rebalance.
     c1 = AllocationChunk(year_from=1, year_to=10,
                          funds=[_make_fund("Eq Heavy", "equity", 160.0, cagr5=12.0),
                                 _make_fund("Debt Light", "debt", 40.0)])
@@ -229,29 +243,27 @@ def test_engine_rebalancing_tax_self_funded():
 
     state.allocation_chunks = [c1, c2]
     state.funds = c2.funds
-
     gp = build_glide_path([c1, c2], spread_years=0)
     state.glide_path = gp
 
-    try:
-        _, yearly, _ = _run_engine(state, glide_path=gp)
+    # ── 1. no solver: the tax bites ──────────────────────────────────────
+    _, yearly, _ = _run_engine(state, glide_path=gp)
+    y11 = yearly[10]                      # FY11, the rebalance year
+    _check("Rebalancing tax is tracked",
+           y11.rebalance_tax_paid > 0,
+           f"rebal_tax={y11.rebalance_tax_paid:.4f}L")
+    _check("Without a solver, rebalancing tax reduces cash in hand",
+           y11.net_cash_personal < 8.0,
+           f"net_cash={y11.net_cash_personal:.2f}L vs req=8.00L")
 
-        # Rebalance year is Year 11 — check that net_cash is reasonable
-        y11 = yearly[10]  # Year 11 (index 10)
-        rebal_tax = y11.rebalance_tax_paid
-        net_cash  = y11.net_cash_personal
-        req_annual = 8.0
-
-        # If the old (broken) code ran: net_cash = SWP - rebal_tax → might go negative
-        # New code: net_cash should be ≈ SWP requirement (rebal_tax is portfolio-internal)
-        _check("Rebal tax is tracked separately",
-               rebal_tax >= 0, f"rebal_tax={rebal_tax:.4f}L")
-        _check("Net cash is not crashed by rebalance tax",
-               net_cash > req_annual * 0.5,
-               f"net_cash={net_cash:.2f}L vs req={req_annual:.2f}L")
-    except Exception as e:
-        _check("Rebalancing self-funding test ran without crash", False, str(e))
-        raise
+    # ── 2. through the solver: the requirement is still met ──────────────
+    from net_income_plan import PLAN_TOL, project_plan
+    _, y2, _, _, sol = project_plan(state, glide_path=gp)
+    got = y2[10].net_cash_total
+    want = sol.targets[11]
+    _check("The solver redeems enough to cover it",
+           abs(got - want) <= PLAN_TOL,
+           f"FY11 delivered {got:.4f}L vs required {want:.4f}L")
 
 
 def test_engine_windfall():
@@ -603,7 +615,7 @@ ALL_TESTS = [
     test_engine_all_equity,
     test_engine_corpus_depletion,
     test_engine_zero_allocation_funds,
-    test_engine_rebalancing_tax_self_funded,
+    test_rebalancing_tax_reduces_cash_and_the_solver_covers_it,
     test_engine_windfall,
     test_engine_no_trade_threshold,
     test_glide_path_single_chunk,

@@ -162,11 +162,36 @@ def test_project_plan_hits_every_target():
 
 
 def test_the_gross_schedule_differs_from_the_target_once_tax_bites():
-    """If they were equal the solve would be doing nothing."""
+    """The solve must actually solve — but only where tax is payable.
+
+    Phase 3 changed what drives the wedge. Before, cash in hand had the FD
+    transfer subtracted, so gross exceeded target even with no tax due. Now the
+    only wedge is tax, and _plan() pays none: a 10L requirement against a 12L
+    exempt limit produces zero tax, and gross == target is the correct answer.
+    So this needs a plan where tax actually bites.
+    """
     s = _plan()
+    s.individual_debt_chunks = [TaxChunk(1, 12, 0.0,
+                                         [TaxSlab(0, 1e9, 0.30)])]
     _, _, _, _, sol = project_plan(s)
     assert any(abs(sol.gross[fy] - sol.targets[fy]) > 1e-3
-               for fy in sol.targets)
+               for fy in sol.targets), (
+        "gross never differs from target even with a flat 30% and no "
+        "exemption — the solve is doing nothing")
+
+
+def test_the_gross_schedule_equals_the_target_when_no_tax_is_due():
+    """The other half, which the old test could not state.
+
+    With no tax and no transfer, cash in hand IS the withdrawal plus other
+    income, so the solver's correct answer is to change nothing. Before
+    Phase 3 this could not hold: the FD transfer always drove a wedge.
+    """
+    s = _plan()
+    _, _, _, _, sol = project_plan(s)
+    assert all(abs(sol.gross[fy] - sol.targets[fy]) <= 1e-3
+               for fy in sol.targets), (
+        "gross differs from target on a plan with no tax and no transfer")
 
 
 def test_other_income_reduces_what_must_be_withdrawn():

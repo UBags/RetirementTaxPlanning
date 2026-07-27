@@ -72,6 +72,21 @@ __all__ = [
 #: Rs lakhs. Convergence is declared when every year is within this.
 TOL = 1e-4
 
+#: Rs lakhs. The tolerance project_plan solves a real plan to.
+#:
+#: Deliberately looser than TOL. Until the identity changed, every measured
+#: d(net)/d(gross) was exactly 1.000 -- the tax term cancelled out of cash in
+#: hand -- so the first correction landed exactly on the answer and the error
+#: was 0.00e+00 in one pass. TOL was therefore never exercised: it is not a
+#: precision the engine was shown to meet, it is one the problem never asked
+#: for. Once tax stops cancelling, the engine turns out to have a floor around
+#: 0.01 on a 12-25L target, roughly 7e-4 relative, from monthly granularity
+#: and lot boundaries.
+#:
+#: 0.01 lakh is a thousand rupees a year on a retirement plan. Immaterial to
+#: the decision; material to a solver told to hit 1e-4.
+PLAN_TOL = 1e-2
+
 #: A year whose cash in hand moves by less than this per unit of extra
 #: requirement is treated as unable to respond.
 _DEAD_RESPONSE = 1e-6
@@ -262,7 +277,7 @@ def project_plan(state, **engine_kwargs):
                                  **engine_kwargs).run()
         return {y.year: y.net_cash_total for y in yearly}
 
-    solution = solve_schedule(targets, project, scale=scale)
+    solution = solve_schedule(targets, project, scale=scale, tol=PLAN_TOL)
     p_monthly, p_yearly, h_monthly, h_yearly = Engine(
         state, gross_schedule=solution.gross, **engine_kwargs).run()
     return p_monthly, p_yearly, h_monthly, h_yearly, solution

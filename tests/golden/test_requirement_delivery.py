@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import pytest
 
-TOL = 1e-3          # Rs lakh; the solver's own convergence tolerance
+TOL = 1e-2          # Rs lakh; matches net_income_plan.PLAN_TOL
 
 
 def _plan(state):

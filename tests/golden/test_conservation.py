@@ -47,38 +47,38 @@ def _with_fd_rate(state, rate: float):
     return s
 
 
-def test_huf_transfer_debits_personal_corpus(scenario):
+def test_the_fd_benchmark_does_not_touch_the_portfolio(scenario):
     """
-    A higher FD benchmark produces a larger `tax_saved`, hence a larger transfer
-    out of Personal into the HUF. Personal corpus must fall in response.
+    fd_tax_benchmark and tax_saved are REPORTED comparisons -- "would an FD
+    have done better?" -- and must not move a rupee.
 
-    If personal corpus is identical under both FD rates, the transfer is being
-    credited to the HUF without ever being debited from Personal.
+    Before Phase 3 the FD rate drove tax_saved, which drove a transfer out of
+    personal into the HUF, so changing the rate changed the portfolio. It no
+    longer should. Two runs at 2% and 12% must produce identical corpora.
+
+    This replaces test_huf_transfer_debits_personal_corpus, which asserted
+    the opposite and would now merely skip.
     """
     label, state = scenario
 
     _, y_lo, _, _ = _run(_with_fd_rate(state, 0.02))
     _, y_hi, _, _ = _run(_with_fd_rate(state, 0.12))
 
-    xfer_lo = sum(r.tax_saved for r in y_lo)
-    xfer_hi = sum(r.tax_saved for r in y_hi)
-    if xfer_hi - xfer_lo < 1.0:
-        pytest.skip(f"{label}: FD rate barely changes tax_saved; nothing to test")
-
-    idx = max((i for i, (a, b) in enumerate(zip(y_lo, y_hi))
-               if _personal(a) > 1.0 and _personal(b) > 1.0), default=None)
-    if idx is None:
-        pytest.skip(f"{label}: personal corpus exhausted in both runs")
-
-    p_lo, p_hi = _personal(y_lo[idx]), _personal(y_hi[idx])
-
-    assert p_hi < p_lo - 1e-3, (
-        f"{label} FY{y_lo[idx].year}: personal corpus did not respond to a "
-        f"{xfer_hi - xfer_lo:.2f}L larger HUF transfer "
-        f"(low-FD {p_lo:.6f} vs high-FD {p_hi:.6f}). "
-        "The transfer is credited to the HUF but never debited from Personal."
+    assert sum(r.fd_tax_benchmark for r in y_hi) > \
+           sum(r.fd_tax_benchmark for r in y_lo) + 1.0, (
+        f"{label}: the FD benchmark did not respond to the FD rate at all, "
+        "so this test is not exercising what it claims to."
     )
 
+    bad = [(a.year, _personal(a), _personal(b), _huf(a), _huf(b))
+           for a, b in zip(y_lo, y_hi)
+           if abs(_personal(a) - _personal(b)) > 1e-6
+           or abs(_huf(a) - _huf(b)) > 1e-6]
+    assert not bad, (
+        f"{label}: the FD benchmark moved the portfolio in {len(bad)} year(s). "
+        "It is a reported comparison and must not. "
+        f"First: {bad[0]}"
+    )
 
 def test_personal_tax_debits_corpus(scenario, monkeypatch):
     """
@@ -187,29 +187,26 @@ def test_aggregate_matches_per_fund_huf(scenario):
     _assert_aggregate_matches_per_fund(label, h_rows, "huf")
 
 
-def test_transfer_recorded_equals_transfer_reported(scenario):
+def test_no_cash_moves_from_personal_to_the_huf(scenario):
     """
-    `huf_transfer_in` must reconcile with `tax_saved`, with a one-year lag:
-    FY N's saving is computed at that year's tax settlement and transferred in
-    April of FY N+1.
+    Phase 3 removed the transfer: the tax saving stays in the personal
+    corpus. `huf_transfer_in` must therefore be zero in every month.
+
+    This replaces test_transfer_recorded_equals_transfer_reported, which
+    reconciled the transfer against tax_saved. With nothing transferred that
+    test passed vacuously -- it skipped every row on `moved <= 1e-9`. A test
+    that passes because it examines nothing is a hole, not a guard.
     """
     label, state = scenario
-    p_rows, yearly, _, _ = _run(state)
+    p_rows, _yearly, _h, _hy = _run(state)
 
-    moved_by_fy: dict[int, float] = {}
-    for r in p_rows:
-        moved_by_fy[r.fy_year] = moved_by_fy.get(r.fy_year, 0.0) + r.huf_transfer_in
-
-    saved_by_fy = {r.year: r.tax_saved for r in yearly}
-
-    for fy, moved in sorted(moved_by_fy.items()):
-        if moved <= 1e-9:
-            continue
-        entitled = saved_by_fy.get(fy - 1, 0.0)
-        assert moved <= entitled + 1e-6, (
-            f"{label} FY{fy}: transferred {moved:.4f}L to the HUF but FY{fy - 1} "
-            f"tax_saved was only {entitled:.4f}L"
-        )
+    moved = [(r.fy_year, r.huf_transfer_in) for r in p_rows
+             if abs(r.huf_transfer_in) > 1e-9]
+    assert not moved, (
+        f"{label}: {len(moved)} month(s) moved cash from personal into the "
+        f"HUF. Phase 3 removed the transfer; the saving stays where it is. "
+        f"First few: {moved[:5]}"
+    )
 
 
 def test_no_entity_holds_negative_corpus(scenario):
