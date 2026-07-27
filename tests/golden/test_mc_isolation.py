@@ -194,6 +194,14 @@ def test_bootstrap_percentiles_snapshot(frozen_bootstrap, scenario, request):
     and review the diff. A snapshot regenerated without review is worth
     nothing.
 
+    THE SCHEDULE IS SOLVED FIRST, as the application does. Since Phase B
+    state.annual_requirements is a NET target, and run_monte_carlo() called
+    without a gross_schedule falls back to reading it as a GROSS withdrawal
+    -- the pre-Phase-B meaning. A snapshot taken that way pins behaviour
+    nothing runs, which is the objection that moved the engine snapshots onto
+    project_plan. Monte Carlo stress-tests the plan the deterministic solve
+    chose; it does not re-plan per path.
+
     KNOWN COVERAGE LIMIT. Every fixture scenario is 100% debt, so this
     snapshot is sensitive to the DEBT series and completely insensitive to
     the equity one — perturbing a Nifty year moves it by exactly zero. See
@@ -202,8 +210,11 @@ def test_bootstrap_percentiles_snapshot(frozen_bootstrap, scenario, request):
     what §2.2 needed and did not have.
     """
     from monte_carlo import run_monte_carlo
+    from net_income_plan import project_plan
     label, state = scenario
-    res = run_monte_carlo(state, n_sims=500, seed=42, use_bootstrap=True)
+    _, _, _, _, solution = project_plan(state)
+    res = run_monte_carlo(state, n_sims=500, seed=42, use_bootstrap=True,
+                          gross_schedule=solution.gross)
 
     rows = ["fy,corpus_p5,corpus_p50,corpus_p95,ruin_by_fy"]
     for i in range(30):
