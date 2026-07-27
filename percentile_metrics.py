@@ -125,16 +125,22 @@ def is_liquid_fund(fund_type: Optional[str], name: Optional[str] = None) -> bool
 
     'DSP Liquidity Fund' is a Liquid Fund whose name says Liquidity, so the
     substring match catches it either way.
+
+    The type DECIDES when it is present.  Falling through to the name when
+    the type is merely unrecognised -- which is what this did -- means a
+    scheme categorised as a Corporate Bond Fund but marketed as something
+    "Liquid" is counted as liquid, and the risk-free rate is then measured
+    over a category it does not describe.  The name is a fallback for
+    missing data, not a second opinion about a category the regulator has
+    already assigned.
     """
-    for candidate in (fund_type, name):
-        if not candidate:
-            continue
-        text = str(candidate).lower()
-        if any(bad in text for bad in EXCLUDED_MARKERS):
-            return False
-        if any(good in text for good in LIQUID_MARKERS):
-            return True
-    return False
+    candidate = fund_type if fund_type else name
+    if not candidate:
+        return False
+    text = str(candidate).lower()
+    if any(bad in text for bad in EXCLUDED_MARKERS):
+        return False
+    return any(good in text for good in LIQUID_MARKERS)
 
 
 def percentile_of(values: Sequence[float], percentile: float,

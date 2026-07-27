@@ -355,3 +355,38 @@ def test_configured_exposes_all_three_percentiles():
             < t["risk_free_rate_percentile"]), (
         "the ladder percentiles must descend: the later chunks of the FD "
         "benchmark are meant to be the less confident ones")
+
+
+# ── the fund type decides ────────────────────────────────────────────────────
+
+def test_the_regulatory_type_overrules_a_liquid_sounding_name():
+    """A Corporate Bond Fund is not liquid however it is marketed.
+
+    is_liquid_fund used to try the type, and if the type was merely
+    UNRECOGNISED fall through to the name -- so a scheme categorised as
+    corporate bond but named "...Liquid Fund" was counted as liquid and the
+    risk-free rate was measured over a category it does not describe. The
+    name is a fallback for missing data, not a second opinion about a
+    category the regulator has already assigned.
+    """
+    assert not pm.is_liquid_fund("Debt Scheme - Corporate Bond Fund",
+                                 "ACME Liquid Fund")
+    assert not pm.is_liquid_fund("Debt Scheme - Banking and PSU Fund",
+                                 "XYZ Liquid Plus")
+
+
+def test_the_name_is_used_only_when_the_type_is_missing():
+    assert pm.is_liquid_fund(None, "ACME Liquid Fund")
+    assert pm.is_liquid_fund("", "ACME Liquid Fund")
+    assert not pm.is_liquid_fund(None, "ACME Corporate Bond Fund")
+
+
+def test_a_liquid_type_is_liquid_whatever_the_name():
+    assert pm.is_liquid_fund("Debt Scheme - Liquid Fund", "DSP Liquidity Fund")
+    assert pm.is_liquid_fund("Debt Scheme - Liquid Fund", "Something Else")
+
+
+def test_excluded_categories_are_still_excluded_by_type():
+    for t in ("Debt Scheme - Overnight Fund", "Debt Scheme - Ultra Short Duration",
+              "Debt Scheme - Low Duration Fund", "Debt Scheme - Money Market Fund"):
+        assert not pm.is_liquid_fund(t, "ACME Liquid Fund"), t
