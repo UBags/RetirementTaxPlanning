@@ -13,11 +13,13 @@ last session and is written up in §4 — it is not in any earlier plan.
 
 ## 0. Do these first
 
-1. `ruff check .` then `pytest -q -n 4`. Expect **650 passing**, no warnings
-   summary. The suite takes about 100 seconds: `project_plan()` runs the engine
-   four to ten times per projection, and five golden scenarios each pay that.
-2. Read §1 (what changed), then §4 (what to do next), then §11 (gotchas).
-   §11 is not optional. Every entry in it cost real time.
+1. `ruff check .` then `python3 -m pytest -q -n 4`. Expect **650 passing**, no
+   warnings summary. About 65 seconds under `-n 4`, 88 sequential:
+   `project_plan()` runs the engine four to ten times per projection, and five
+   golden scenarios each pay that. Run `python3 -m pytest`, never bare
+   `pytest` — see §9.12.
+2. Read §1 (what changed), then §4 (what to do next), then §9 (gotchas).
+   §9 is not optional. Every entry in it cost real time.
 
 ### How to work with this codebase
 
@@ -28,7 +30,7 @@ anchor before writing a single byte and refuses a file that has drifted.
 
 Build them by deriving hunks **mechanically** from a verified working tree and
 proving they reproduce it byte-for-byte before embedding. Never hand-write a
-hunk. §11.6 records two bugs in the generator that only appear on real diffs.
+hunk. §9.6 records two bugs in the generator that only appear on real diffs.
 
 **One step at a time.** Give the command whose result you need, stop, read the
 output, then decide the next.
@@ -36,7 +38,7 @@ output, then decide the next.
 **Every snapshot movement is reviewed before it is committed.** A regenerated
 snapshot that nobody read is worth nothing. The review is not a formality: it
 caught a genuine defect in B1d-ii after the code, the tests and the patcher
-verification had all passed. See §11.9.
+verification had all passed. See §9.9.
 
 ---
 
@@ -395,6 +397,15 @@ holding, that part is wiring rather than a new feature.
     `needs_assessment.py`'s `setRowHeight(…, 30)` are pixels;
     `optimization_report.py`'s `rebal_pct > 30` is a percentage. There are
     tests asserting each survives a horizon sweep.
+
+12. **Run `python3 -m pytest`, never bare `pytest`.** A user-level
+    `~/.local/bin/pytest` can shadow the venv's on `PATH`. It carries a system
+    shebang, so it sees none of the venv's packages — no PySide6, no
+    pytest-qt, no xdist. It rejected `-n 4` outright, which is the only reason
+    the shadowing was caught: had it accepted the flag it would have run and
+    reported green with all 34 widget-driving tests silently skipped. That is
+    §9.8 arriving by another route. `which -a pytest` shows the shadowing;
+    activating the venv fixes it; `python3 -m pytest` is immune either way.
 
 ---
 

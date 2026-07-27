@@ -42,7 +42,11 @@ jobs:
       - name: Smoke tests (clone must be importable)
         run: pytest tests/test_smoke.py -v
       - name: Full suite
-        run: pytest -v -m "not network"
+        # -n 4 is not for speed. Splitting the suite across workers is what
+        # exposes order-dependent tests a sequential run hides; that is how
+        # a965e4a was found (HANDOVER §9.10). Four workers to match the
+        # documented local command exactly.
+        run: pytest -v -n 4 -m "not network"
 
   guard-personal-data:
     runs-on: ubuntu-latest
