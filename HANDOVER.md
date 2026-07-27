@@ -1,489 +1,440 @@
 # HANDOVER — RetirementTaxPlanning
 
-_Pending work only. Anything already done has been removed; `git log` has that._
+Replaces the previous handover, which was written when Phase A1 was next and
+describes a codebase that no longer exists.
 
-**Baseline: `main` at `4dea430`, 382 tests passing, `ruff check .` clean.**
+**Baseline: `main` at `12646dd`, 650 tests passing, `ruff check .` clean.**
+
+Phase A is complete. Phase B is one step from complete. The single most
+valuable piece of work now outstanding was found by analysis at the end of the
+last session and is written up in §4 — it is not in any earlier plan.
 
 ---
 
 ## 0. Do these first
 
-1. **`4dea430` is committed but NOT pushed.**
-   `git -C ~/PycharmProjects/RetirementTaxPlanning push`, then check the CI run.
-2. **Confirm state before anything else:**
-   ```bash
-   git -C ~/PycharmProjects/RetirementTaxPlanning status -sb -uall
-   ruff check . && pytest -q -n 4      # expect 382
-   ```
-3. `pytest -n 4` works (pytest-xdist installed) and halves the runtime. Use it.
+1. `ruff check .` then `pytest -q -n 4`. Expect **650 passing**, no warnings
+   summary. The suite takes about 100 seconds: `project_plan()` runs the engine
+   four to ten times per projection, and five golden scenarios each pay that.
+2. Read §1 (what changed), then §4 (what to do next), then §11 (gotchas).
+   §11 is not optional. Every entry in it cost real time.
 
 ### How to work with this codebase
 
-Changes arrive as **patchers**: standalone scripts run from the project root that
-apply anchored text edits, support `--dry-run` / `--check` / `--revert`, write a
-`.bak`, validate every anchor before writing anything, and refuse to touch a file
-that has drifted. Build them by deriving hunks mechanically from a verified
-working tree and proving they reproduce it byte-for-byte before embedding.
+Changes arrive as **patchers**: standalone scripts run from the project root
+that apply anchored text edits, with `--check`, `--dry-run`, `--revert`, a
+`.bak` per file, and SHA-256 pinning of every target. A patcher validates every
+anchor before writing a single byte and refuses a file that has drifted.
+
+Build them by deriving hunks **mechanically** from a verified working tree and
+proving they reproduce it byte-for-byte before embedding. Never hand-write a
+hunk. §11.6 records two bugs in the generator that only appear on real diffs.
 
 **One step at a time.** Give the command whose result you need, stop, read the
-output, then decide the next. Stacking five stages and guessing at stages three
-to five is how several hours were lost.
+output, then decide the next.
+
+**Every snapshot movement is reviewed before it is committed.** A regenerated
+snapshot that nobody read is worth nothing. The review is not a formality: it
+caught a genuine defect in B1d-ii after the code, the tests and the patcher
+verification had all passed. See §11.9.
 
 ---
 
-## 1. Phase A — flexible calendar and a variable horizon
+## 1. What changed, and why
 
-**Decision already taken:** the plan starts in **any month of the current FY,
-defaulting to the current month**, and ends on **31 March** of a chosen year,
-defaulting to 30 financial years out. A menu item exposes both.
+Eighteen commits. Tests 382 → 650. Grouped by what they were for.
 
-### A1 — make the horizon a real variable  ← NEXT
+### Phase A — a flexible calendar and a variable horizon (complete)
 
-`config.max_simulation_years` exists, is in `REQUIRED_KEYS`, and is read in
-**two** places (`engine.py:2417`, `chunk_defaults.py`). Everywhere else 30 is
-hardcoded — `range(1, 31)`, `min(fy, 30)`, `np.full(30, …)`, 30-element arrays,
-30-row snapshots. Roughly **69 sites across nine modules**:
+| | |
+|---|---|
+| **A1** `ed4976a` | The horizon becomes a real variable. `AppState.horizon_years` stored, `horizon` clamped into a configured band, `fy_range()` replacing `range(1, 31)`. ~30 hardcoded 30s across five modules. No behaviour change at 30 — every golden snapshot byte-identical. |
+| **A2a** `4073929` | The short first financial year is pro-rated. A March start gives FY1 one month; other income and the FD benchmark were booking a full year of both. New `pro_rated_utils.py`. Snapshots moved. |
+| **A2b-i** `f7d69e3` | Three percentiles of the liquid-fund series measured and stored (P33/P20/P5), plus `fd_benchmark_spread`. Nothing consumed them yet. |
+| **A2b-ii** `36a62a2` | `min_simulation_years = 10`. The floor of 1 was a placeholder. |
+| **A2b-iii** `f444c7c` | The FD tax benchmark takes the measured ladder as its default: three equal parts of the horizon at P33/P20/P5 plus spread, replacing a flat 7.00% from nowhere. User-set chunks still win. |
+| **A3-i** `e407fb9` | The GUI follows the horizon — `main.py`, `dialogs.py`, `chart_dialog.py`. |
+| **A3-ii** `98dd041` | **Plan Period** dialog: start month and plan length become settable at all. Plus chunk-coverage detection and repair. |
+| **A3-iii** `a447f6e` | Ceiling raised to 40. Snapshots moved by one header line only. |
+| **A3-iv** `0680def` | Two files A3-i missed: `tax_dialog.py`, `needs_assessment.py`. |
 
-| file | sites | in A1? |
-|---|---:|---|
-| `monte_carlo.py` | 18 | no — Phase D |
-| `engine.py` | 14 | **yes** |
-| `dialogs.py` | 13 | no — A3 |
-| `chart_dialog.py` | 8 | no — A3 |
-| `main.py` | 7 | no — A3 |
-| `glide_path.py` | 6 | **yes** |
-| `models.py` | ~5 | **yes** |
-| `allocate_funds.py` | 2 | **yes** |
-| `optimization_report.py` | 2 | **yes** |
+### Phase B — solve for cash in hand (one step from complete)
 
-A1 is ~27 sites. **No behaviour change at horizon 30 — the golden snapshots must
-stay green throughout.** That is what makes a change this wide safe to attempt.
+| | |
+|---|---|
+| **B0** `aab08cb` | Tax the **assessable** figure, not cash received. s.16(ia) on salary and pension, s.24(a) on rent. `OtherIncome.taxable()` was serving two quantities that diverge the moment deductions exist. |
+| **B1a** `bbcda19` | `tax_allocator.py` — exact minimum-tax split of a gain between two entities, by breakpoint enumeration. |
+| **B1b** `433ddfd` | `net_cash_solver.py` — the net-cash fixed point, with an exact monotonicity check. |
+| **B1c-0** `df38b35` | `swp_start_month` removed. It suppressed the first three months of every plan. |
+| **B1c** `70c031e` | **`annual_requirements` becomes a net cash-in-hand target.** The largest behaviour change in the sequence. |
+| **B1c** `99b6300` | The Monte Carlo goldens pin what the app runs. |
+| **B1d-i** `12646dd` | `best_cash_split()` — splitting *cash* rather than gain. |
 
-#### The foundation (built and verified in a sandbox, NOT in the repo)
+### Defects found and fixed along the way
 
-Add to `AppState`:
-
-```python
-    #: Last financial year of the plan. The plan ends 31 March of
-    #: (investment FY + horizon_years). Stored rather than derived from an end
-    #: date so FY indices — which every chunk, tax band and requirement is
-    #: keyed by — stay integers.
-    horizon_years: int = 30
-
-    @property
-    def horizon(self) -> int:
-        """THE single authority. Clamped to config.max_simulation_years, which
-        is the ceiling the rest of the system (notably the 30-element Monte
-        Carlo arrays) is built for. Raising that ceiling is Phase D."""
-        from configuration import config
-        ceiling = int(config.max_simulation_years)
-        return max(1, min(int(self.horizon_years or ceiling), ceiling))
-
-    def fy_range(self):
-        """1..horizon inclusive. Replaces range(1, 31)."""
-        return range(1, self.horizon + 1)
-```
-
-Verified: default 30; `15 → 15`; `99 → 30`; unset → 30; legacy files → 30.
-
-#### Known blocker, found while verifying the above
-
-`horizon_years` does **not** round-trip. `AppState.from_dict()` filters through a
-`known_keys` whitelist at **`models.py:615`** and silently drops anything not
-listed. Add `"horizon_years"` to it, and to the constructor:
-
-```python
-    investment_date=inv_date,
-    horizon_years=int(d.get("horizon_years", 30) or 30),
-```
-
-**This is the third whitelist to silently drop data** — `.gitignore` (three
-files), the CSV `cols` list in `get_funds_data.main()`, now `known_keys`.
-**Write a test that round-trips every `AppState` dataclass field and asserts
-nothing is lost.** It would have caught this in seconds and will catch the next.
-
-#### The sites that need thought, not substitution
-
-`glide_path.py` has seven, and two encode meaning rather than a bound:
-
-```python
-right_end = min(right_end, 29)      # year 30 is hold-to-end
-...
-if y == 30:
-    schedule[y] = _owning_weights(30)
-```
-
-"The last year is hold-to-end" is the intent; `29`/`30` are how it was spelled
-when the horizon was fixed. These become `horizon - 1` and `horizon`, but read
-the surrounding logic first.
-
-#### Sites in `engine.py`
-
-Lines 1178, 1446, 1485, 1568 (`safe_fy = min(fy, 30)`), 1583, 1760, 1940, 1953,
-2071, 2135, 2205, 2317 (`p_rows = [r for r in p_rows if r.fy_year <= 30]`).
-2417 already reads config.
-
-#### Monte Carlo must refuse, not silently truncate
-
-Until Phase D, `run_monte_carlo()` should raise or warn clearly when
-`state.horizon != 30` rather than produce 30-element output for a different plan.
-
-### A2 — the calendar itself
-
-**Separate commit from A1.** A1 is wide and must move nothing; A2 is narrow and
-moves everything. Mixing them makes neither diff reviewable.
-
-1. **Default `investment_date` to the current month.** Currently
-   `date(date.today().year, 3, 1)` — March hardcoded at `models.py:449` and
-   again in the `from_dict` fallback at `models.py:630`.
-
-2. **The horizon spills today and the spill is silently dropped.** The engine
-   runs 360 months regardless of start month:
-
-   | start | FY1 | FY31 | monthly rows kept |
-   |---|---:|---:|---:|
-   | 2026-03-01 | 1 month | 11 months | 349 |
-   | 2026-07-01 | 9 months | 3 months | 357 |
-   | 2026-04-01 | 12 | 0 | 360 |
-
-   `p_rows = [r for r in p_rows if r.fy_year <= 30]` throws the remainder away.
-   **The live March plan is projecting 349 months, not 360.** Under the decision
-   taken, the horizon should be computed in months from the start date to 31
-   March of the final FY, not fixed at 360.
-
-   Note `_fy_year_for_month()` is already correct for arbitrary start months —
-   a July start gives FY1 = 9 months, FY2 onward = 12. Nothing to fix there.
-
-3. **FY1 other income is not pro-rated.** `OtherIncome.taxable(fy)` returns a
-   full year regardless of how many months FY1 spans. On the live project
-   (`investment_date = 2026-03-01`, other income ₹15.3L) that is **~11 months of
-   phantom income**, and FY1 is now the growth base year, so it compounds
-   through all thirty. Requirements already pro-rate correctly
-   (`req_monthly = req_annual / 12`, applied per month).
-
-4. **Add `Engine.months_in_fy(fy)`** as the single definition and use it
-   everywhere an annual figure becomes monthly. Do not inline the arithmetic —
-   that is the mistake §2.1, §2.3 and §2.5 each had to undo.
-
-5. Tax slabs stay annual. Indian tax is assessed on the financial year whatever
-   fraction of it you were invested.
-
-**Snapshots move here, deliberately, in their own commit.**
-
-### A3 — the menu item
-
-Dialog for start month (constrained to the current FY) and end year (default
-+30, bounded). Then the ~28 GUI sites in `main.py`, `dialogs.py`,
-`chart_dialog.py`.
-
-**Untestable without PySide6.** Either accept manual smoke-testing, or land
-`pytest-qt` first — it is already in `requirements-dev.txt` line 4, commented
-"Phase 4 GUI worker tests", and entirely unused.
+- `a965e4a` — `is_liquid_fund` fell through to the fund NAME when the fund
+  TYPE was merely unrecognised, so a Corporate Bond Fund named "…Liquid Fund"
+  counted as liquid and the risk-free rate was measured over the wrong
+  category. Surfaced by an order-dependent test that had been passing for the
+  wrong reason; `pytest -n 4` split the pair across workers and exposed it.
+- `4da7da2` — the `pandas` FutureWarning at `get_funds_data.py:760`.
 
 ---
 
-## 2. Phase B — solve for net income
+## 2. Decisions taken
 
-**The request:** the user specifies the *total income they need* and the system
-determines how many units to liquidate. Today `annual_requirements` means
-"withdraw this much"; it must come to mean "end up with this much".
+These were decided, not discovered. Do not revisit them without cause.
 
-**Confirmed current semantics:** `get_requirement(year)` returns
-`annual_requirements[y]` untouched, and that is the withdrawal target the SWP
-drives at (`engine.py:1765`). Other income is added *afterwards*:
+**No version flag on `.swp.json`.** The project is in development; saved plans
+reinterpret in place. If that changes before release, `annual_requirements` is
+the field whose meaning moved.
 
-```python
-net_p = (ann_wd_p + ann_topup_p
-         + taxable_other + non_taxable_other
-         - this_fy_saved - swp_only_tax)
-```
+**The target is `net_cash_total`** — withdrawals from both purses, plus all
+other income, less taxes actually paid, less the transfer into the HUF. The
+last term is subtracted because that money is invested, not spent; adding it
+back would make the solver withdraw more to replace money that had only
+changed pocket.
 
-So the corpus funds the full requirement and other income is surplus on top.
-Other income *is* stacked under SWP debt gains for slab purposes
-(`total_slab_income = taxable_other + a["gain_d"]`) and is in the FD benchmark.
+**Horizon 10–40, default 30.** `DEFAULT_HORIZON_YEARS` and
+`max_simulation_years` are now different numbers and a test asserts it.
 
-**Why this is a fixed point.** Withdrawal → gain → tax → net cash, and the target
-is on net cash. No closed form: the gain fraction depends on which lots HIFO
-sells, across three asset classes, stacked above other income in the slabs, with
-tax paid in April of the following year.
+**`investment_date` defaults to today**, so the start is always inside the
+current financial year by construction. The Plan Period dialog does **not**
+clamp to the current FY — the live plan starts 1 March 2026, which is
+FY2025-26, and clamping would silently move an already-running plan.
 
-**Proposed approach — an outer loop, not surgery on the inner one:**
+**The FD benchmark ladder** is three equal parts of the horizon at
+`risk_free_rate` / `_mid` / `_low` plus `fd_benchmark_spread`. A rate set in
+the dialog always wins; **Reset to defaults** is the only route back.
+
+**`huf_withdrawal_chunks` is to be deleted** and the withdrawal split solved
+instead. Not yet done — see §3.
+
+**Monte Carlo stress-tests the plan the deterministic solve chose.** It does
+not re-plan per path.
+
+---
+
+## 3. Phase B — what remains
+
+### B1d-iii — delete the dead HUF schedule
+
+Mechanical, no numeric effect. `huf_withdrawal_chunks` reaches nine files.
+`optimize_withdrawal_split` and `allocate_funds_v0.9.py` move to `archive/`
+with a README — `ruff.toml` line 40 already excludes `archive/` and cites
+`archive/README.md`, and neither exists.
+
+**Blocked on B1d-ii**, because `_huf_annual_wd()` is what currently drives every
+HUF withdrawal. Delete it while nothing replaces it and HUF draws drop to zero.
+
+### B1d-ii — the solver chooses the split. ATTEMPTED AND REVERTED.
+
+Built, verified, patched, and **reverted at the snapshot review**. It is worth
+understanding why before anyone tries again.
+
+It made lifetime tax **worse** in four of five golden scenarios: 24.52 → 24.89,
+29.49 → 32.76, and two more. On `s3_4chunk` it also exhausted `max_iter` at 30
+passes without converging, landing an order of magnitude worse than the
+no-split solve.
+
+Three compounding causes:
+
+1. **The split was optimised against stale gain fractions.** It used the
+   previous pass's realised fractions, but drawing from the HUF erodes the
+   HUF's cost basis, which changes its fraction — the optimiser chased a
+   target that moved in response to its own decision.
+2. **The freeze fired on an aggregate.** It triggered when the *lifetime* HUF
+   share stopped changing, which can settle while individual years still
+   oscillate, locking in a per-year ratio that was never optimal.
+3. **The caps were circular** — `cap_first = personal_corpus + total`, where
+   the corpus figure is the year-*end* balance, after the withdrawal.
+
+It also shipped a second bug the review exposed: `solve_with_split` computed
+`converged = not shortfalls`, and `shortfalls` only counted *under*-delivery.
+Over-delivery was invisible, so it reported success while `net_cash_total`
+drifted above target in six to thirteen years. `solve_schedule` gets this right
+(`abs(...) <= tol`); the new function regressed on it.
+
+**But the deeper lesson is in §4**: the split was the wrong lever entirely.
+
+---
+
+## 4. THE LARGEST OPPORTUNITY — tax-free harvesting across chunk boundaries
+
+Found by analysis after B1d-ii was reverted. It is worth more than anything
+else outstanding and is not in any earlier plan.
+
+### Where the tax actually comes from
+
+`s0_1chunk` has **zero lifetime tax**. Every multi-chunk scenario has a large
+one. The cause is not the withdrawals — it is the **chunk boundaries**.
+
+`s1_2chunk` moves from a 15-fund portfolio to a 13-fund one at FY16, with 9
+funds in common. Six funds holding 40% of the corpus are sold outright in a
+single year:
 
 ```
-req[k+1] = req[k] + (target − net_cash[k])
+FY16 tax  54.21      of a 57.40 lifetime total
 ```
 
-Contracts at roughly the marginal tax rate, so it converges geometrically — a
-handful of iterations, ~0.2s per run. It does not touch `Engine.run()`, which
-matters: that method is ~1500 lines and four of the five engine defects found so
-far live in it.
+`s3_4chunk` has boundaries at FY9, FY17 and FY24; FY24 alone carries 62.56 of
+its 77.03. The tax is not spread — it is concentrated in single years.
 
-**Four things that must be decided, not discovered:**
+The `rebalance_tax_paid` column **understates this**. It is a pro-rata
+attribution of the year's tax by gain share, showing 60-70%. The *marginal*
+cause is closer to 100%: without the boundary there is no taxable year at all,
+which is exactly what `s0_1chunk` demonstrates.
 
-1. **`.swp.json` needs a version flag.** Every saved plan carries the old
-   semantics. Opening `Uddipan_project.swp.json` after the change would
-   reinterpret ₹25L as a net target and withdraw ~₹30L to hit it.
-2. **Withdrawals become return-dependent.** They are not today — measured during
-   §2.1: `swp_cash_personal` was bit-identical before and after a metric change
-   that moved every other number. All five golden snapshots move, and the
-   conservation invariants need re-derivation, because "money withdrawn" stops
-   being an input.
-3. **Corpus exhaustion needs a defined answer.** When the portfolio cannot supply
-   the target the loop diverges. The HUF top-up currently handles shortfall; that
-   path would move inside the solve, and "spend down faster to hit the target" is
-   a plausible-but-wrong behaviour it could produce.
-4. **The tax-optimal split optimiser already perturbs withdrawals** to minimise
-   tax. Two solvers on the same variable needs a decided precedence.
+### The capacity that is going unused
 
-**Phase B is much safer after Phase 3.1** — the outer loop is verifiable
-precisely because the engine is a pure function of state today.
+Every financial year, both entities can realise gain with **zero** tax:
 
----
+```
+personal debt gain    8.638     s.87A — no tax until total income reaches 12L
+personal equity       1.250     LTCG exemption
+HUF debt gain         4.000     nil band, no other income against it
+HUF equity            1.250
+                     ------
+per year             15.138 L
+```
 
-## 3. Phase C — solver interactions
+Over FY1-15 that is **272.7 L** of capacity, of which the current plan uses
+**43.3 L**. The spare is **229.4 L**.
 
-Precedence between the net-income solve and the tax-optimal split optimiser; HUF
-top-up inside the solve; exhaustion semantics. Cannot be specified until B's
-shape is settled.
+The gain embedded in the funds dropped at FY16 is **152.7 L**.
 
-## 4. Phase D — Monte Carlo horizon
+**The spare capacity covers the entire boundary, with 77 L left over.** The
+54.21 L spike is not reducible — it is *eliminable*.
 
-18 sites. `mu_det`, `sigmas`, `floors`, `caps` are all `np.full(30, …)`;
-`corpus_p50` and friends are 30-element; `mc_history.json` and the five bootstrap
-snapshots assume it.
+### What the mechanism would be
 
-## 5. Phase E — sensitivity analysis horizon
+Not withdrawing more to spend. **Selling and immediately rebuying**: sell from
+funds the next chunk drops, buy into funds it keeps, in annual slices sized to
+the remaining tax-free headroom. The portfolio transition executed early and
+free, instead of in one taxable lump.
 
-`run_sensitivity()` and `SensitivityDialog` share the same 30-year assumption.
+Four constraints shape it:
 
----
+- **Exit load** — `exit_load_fraction` applies within `stcg_holding_months`
+  (12). Harvest only lots older than that and it costs nothing.
+- **STCG** — the same cut-off. One rule handles both.
+- **Capacity does not carry forward.** Unused headroom in FY1 is gone. That is
+  what makes this a schedule rather than a one-off.
+- **Basis steps up** as you harvest, shrinking future gains. That is the
+  benefit, not a cost.
 
-## 6. §2.4 — the GUI half, still outstanding
+The boundary year itself can also slide by a year or two, which is a further
+degree of freedom. With 229 L against 153 L it is not needed here; it would
+matter on a tighter plan.
 
-`chunk_defaults.py` computes the approved per-Option table and **nothing reads
-it**. Four sites in `main.py` still hardcode `"min_return": 6.85` — lines 3624,
-3667, 4582, 4742.
+### Why this reframes B1d-ii
 
-**The structural problem:** `ChunkTableWidget` takes
-`make_default_chunk: callable(year_from, year_to) -> dict`. That is all the
-context a default gets. But the §2.4 spread depends on *how many chunks there are
-and which one this is* — a chunk starting at FY1 takes `rf + 1.25` in Option 1 and
-`rf + 2.10` in Option 4. Same range, different spread. `(yf, yt)` cannot
-distinguish them, and `_add_chunk()` appends one row at a time, so the widget
-never knows the user is "building Option 3".
+B1d-ii tried to minimise tax on a **fixed** set of realised gains by choosing
+which purse they came from. The dominant lever is not allocation but
+**timing** — *when* gain is realised, so that it lands in years with unused
+free capacity. Timing dominates allocation by an order of magnitude here, which
+is why optimising the split gained nothing and cost accuracy.
 
-**It needs an Option selector** — combo or four buttons — replacing the whole
-table via `default_chunks_for_option(n)`, which exists and is tested.
-`_rebuild_chunk_table()` is the hook; `set_data()` already takes a full list.
-~30 lines, none testable without PySide6.
-
-With `risk_free_rate` now 0.0535, the defaults are 6.75% / 7.15% / 7.45% / 7.65%
-depending on Option and chunk.
-
-Also unresolved: there is no `AllocationChunk.min_return` field. `main.py:4742`
-sets it as a bare instance attribute; `dialogs.py:1378` reads it with
-`getattr(chunk, 'min_return', 0.0685)` — a **fraction** where the GUI dicts hold
-**percent**.
+Do this before revisiting B1d-ii.
 
 ---
 
-## 7. Phase 3.1 — decompose `Engine.run()`
+## 5. Phase F — investment profile and staggered deployment
 
-**The highest structural value remaining.** ~1500 lines.
+Decided in the last session, not started.
 
-Four of the five engine defects found so far share one shape: **two mutable
-representations of the same money, updated by different rules**. Making the
-aggregates a computed property over `p_fund_buckets` retires the shape rather
-than the instances.
+- **An investment profile**: how much is invested, deployed into the SWP over
+  0-36 months, default immediate.
+- **The undeployed remainder** sits in a mix of FD and mutual funds and **pays
+  out** 7% pre-tax. FD interest is taxed at slab; MF units are redeemed for
+  cash, realising LTCG.
+- **Split MFs into debt and equity only**, matching the three sleeves the
+  engine already tracks. Give the user a GUI override for exact amounts and
+  return rates; default to the derived blend.
 
-Everything needed to do it safely now exists: five golden snapshots, 35
-conservation invariants, five MC bootstrap snapshots. **If a snapshot moves, the
-refactor is wrong.**
+The default mix falls out of the arithmetic rather than being another input:
+FD at the P33 rung (6.35%) blended with equity at 9% to yield 7% implies
+**75.5% FD / 24.5% equity**.
 
-Supporting evidence: the expected-return metric was written out **seven times**;
-collapsing it to one definition took an afternoon and moved nothing. The
-other-income flattening was written out **five times**, and collapsing it exposed
-a latent bug — `_optimal_split()` had hoisted `taxable_other` out of its per-FY
-loop under the comment `(constant)`, correct only while the streams were flat.
-`Engine.run()` is the larger instance of the same problem.
+**One input this genuinely needs**: redeeming MF units realises
+`X × (1 − cost/value)`, and there is no purchase history for a holding that
+predates the plan. Either an explicit "unrealised gain on existing holdings"
+figure, an assumed gain fraction, or treat redemptions as wholly gain
+(conservative, overstates tax).
 
-**Phase 3.2** (STCG on the SWP path) is blocked on 3.1.
-
----
-
-## 8. Remaining refactor phases
-
-- **Phase 2.1 — horizon constant.** Subsumed by A1. `engine.py` partly done;
-  `glide_path.py` untouched.
-- **Phase 2.3 — delete dead code.** The list is written down:
-  `ruff check --select F841 .` enumerates 20 dead locals across 11 files, plus
-  `allocate_funds_v0.9.py`. **Delete the `F841` ignore from `ruff.toml` when this
-  lands** — it is commented in the file, but it is the kind of thing that
-  silently becomes permanent.
-- **Phase 2.4 — doc drift.**
-- **Phase 4 — GUI threading.** Would benefit from `pytest-qt` landing first.
-- **Phase 5 — optimiser property tests and a sigma study.**
+**Note**: the LTCG schedule already exists. `EquityTaxChunk` carries rate and
+exemption per FY chunk, editable separately for individual and HUF in
+`TaxRulesDialog`. Unless a *distinct* schedule is wanted for the pre-deployment
+holding, that part is wiring rather than a new feature.
 
 ---
 
-## 9. Findings recorded, deliberately not fixed
+## 6. Findings recorded, deliberately not fixed
 
-1. **`navs.get(fn, 1.0)` appears 16 times in `engine.py`.** A missing NAV
-   silently prices a fund at 1.0 in money paths. Making all sixteen raise is far
-   larger than it sounds, and some may be legitimate (a fund with no NAV yet in a
-   transition month). Needs its own scoped pass.
+1. **The golden harness runs without a glide path.**
+   `test_engine_golden._run` calls `project_plan(state)` with no `glide_path`,
+   while `main.py` passes `glide_path=self.state.glide_path`. Every golden
+   snapshot therefore pins the harsher, unglided case. With the glide path the
+   lifetime tax figures are 24 / 8 / 29 instead of 57 / 43 / 77 — the glide
+   path more than halves the boundary cost by spreading the transition. **This
+   is the most misleading of the coverage gaps**, because it makes chunked
+   strategies look far more expensive than they are. Small fix, high value.
 
-2. **Seven config keys are read by nothing** — `optimizer_default_user_cap`,
-   `optimizer_min_personal_fraction`, `optimizer_max_huf_corpus_drain`,
-   `optimizer_grid_step`, `optimizer_default_iterations`,
-   `rebalance_no_trade_band`, `default_cagr_fallback`. Six configure the
-   Tax-Optimal Split Optimizer, which runs but does not take its parameters from
-   there — **tuning `optimizer_default_user_cap` changes nothing and says
-   nothing.** Recorded in `configuration.UNUSED_KEYS`.
+2. **`_write_risk_free_rate()` decides "unchanged" against a stale singleton**,
+   not the file it is about to write. Defensible with one config, and it is
+   what made a test order-dependent for months. Its own commit, not a rider.
 
-3. **~33–40% of Monte Carlo bootstrap draws land exactly on a band edge.**
-   `_per_chunk_sigmas()` takes σ from the funds' own `std_dev` (~1.0–1.5%) while
-   the bootstrap draws from raw index history (debt index σ ≈ 3%). The band is
-   narrower than the distribution it clamps. The module docstring claims the
-   bootstrap "preserves historical volatility / tail shape"; at these rates it
-   substantially does not.
+3. **The seven orphaned optimiser config keys** in `configuration.UNUSED_KEYS`
+   are still read by nothing.
 
-4. **Every fixture scenario is 100% debt**, so `_block_bootstrap_returns()`
-   weights the Nifty series by zero — adding 50pp to every Nifty year moves the
-   projection by exactly nothing. Yet `run_monte_carlo()` gates on
-   `eq_hist is not None and dbt_hist is not None`, so an offline run silently
-   falls back to log-normal because a series that would be multiplied away could
-   not be downloaded.
+4. **`get_funds_data.py`'s CLI defaults still point at `../Personal/`**, which
+   does not exist. The GUI supplies absolute paths, so only command-line use is
+   affected.
 
-5. **"Conservative mode" is arithmetically identical to Historical** for every
-   fund carrying no STT charge — in this dataset, all of them.
-   `Min_CAGR_3Y/5Y/7Y/10Y` is computed and exported by `get_funds_data.py` and
-   never imported. ~6 lines in `import_fund_metrics()` would give the toggle
-   something real to mean.
-
-6. **144 of 801 funds (18%) have no percentile at all** after the §2.5
-   reading-count guard — funds with 36–58 months of history, enough for one 3Y
-   window but not 24 of them. They fall back permanently to the §2.1 tier. Zero
-   of the 33 funds in the live plan are affected, which is why the threshold was
-   left at 24.
-
-7. **`pandas` FutureWarning at `get_funds_data.py:760`** —
-   `pd.concat([fallback, overnight_rf])` with empty entries, in the
-   debt-benchmark path the MC bootstrap depends on. Small, self-contained.
-
-8. **`get_funds_data.py`'s CLI defaults have rotted** — `INPUT_FILE` and friends
-   point at `../Personal/`, which does not exist. The GUI supplies absolute
-   paths, so only command-line use is affected. Working invocation:
-   ```bash
-   python get_funds_data.py \
-     --input  Uddipan/Schemes_and_Funds/mutual_funds_min750cr.csv \
-     --output /tmp/out/Fund_Metrics_Output.csv
-   ```
-
-9. **Two `Fund_Metrics_Output.csv` schemas exist.** The repo-root one is older and
-   lacks `Min_CAGR_*`; the current one is `Uddipan/Fund_Metrics_Output.csv`.
-   `config.allocator_default_input` points at the root one.
+5. **`chunk_defaults.default_chunk_layout()` falls back to
+   `max_simulation_years`** when given no horizon. That was the plan length
+   while the ceiling was 30; it is now 40 and the fallback is wrong in
+   principle. Nothing live reads it — §7's Option selector is still unbuilt —
+   but wire `state.horizon` when it is.
 
 ---
 
-## 10. Housekeeping
+## 7. Still outstanding from the earlier plan
 
-- `LICENSE` is absent but referenced by all source-file headers.
-- `UBags/swp-retirement-plan` is still public with the source in it.
-- `docs/` exists but is empty; `docs/DEFECTS.md` referenced by commit `be54844`
-  was never committed.
-
----
-
-## 11. Gotchas that have already cost hours
-
-1. **`.gitignore` is an allowlist.** Line 2 is `*`; everything tracked exists
-   because of a later `!` negation, and markdown is admitted *per location*. It
-   has silently swallowed three files: `tests/golden/fixtures/mc_history.json`
-   (leaving committed snapshots with nothing to reproduce them from),
-   `archive/README.md`, and `HANDOVER.md`. **Always
-   `git status --porcelain -uall`** before committing a new file type or
-   directory — plain `git status` collapses untracked directories and shows
-   `?? archive/` whether or not everything inside it is visible.
-
-2. **Silent-drop whitelists are a recurring pattern**, not a one-off. Three so
-   far: `.gitignore`; the CSV `cols` list in `get_funds_data.main()`
-   (`reindex(columns=cols)` discarded five computed columns with no warning); and
-   `known_keys` in `AppState.from_dict()`. Assume any new field needs registering
-   somewhere, and test the round-trip.
-
-3. **`git add --renormalize` is not retroactive.** Five files were stored with
-   CRLF while `.gitattributes` already declared `eol=lf`. Content committed
-   before a rule exists stays as-is until explicitly renormalised, so those files
-   re-dirtied on every `status` and blocked a merge. When ruff finally rewrote
-   them, git reported 2064 changed lines for one file against maybe fifteen real
-   ones. Normalise in its own commit or the diff is unreviewable and `git blame`
-   is destroyed.
-
-4. **Never stash tool output across a change to the files that tool touches.**
-   Stashing a ruff run, renormalising line endings, then `git stash pop`
-   conflicts by construction. Re-running the tool is always cheaper than merging
-   its output and cannot produce a wrong merge. Same for golden snapshots: if you
-   are resolving a conflict in `tests/golden/snapshots/`, the answer is
-   `--regen-golden` on the merged code, never a hand-picked hunk.
-
-5. **`ruff check` exits 1 whenever it finds anything.** So
-   `ruff check --statistics . && ruff check --fix .` halts before the fix runs.
-   Only the final bare `ruff check .` is a gate; diagnostic and fix passes need
-   `|| true` or their own line.
-
-6. **`compileall .` walks `.venv`** and dies on PySide6's Jinja templates. Use
-   `python -m compileall -q $(git ls-files '*.py')`.
-
-7. **Pin every git command with `git -C <path>`.** A `cd ~/project` block pasted
-   after one that left the shell in `/tmp` merged into a clone with no local
-   branch of that name. Symptoms: `git push` says "Everything up-to-date" and
-   lint reports hundreds of errors because `ruff.toml` only exists on the
-   unmerged branch.
-
-8. **A project bundle can be generated today from a stale source.** The export
-   tooling ran against `main` while all the work sat on an unmerged branch, so the
-   "latest codebase" was byte-identical to the session-start copy for four rounds.
-   **Two-second staleness test: grep the bundle for the most recent thing you
-   added.**
-
-9. **`grep -c` counts lines, not occurrences** — and an f-string like
-   `out[f"Pctile_CAGR_{label}"]` means the literal never appears in source at all.
-
-10. **A skip in the environment where you verify is a hole, not a pass.** A test
-    that skipped for a missing dependency hid a defect that produced 81 errors on
-    the user's machine.
+- **§2.4 GUI half** — `chunk_defaults` computes the approved per-Option table
+  and nothing reads it. It needs an Option selector.
+- **Phase 3.1 — decompose `Engine.run()`.** ~1500 lines. Still the highest
+  structural value remaining, and Phase B's outer-loop design exists partly
+  because the engine cannot re-run a single financial year. Blocks 3.2.
+- **Phase C** — solver interactions. Cannot be specified until B settles.
+- **Phase D** — Monte Carlo horizon. 18 sites; `MC_FIXED_HORIZON = 30` is now
+  explicit everywhere and `run_monte_carlo()` refuses any other horizon by
+  name, so the work is bounded and the failure mode is loud.
+- **Phase E** — sensitivity horizon.
+- **Phase 2.3 — delete dead code.** `ruff check --select F841 .`, plus
+  `allocate_funds_v0.9.py`. Delete the `F841` ignore from `ruff.toml` when it
+  lands.
+- **Phase 5** — optimiser property tests and a sigma study.
 
 ---
 
-## 12. What is not verified, and cannot be from the assistant's side
+## 8. Housekeeping
 
-- **The GUI.** `test_smoke.py` imports every dialog module and exercises nothing.
-  ~50 imports were removed from six Qt modules by ruff with no test driving what
-  they do. A manual pass through calculations, charts, the fund dialog,
-  sensitivity and Monte Carlo would close it. `pytest-qt` is installed and unused.
-- **`get_funds_data.py` against live AMFI** — no network, no NAV cache in the
-  assistant's environment. Percentile arithmetic was validated by recomputing from
-  `Uddipan/rolling_data.json` and confirmed against a real 801-fund run.
-- **The block-bootstrap path with a live fetch.** `mc_history.json` is a frozen
-  capture.
+- `LICENSE` is absent but referenced by every source-file header.
+- `docs/` exists and is empty; `docs/DEFECTS.md`, referenced by commit
+  `be54844`, was never committed.
+- `archive/` does not exist, though `ruff.toml` excludes it and cites its
+  README.
+- Both GitHub repositories are now private. That is resolved.
 
 ---
 
-## 13. Live figures, for orientation
+## 9. Gotchas that have already cost hours
 
-- `risk_free_rate` = **0.0535**, measured (P33 of the cross-fund monthly average,
-  127 months, 33 liquid funds). Rewritten automatically on every
-  `get_funds_data.py` run; a second run logs "unchanged".
-- Corpus ≈ ₹1500L over 30 years. Requirement ₹25L rising to ₹40–45L. Other income
-  ₹15.3L (taxable ₹6.8L: interest 3.5, pension 1.3, rental 2.0; tax-free ₹8.5L).
-  HUF other income: none.
-- Adding ₹5L of taxable other income raises FY1 personal net cash by only
-  **₹0.52L** — it raises the FD benchmark, which raises `tax_saved`, which is
-  transferred to the HUF and deducted from personal net cash.
-- All five golden scenarios are 100% debt.
-- **§2.5 is committed but not in effect.** The engine reads `Pctile_CAGR_*` and
-  no saved plan has them, so it still projects on the §2.1 tier. Switching on
-  requires re-running `get_funds_data.py` to `Uddipan/Fund_Metrics_Output.csv`
-  and then **Import Fund Metrics** in the GUI. Every projection drops when you do.
-  Worth doing when there is time to examine the resulting plan properly.
+1. **`.gitignore` is an allowlist whose line 2 is `*`.** New files are
+   admitted by extension. `git check-ignore -v` **exits 0 whether or not the
+   file is ignored** — read the *pattern*: a leading `!` means admitted. The
+   reliable check is whether the file appears as `??` in
+   `git status --porcelain -uall`.
+
+2. **The project bundle is lossy at EOF.** A fenced code block needs a newline
+   before its closing fence, so the exporter adds one to any file that lacks
+   it. Fourteen files are affected: `allocate_funds.py`, `chart_dialog.py`,
+   `engine.py`, `fund_dialog.py`, `get_funds_data.py`, `main.py`, `models.py`,
+   `monte_carlo.py`, `needs_assessment.py`, `run_debug.py`, `tax_dialog.py`,
+   `test/Check_Funds_Universe.py`, `test/__init__.py`, `test_swp_engine.py`.
+   **Never hash a file straight out of a bundle.** This cost three round trips
+   before the full list was obtained.
+
+3. **The bundle exporter omits `RetirementTaxPlanning.configuration`** — the
+   one file without which the application will not start. It filters by
+   extension and that file has none it recognises. One extension added to the
+   exporter retires the problem permanently.
+
+4. **The staleness test must grep for the NEWEST commit's marker**, not any
+   recent one. A bundle exported one commit behind passed a check for the
+   commit before it.
+
+5. **Validate on all five golden scenarios, never one.** B1d-ii was declared a
+   benign no-op on the strength of `s0_1chunk`, the only scenario with zero
+   tax. The other four got worse. Five fixtures exist precisely so this cannot
+   happen.
+
+6. **The patcher generator has two non-obvious requirements**, both found on
+   real diffs:
+   - Hunk uniqueness must be checked against the text **as the patcher will
+     see it** — every earlier hunk already applied — not against the pristine
+     file. `dialogs.py` has three near-identical chunk editors, and a block
+     unique in the original stops being the only match once an earlier
+     replacement lands.
+   - Edits closer together than two context windows must be **coalesced**.
+     Otherwise expanding a later hunk's context pulls in lines an earlier hunk
+     rewrote, and widening it makes matters worse rather than better.
+
+7. **A config key in `CONFIG_FINGERPRINT_KEYS` changes every snapshot header**
+   when its value changes, so a pure config edit produces ten failing golden
+   tests with a clear message. That is the guard working. Regenerate and check
+   the diff is header-only.
+
+8. **A skip in the environment where you verify is a hole, not a pass.**
+   Install `PySide6` and `pytest-qt` before claiming a green suite. Both are in
+   `requirements-dev.txt` and both are now genuinely used — 34 tests drive real
+   widgets.
+
+9. **The snapshot review is a real gate.** B1d-ii passed its unit tests, its
+   patcher verification, byte-for-byte reproduction and a full suite run. The
+   review caught it. Predict what the diff should show *before* looking, then
+   check the prediction.
+
+10. **`pytest -n 4` finds order-dependent tests that sequential runs hide.**
+    `test_writeback_ignores_funds_that_are_not_liquid` had been passing only
+    because a preceding test left a module-level singleton holding the same
+    value; xdist put them on different workers and the mask vanished.
+
+11. **Not every `30` is a horizon.** `main.py`'s `addSpacing(30)` and
+    `needs_assessment.py`'s `setRowHeight(…, 30)` are pixels;
+    `optimization_report.py`'s `rebal_pct > 30` is a percentage. There are
+    tests asserting each survives a horizon sweep.
+
+---
+
+## 10. What is not verified, and cannot be from an assistant's side
+
+- The GUI is **imported and driven headlessly**, not used. Dialog layout,
+  threading and anything requiring a real event loop are unverified.
+- **The golden fixtures are frozen copies** of the live project, and they are
+  all 100% debt. The Monte Carlo bootstrap snapshot is therefore completely
+  insensitive to the equity series — there is a test saying so.
+- **Fund data is not refreshed.** `risk_free_rate_mid` and `_low` are
+  placeholders seeded from a 32-fund name-only match; a real
+  `get_funds_data.py` run matches 33 with the Fund Type column and will move
+  them slightly. `risk_free_rate` itself reproduces the configured 0.0535
+  exactly.
+
+---
+
+## 11. Live figures, for orientation
+
+```
+corpus at FY1                    ~215 L
+personal other income             5.401 L taxable + 4.296 L tax-free
+  of which pension                1.105 L   (less 0.75 s.16ia)
+  of which rent                   4.296 L   (less 30% s.24a)
+assessable other income           3.362 L
+HUF other income                  none — its 4 L nil band is entirely free
+
+annual requirement (NET, since B1c)   12.274 L rising to 27.616 L
+lifetime cash in hand                587.1 L   (was 924.1 before B1c)
+corpus at FY30                       937.9 L   (was 0.00 — the plan no
+                                                longer exhausts)
+
+FD benchmark ladder    FY1-10   6.35%    P33 + 1%
+                       FY11-20  5.48%    P20 + 1%
+                       FY21-30  4.57%    P5  + 1%
+
+tax-free gain capacity per year      15.138 L across both entities
+```
+
+The plan was delivering a third more cash than it was asked for. Under the net
+target it delivers exactly what is asked, and the difference stays invested —
+which is why the corpus no longer runs to zero.
