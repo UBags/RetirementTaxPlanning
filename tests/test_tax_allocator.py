@@ -21,7 +21,12 @@ from __future__ import annotations
 import pytest
 
 from models import EquityTaxChunk, TaxChunk, TaxSlab
-from tax_allocator import EntityYear, best_split, combined_tax
+from tax_allocator import (
+    EntityYear,
+    best_cash_split,
+    best_split,
+    combined_tax,
+)
 
 # The live project's bands, and its s.87A rebate limit.
 SLABS = [TaxSlab(0, 4, 0.0), TaxSlab(4, 8, 0.05), TaxSlab(8, 12, 0.10),
@@ -188,3 +193,81 @@ def test_more_gain_never_costs_less_tax(base):
 def test_the_equity_exemption_is_a_breakpoint():
     a = EntityYear("individual", 0.0, _chunk(), EquityTaxChunk(1, 30, 0.125, 1.25), None)
     assert any(abs(p - 1.25) < 1e-9 for p in a.breakpoints())
+
+
+# ── splitting CASH rather than gain ──────────────────────────────────────────
+
+def _brute_cash(total, a, b, ga, gb, cap_a=None, cap_b=None, steps=2000):
+    hi = total if cap_a is None else min(total, cap_a)
+    lo = 0.0 if cap_b is None else max(0.0, total - cap_b)
+    if lo > hi:
+        return None
+    best = None
+    for i in range(steps + 1):
+        x = lo + (hi - lo) * i / steps
+        t = a.tax(debt_gain=x * ga) + b.tax(debt_gain=(total - x) * gb)
+        if best is None or t < best[1]:
+            best = (x, t)
+    return best
+
+
+@pytest.mark.parametrize("total", [2, 8, 15, 20, 30, 45, 60, 90])
+@pytest.mark.parametrize("ga,gb", [(0.6, 0.3), (0.3, 0.6), (0.85, 0.85),
+                                   (1.0, 0.2), (0.5, 0.5)])
+def test_cash_split_never_beaten_by_brute_force(total, ga, gb):
+    """The decision variable is cash; gain is not conserved across the split.
+
+    A rupee drawn from one purse realises a different amount of gain than a
+    rupee from the other, so moving money between them changes how much gain
+    exists at all. The method still holds -- each tax is a linear scaling of
+    a piecewise-linear function -- but it has to be proved, not assumed.
+    """
+    a, b = _ind(3.362), _huf()
+    got = best_cash_split(total, a, b, ga, gb)
+    oracle = _brute_cash(total, a, b, ga, gb)
+    assert got.total_tax <= oracle[1] + 1e-6, (
+        f"grid found {oracle[1]:.6f} at x={oracle[0]:.4f}; "
+        f"got {got.total_tax:.6f} at x={got.to_first:.4f}")
+
+
+@pytest.mark.parametrize("total,cap_a,cap_b", [
+    (30, 10, 100), (30, 100, 10), (30, 12, 12), (50, 20, 20),
+])
+def test_cash_split_respects_caps_and_reports_shortfall(total, cap_a, cap_b):
+    a, b = _ind(3.362), _huf()
+    got = best_cash_split(total, a, b, 0.6, 0.3, cap_first=cap_a, cap_second=cap_b)
+    assert got.to_first <= cap_a + 1e-9
+    assert got.to_second <= cap_b + 1e-9
+    assert got.total_allocated == pytest.approx(min(total, cap_a + cap_b), abs=1e-6)
+
+
+def test_a_purse_with_no_embedded_gain_is_free():
+    """All principal, no gain: drawing from it costs nothing whatever.
+
+    It also has no breakpoints, since its tax never changes -- so the code
+    must handle a zero fraction rather than divide by it.
+    """
+    a, b = _ind(3.362), _huf()
+    got = best_cash_split(40.0, a, b, gain_first=0.6, gain_second=0.0)
+    assert got.tax_second == pytest.approx(0.0)
+    assert got.total_tax <= _brute_cash(40.0, a, b, 0.6, 0.0)[1] + 1e-6
+
+
+def test_the_relief_edge_moves_into_cash_space():
+    """A kink at gain g sits at cash g / gain_fraction."""
+    a, b = _ind(3.362), _huf()
+    got = best_cash_split(45.0, a, b, gain_first=0.6, gain_second=0.3)
+    assert got.to_first == pytest.approx((12.0 - 3.362) / 0.6, abs=1e-4)
+
+
+def test_equal_entities_and_equal_fractions_split_evenly_when_untaxed():
+    a, b = _huf(), _huf()
+    got = best_cash_split(6.0, a, b, 0.5, 0.5)
+    assert got.to_first == pytest.approx(got.to_second, abs=1e-6)
+
+
+def test_cash_split_prefers_the_cheaper_gain_fraction_when_tax_is_equal():
+    """Less gain realised per rupee means less tax for the same cash."""
+    a, b = _huf(), _huf()
+    got = best_cash_split(40.0, a, b, gain_first=0.9, gain_second=0.1)
+    assert got.to_second > got.to_first

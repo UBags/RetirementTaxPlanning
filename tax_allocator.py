@@ -74,6 +74,7 @@ from typing import List, Optional, Sequence, Tuple
 __all__ = [
     "Allocation",
     "EntityYear",
+    "best_cash_split",
     "best_split",
     "combined_tax",
 ]
@@ -288,3 +289,83 @@ def _describe(e: EntityYear) -> str:
         rate = (e.tax(debt_gain=mid + step) - e.tax(debt_gain=mid)) / step
         out.append(f"{a:.2f}-{b:.2f}: {rate * 100:.1f}%")
     return "  ".join(out)
+
+
+def best_cash_split(
+    total_cash: float,
+    first: EntityYear,
+    second: EntityYear,
+    gain_first: float,
+    gain_second: float,
+    cap_first: "float | None" = None,
+    cap_second: "float | None" = None,
+) -> Allocation:
+    """Split CASH, not gain, between two entities to minimise combined tax.
+
+    best_split() divides a fixed quantity of gain. That is the wrong shape
+    for a withdrawal: what is fixed is the CASH the plan needs, and a rupee
+    withdrawn realises a different amount of gain from each purse, because
+    their cost bases differ and drift apart as the plan runs. Total gain is
+    therefore not conserved -- moving a rupee from one purse to the other
+    changes how much gain exists at all.
+
+        gain_first, gain_second   realised gain per rupee withdrawn, 0..1
+
+    The method survives intact. Each entity's tax is still piecewise linear
+    in the cash drawn from it -- a linear scaling of a piecewise-linear
+    function -- so the sum is piecewise linear in the split, and its minimum
+    is still at a breakpoint. The breakpoints simply move: a kink at gain g
+    sits at cash g / gain_fraction.
+
+    A purse with a zero gain fraction is free: everything drawn from it is
+    return of capital, and it has no breakpoints because its tax never
+    changes. That is handled rather than divided by.
+
+    Ties follow the caps, as in best_split, so both purses run dry together.
+    """
+    total_cash = max(0.0, float(total_cash))
+    gf = max(0.0, float(gain_first))
+    gs = max(0.0, float(gain_second))
+
+    room_first = float("inf") if cap_first is None else max(0.0, float(cap_first))
+    room_second = float("inf") if cap_second is None else max(0.0, float(cap_second))
+
+    if room_first + room_second <= total_cash + EPS:
+        x = 0.0 if room_first == float("inf") else room_first
+        y = 0.0 if room_second == float("inf") else room_second
+        return Allocation(x, y, first.tax(debt_gain=x * gf),
+                          second.tax(debt_gain=y * gs))
+
+    hi = min(total_cash, room_first)
+    lo = max(0.0, total_cash - room_second)
+
+    if cap_first is not None and cap_second is not None and (
+            room_first + room_second) > EPS:
+        preferred = total_cash * room_first / (room_first + room_second)
+    else:
+        preferred = total_cash / 2.0
+    preferred = min(max(preferred, lo), hi)
+
+    candidates = {lo, hi, preferred}
+    if gf > EPS:
+        for g in first.breakpoints():
+            candidates.add(g / gf)
+    if gs > EPS:
+        for g in second.breakpoints():
+            candidates.add(total_cash - g / gs)
+
+    feasible = []
+    for x in sorted(candidates):
+        if x < lo - EPS or x > hi + EPS:
+            continue
+        x = min(max(x, lo), hi)
+        y = max(0.0, total_cash - x)
+        feasible.append((x, first.tax(debt_gain=x * gf),
+                         second.tax(debt_gain=y * gs)))
+    if not feasible:
+        return Allocation(0.0, 0.0, first.tax(), second.tax())
+
+    cheapest = min(a + b for _x, a, b in feasible)
+    tied = [(x, a, b) for x, a, b in feasible if a + b <= cheapest + EPS]
+    x, t1, t2 = min(tied, key=lambda c: abs(c[0] - preferred))
+    return Allocation(x, max(0.0, total_cash - x), t1, t2)
