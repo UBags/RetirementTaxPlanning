@@ -154,11 +154,16 @@ def test_the_optimiser_resolves_income_inside_the_fy_loop(project_root):
     src = (project_root / "engine.py").read_text(encoding="utf-8")
     assert "# ── Personal other taxable income (constant) ──" not in src, (
         "the optimiser still describes other income as constant")
-    # Match the call, not its argument list: A2 added a months argument and
-    # split it across lines. What matters is that the resolution happens per
-    # FY, not how many arguments it takes.
-    idx = src.find("taxable_other = pi.taxable(")
-    assert idx != -1, "the optimiser does not resolve income per FY"
+    # Match on WHAT is being asserted, not on one spelling of it. This test
+    # has now broken three times on incidental changes to the same line: A2
+    # added a months argument and split the call across lines, and B0 routed
+    # it through assessable() so the slab sees income net of s.16(ia) and
+    # s.24(a). The assertion is that the optimiser resolves income PER FY,
+    # inside the FY loop -- not which method it calls or how many arguments
+    # that method takes.
+    m = re.search(r"pi\.(taxable|assessable)\(\s*\n?\s*fy\b", src)
+    assert m, "the optimiser does not resolve income per FY"
+    idx = m.start()
     # Match the loop by what it is, not by one spelling of it. This used to
     # look for the literal `for fy in range(1, 31):` and broke when Phase A1
     # replaced that with `state.fy_range()` — the assertion is about where the

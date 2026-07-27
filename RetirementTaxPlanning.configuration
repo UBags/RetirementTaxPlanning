@@ -154,3 +154,19 @@ risk_free_rate_low = 0.0357
 # Percentage points added to each rung. 0.01 = 1%: a fixed deposit yields a
 # little above the liquid-fund category it is being compared with.
 fd_benchmark_spread = 0.01
+
+# ─── Statutory deductions on non-portfolio income ─────────────────────────
+# Applied by OtherIncome.assessable(), which is what a tax slab sees.
+# OtherIncome.taxable() stays GROSS: you receive the whole rent and the whole
+# pension; these reduce what is assessed, not what arrives.
+
+# s.16(ia) standard deduction against salary and pension, in Rs lakhs.
+# 0.75 = Rs 75,000, the new-regime figure from FY2024-25. Capped at the
+# salary-and-pension income itself, so it cannot create a loss. An HUF has no
+# salary head and does not get it.
+standard_deduction_salary_pension = 0.75
+
+# s.24(a) standard deduction against income from house property: 30% of the
+# rent, for maintenance, whatever was actually spent. Applies to individual
+# and HUF alike.
+rental_maintenance_deduction = 0.30

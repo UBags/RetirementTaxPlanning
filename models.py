@@ -370,6 +370,54 @@ class OtherIncome:
         annual = sum(self._grown(a, g, fy) for a, g in self._TAXABLE)
         return annual * (max(0, int(months)) / 12.0)
 
+    # NOTE: taxable() is CASH RECEIVED from taxable streams -- the money that
+    # reaches the bank.  For the figure a tax slab is applied to, which is
+    # net of s.16(ia) and s.24(a), use assessable().
+
+    #: Streams that form "income from salary" for s.16(ia).  A pension is
+    #: taxed under this head, which is why it shares the allowance rather
+    #: than getting one of its own.
+    _SALARY_HEAD = (("salary", "salary_growth"),
+                    ("pension", "pension_growth"))
+    #: Taxed under "income from house property", s.24(a).
+    _PROPERTY_HEAD = (("rental", "rental_growth"),)
+
+    def assessable(self, fy: int = 1, months: int = 12,
+                   entity: str = "individual") -> float:
+        """Taxable income AFTER the statutory standard deductions.
+
+        NOT the same as taxable().  That returns CASH RECEIVED from streams
+        which happen to be taxable; this returns the figure a slab is applied
+        to.  They were the same number until deductions existed, and the
+        engine used one variable for both:
+
+            rent      you receive all of it, 30% is deducted (s.24a)
+            salary /  you receive all of it, a flat allowance is deducted
+            pension   (s.16ia), capped at the income itself
+
+        Use taxable() for what lands in the bank and assessable() for what
+        the taxman sees.  Conflating them overstates tax.
+
+        *entity* -- an HUF has no salary or pension head, so it gets no
+        s.16(ia) allowance.  It can own property, so s.24(a) applies to both.
+        """
+        from configuration import config
+        frac = max(0, int(months)) / 12.0
+
+        salary_head = sum(self._grown(a, g, fy) for a, g in self._SALARY_HEAD) * frac
+        property_head = sum(self._grown(a, g, fy) for a, g in self._PROPERTY_HEAD) * frac
+        rest = sum(self._grown(a, g, fy) for a, g in self._TAXABLE
+                   if (a, g) not in self._SALARY_HEAD
+                   and (a, g) not in self._PROPERTY_HEAD) * frac
+
+        if entity == "individual":
+            # Capped at the income itself: the allowance cannot create a loss.
+            salary_head = max(0.0, salary_head
+                              - float(config.standard_deduction_salary_pension))
+
+        property_head *= (1.0 - float(config.rental_maintenance_deduction))
+        return salary_head + property_head + rest
+
     def non_taxable(self, fy: int = 1, months: int = 12) -> float:
         """Non-taxable other income for financial year *fy*, grown per stream.
 

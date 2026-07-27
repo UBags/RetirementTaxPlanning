@@ -1193,9 +1193,11 @@ class Engine:
             # ── FY boundary: compute prior FY's tax ───────────────────────────
             if fy != prev_fy and 1 <= prev_fy <= horizon:
                 a = acc_get(p_acc, prev_fy)
-                taxable_other = state.personal_income.taxable(
-                    prev_fy, self.months_in_fy(prev_fy))
-                total_slab_income = taxable_other + a["gain_d"]
+                # assessable(), not taxable(): what a slab is applied to,
+                # net of s.16(ia) and s.24(a).  taxable() is cash received.
+                assessable_other = state.personal_income.assessable(
+                    prev_fy, self.months_in_fy(prev_fy), "individual")
+                total_slab_income = assessable_other + a["gain_d"]
                 dc = state.get_debt_tax_chunk(prev_fy, "individual")
                 ind_debt_tax = compute_slab_tax(total_slab_income, dc, "individual") if dc else 0.0
                 ec = state.get_equity_tax_chunk(prev_fy, "individual")
@@ -1211,7 +1213,7 @@ class Engine:
                 fd_interest = prorate_annual(
                     fd_corpus_fixed * fd_rate_fy,
                     state.investment_date, prev_fy)
-                fd_total_income = fd_interest + taxable_other
+                fd_total_income = fd_interest + assessable_other
                 fd_tax = compute_slab_tax(fd_total_income, dc, "individual") if dc else 0.0
 
                 tax_saved = max(0.0, fd_tax - ind_total)
@@ -1319,10 +1321,11 @@ class Engine:
                         def _estimate_rebal_tax(gd, ge, go):
                             """Estimate total tax for given gain breakdown."""
                             prev_fy_tax = fy - 1  # rebalancing happens at FY boundary
-                            taxable_other = state.personal_income.taxable(
-                                prev_fy_tax, self.months_in_fy(prev_fy_tax))
+                            assessable_other = state.personal_income.assessable(
+                                prev_fy_tax, self.months_in_fy(prev_fy_tax),
+                                "individual")
                             dc = state.get_debt_tax_chunk(prev_fy_tax, "individual")
-                            dtax = compute_slab_tax(taxable_other + gd, dc, "individual") if dc else 0.0
+                            dtax = compute_slab_tax(assessable_other + gd, dc, "individual") if dc else 0.0
                             ec = state.get_equity_tax_chunk(prev_fy_tax, "individual")
                             etax = compute_ltcg_individual(ge, ec) if ec else 0.0
                             oc = state.get_other_tax_chunk(prev_fy_tax, "individual")
@@ -2443,10 +2446,17 @@ class Engine:
             pi = state.personal_income
             hi = state.huf_income
             _m_fy             = self.months_in_fy(fy)
+            # Cash received -- what reaches the bank, and what net cash adds.
             taxable_other     = pi.taxable(fy, _m_fy)
             non_taxable_other = pi.non_taxable(fy, _m_fy)
             huf_taxable_other = hi.taxable(fy, _m_fy)
             huf_nontax_other  = hi.non_taxable(fy, _m_fy)
+            # Assessable -- what a slab is applied to, net of s.16(ia) and
+            # s.24(a).  One variable used to serve both; they diverge the
+            # moment deductions exist, and using cash as the tax base
+            # overstates the tax.  An HUF has no salary head, so no s.16(ia).
+            assessable_other     = pi.assessable(fy, _m_fy, "individual")
+            huf_assessable_other = hi.assessable(fy, _m_fy, "huf")
 
             this_fy_pend  = pending_by_fy.get(fy, {})
             this_fy_tax   = this_fy_pend.get("ind_tax",   0.0)
@@ -2479,7 +2489,7 @@ class Engine:
                      - this_fy_saved - swp_only_tax)
 
             # ── HUF tax ───────────────────────────────────────────────────────
-            huf_debt_income = huf_taxable_other + ha["gain_d"]
+            huf_debt_income = huf_assessable_other + ha["gain_d"]
             hdc = state.get_debt_tax_chunk(fy, "huf")
             hec = state.get_equity_tax_chunk(fy, "huf")
             hoc = state.get_other_tax_chunk(fy, "huf")
@@ -2506,7 +2516,7 @@ class Engine:
             h_swp_go = max(0.0, ha["gain_o"] - h_rg.get("o", 0.0)
                                               - ha.get("topup_gain_o", 0.0))
 
-            h_swp_debt_income = huf_taxable_other + h_swp_gd
+            h_swp_debt_income = huf_assessable_other + h_swp_gd
             huf_swp_debt_tax  = compute_slab_tax(h_swp_debt_income, hdc, "huf") if hdc else 0.0
             huf_swp_eq_tax    = (compute_ltcg_huf(h_swp_ge, hec, h_swp_debt_income, hdc)
                                   if (hec and hdc) else 0.0)
@@ -2652,8 +2662,8 @@ def optimize_withdrawal_split(
         opt_huf: Dict[int, float] = {}
 
         for fy in state.fy_range():
-            taxable_other = pi.taxable(
-                fy, months_in_fy(state.investment_date, fy))
+            assessable_other = pi.assessable(
+                fy, months_in_fy(state.investment_date, fy), "individual")
             req = 0.0
             for y in sorted(original_personal_reqs.keys()):
                 if y <= fy:
@@ -2734,7 +2744,7 @@ def optimize_withdrawal_split(
                 # Personal tax with reduced withdrawal
                 personal_gains_d = max(0.0,
                     p_fy_gain_d.get(fy, 0.0) - delta * gf_p)
-                personal_slab = taxable_other + personal_gains_d
+                personal_slab = assessable_other + personal_gains_d
                 p_debt_tax = compute_slab_tax(personal_slab, dc_p, "individual")
                 p_eq_tax = (compute_ltcg_individual(gain_e, ec_p)
                             if ec_p else 0.0)

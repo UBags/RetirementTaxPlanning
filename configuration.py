@@ -93,6 +93,9 @@ REQUIRED_KEYS = frozenset({
     "risk_free_rate_mid",
     "risk_free_rate_low",
     "fd_benchmark_spread",
+    # Statutory deductions applied by OtherIncome.assessable().
+    "standard_deduction_salary_pension",
+    "rental_maintenance_deduction",
 })
 
 # Keys present in RetirementTaxPlanning.configuration that NO module reads.
