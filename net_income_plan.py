@@ -76,6 +76,19 @@ TOL = 1e-4
 #: requirement is treated as unable to respond.
 _DEAD_RESPONSE = 1e-6
 
+#: Passes of plain unit-gain correction before the secant step engages.
+#: Every golden scenario converges in 10 or fewer today (4/7/6/10/8), so
+#: raising this above 10 keeps the secant branch unreachable under the
+#: current identity and no snapshot can move.
+_SECANT_AFTER = 14
+
+#: Below this slope a secant step would be a division by almost nothing.
+#: Fall back to the unit step rather than taking a wild jump.
+_MIN_SLOPE = 0.02
+
+#: Hard cap on the secant correction, as a multiple of the raw error.
+_MAX_STEP_MULT = 8.0
+
 
 @dataclass
 class PlanSolution:
@@ -118,7 +131,7 @@ def solve_schedule(
     initial: Mapping[int, float] | None = None,
     scale: Mapping[int, float] | None = None,
     tol: float = TOL,
-    max_iter: int = 25,
+    max_iter: int = 60,
 ) -> PlanSolution:
     """Gross schedule whose projected cash in hand meets *targets*.
 
@@ -164,12 +177,43 @@ def solve_schedule(
         if all(abs(errors[fy]) <= tol for fy in live):
             break
 
+        # Secant correction, but only once the unit step has plainly stalled.
+        #
+        # The unit step assumes d(net)/d(gross) is about 1, which held while
+        # the tax term cancelled out of cash in hand. Where it does not --
+        # inside the s.87A marginal-relief band tax rises rupee for rupee, so
+        # the slope collapses toward 1 - gain_fraction -- the unit step still
+        # converges but at a crawl, and a plan can run out of iterations
+        # before it arrives. The secant step divides the error by the measured
+        # slope instead, which is scale-free.
+        #
+        # Gated at _SECANT_AFTER because every golden scenario converges in
+        # ten passes or fewer today, so this branch is unreachable until the
+        # identity changes underneath it. Measured: 4 / 7 / 6 / 10 / 8.
+        slopes: Dict[int, float] = {}
+        if it > _SECANT_AFTER:
+            for fy in live:
+                if fy not in prev_gross:
+                    continue
+                dg = gross[fy] - prev_gross[fy]
+                dn = net.get(fy, 0.0) - prev_net.get(fy, 0.0)
+                if abs(dg) > tol:
+                    slopes[fy] = dn / dg
+
         prev_gross = dict(gross)
         prev_net = dict(net)
         for fy in live:
             if abs(errors[fy]) <= tol:
                 continue
-            gross[fy] = max(0.0, gross[fy] + errors[fy] * step[fy])
+            adj = errors[fy]
+            s = slopes.get(fy)
+            if s is not None and s >= _MIN_SLOPE:
+                # Cap the correction: a small slope would otherwise produce a
+                # step large enough to overshoot into a different tax band and
+                # oscillate.
+                lim = abs(errors[fy]) * _MAX_STEP_MULT
+                adj = max(-lim, min(lim, errors[fy] / s))
+            gross[fy] = max(0.0, gross[fy] + adj * step[fy])
 
     shortfalls = {fy: targets[fy] - net.get(fy, 0.0)
                   for fy in years
