@@ -790,6 +790,15 @@ class PlanPeriodDialog(QDialog):
                 "figures — other income, the FD benchmark, withdrawals — are "
                 f"pro-rated to {m}/12 in that year only.")
 
+        from monte_carlo import MC_FIXED_HORIZON
+        if years != MC_FIXED_HORIZON:
+            self.lbl_end.setText(
+                f"ends 31 March {fy + years}   \u2014 no Monte Carlo at this "
+                f"length (needs {MC_FIXED_HORIZON})")
+            self.lbl_end.setStyleSheet("color: #b9770e;")
+        else:
+            self.lbl_end.setStyleSheet("")
+
         short = self._preview_state().chunks_short_of_horizon()
         if not short:
             self.lbl_cover.setText("\u2713 Every chunk list covers the full period.")

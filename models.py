@@ -560,8 +560,11 @@ class AppState:
         """THE single authority for how many financial years the plan runs.
 
         Clamped into [config.min_simulation_years, config.max_simulation_years].
-        The ceiling is what the rest of the system (notably the 30-element
-        Monte Carlo arrays) is built for; raising it is Phase D.  The floor is
+        The ceiling is how long a plan the ENGINE will project.  It is
+        deliberately NOT tied to Monte Carlo: those arrays are 30-element
+        until Phase D, and run_monte_carlo() refuses anything else by name
+        rather than letting the ceiling stand in for a constraint that is
+        not the same constraint.  The floor is
         a judgement about what counts as a plan at all -- a drawdown horizon
         of two or three years is not one, and the glide path, the four-chunk
         default structures and the rolling-window metrics all assume more

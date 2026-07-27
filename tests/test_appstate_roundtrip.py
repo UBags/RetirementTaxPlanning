@@ -90,13 +90,14 @@ def test_pre_horizon_save_file_loads_as_the_default():
 
 
 @pytest.mark.parametrize("stored,expected", [
-    (30, 30),     # default
+    (30, 30),     # the default plan length
     (15, 15),     # a shorter plan is honoured
     (10, 10),     # exactly the floor
-    (99, 30),     # clamped up to config.max_simulation_years
+    (40, 40),     # exactly the ceiling
+    (99, 40),     # clamped up to config.max_simulation_years
     (9, 10),      # clamped down to config.min_simulation_years
     (1, 10),      # ditto -- a one-year drawdown is not a plan
-    (0, 30),      # unset / falsy falls back to the ceiling
+    (0, 40),      # unset / falsy falls back to the ceiling
     (-5, 10),     # nonsense clamps to the floor, never an empty range
 ])
 def test_horizon_clamps_into_the_configured_band(stored, expected):
@@ -114,6 +115,27 @@ def test_the_floor_can_never_exceed_the_ceiling():
         assert AppState(horizon_years=5).horizon == int(cfg.max_simulation_years)
     finally:
         cfg._data["min_simulation_years"] = real
+
+
+def test_the_default_plan_length_is_not_the_ceiling():
+    """They were the same number until the ceiling rose to 40.
+
+    DEFAULT_HORIZON_YEARS answers "how long is a plan nobody has specified";
+    max_simulation_years answers "how long will the engine project". Conflating
+    them would silently make every new plan forty years long.
+    """
+    from configuration import config
+    assert AppState().horizon == DEFAULT_HORIZON_YEARS == 30
+    assert int(config.max_simulation_years) > DEFAULT_HORIZON_YEARS
+
+
+def test_monte_carlo_is_not_what_the_ceiling_means():
+    """The ceiling is an ENGINE limit; MC has its own, smaller one."""
+    from configuration import config
+    from monte_carlo import MC_FIXED_HORIZON
+    assert int(config.max_simulation_years) > MC_FIXED_HORIZON, (
+        "if these are equal again, check that run_monte_carlo()'s refusal is "
+        "still reachable rather than masked by the clamp")
 
 
 def test_the_horizon_band_is_self_consistent():

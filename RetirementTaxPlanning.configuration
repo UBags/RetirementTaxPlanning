@@ -34,8 +34,13 @@ swp_start_month = 3
 # Month index at which Bounded Smart Withdrawal activates (corpus needs time to drift)
 smart_withdrawal_start_month = 18
 
-# Maximum simulation horizon in financial years
-max_simulation_years = 30
+# Maximum simulation horizon in financial years.
+#
+# NOT the same thing as the length Monte Carlo supports. MC arrays are
+# 30-element until Phase D and run_monte_carlo() refuses any other horizon
+# outright, so a plan longer than 30 projects and charts correctly but has
+# no Monte Carlo. The Plan Period dialog says so before you choose.
+max_simulation_years = 40
 
 # Minimum plan length in financial years. A retirement drawdown plan shorter
 # than this is not a plan the rest of the system is built to reason about:
