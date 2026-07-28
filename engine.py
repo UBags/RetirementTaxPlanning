@@ -2335,6 +2335,31 @@ class Engine:
             h_rebal_gains_by_fy, glide_costs_by_fy, acc_get,
         )
 
+        # ── Realised-gain ledger, for measurement only ────────────────────────
+        # `p_acc`/`h_acc` carry gain_d/gain_e/gain_o per FY and are the only
+        # record of how much of each year's tax-free headroom the ordinary
+        # withdrawal has already consumed. They were locals, so every probe
+        # that needed them had to re-derive them and none could -- which is
+        # half of why the §14 harness was rebuilt three times (§20.3).
+        #
+        # Phase 07 sizes its transition windows against headroom NET of the
+        # withdrawal's own gain (Part I §5.3: cash first, transition second).
+        # Sizing against gross headroom would over-commit the window, which is
+        # the B1d-ii shape -- a scheduler reporting success while breaching the
+        # constraint it exists to satisfy.
+        #
+        # Written after every computation is complete and read by nothing on
+        # the live path, so no snapshot can move. Deliberately a snapshot copy,
+        # not a live reference, so a caller cannot mutate engine state.
+        self.gain_ledger = {
+            "personal": {fy: dict(a) for fy, a in p_acc.items()},
+            "huf":      {fy: dict(a) for fy, a in h_acc.items()},
+            "rebalance_personal": {fy: dict(g)
+                                   for fy, g in rebal_gains_by_fy.items()},
+            "rebalance_huf": {fy: dict(g)
+                              for fy, g in h_rebal_gains_by_fy.items()},
+        }
+
         h_yearly = yearly   # same combined YearSummary list; named separately for clarity
         return p_rows, yearly, h_rows, h_yearly
 
