@@ -42,7 +42,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests" / "golden"))
 
-from engine import Engine, free_gain_capacity  # noqa: E402
+from engine import (  # noqa: E402
+    Engine, compute_slab_tax, free_gain_capacity,
+)
 from models import AppState  # noqa: E402
 from net_income_plan import project_plan  # noqa: E402
 
@@ -89,6 +91,15 @@ def analyse(proj: str, idx: int):
             spare_p=max(0.0, gross_p - wd_p),
             gross_h=gross_h, wd_h=wd_h,
             spare_h=max(0.0, gross_h - wd_h),
+            assess_p=state.personal_income.assessable(fy, months, "individual"),
+            assess_h=state.huf_income.assessable(fy, months, "huf"),
+            chunk_p=state.get_debt_tax_chunk(fy, "individual"),
+            chunk_h=state.get_debt_tax_chunk(fy, "huf"),
+            # Per purse. The personal and HUF rebalances are separate
+            # operations (engine.py:1435 and 2058) and each is bounded by its
+            # OWN entity's bands -- headroom is not fungible between them.
+            bdy_p=sum(rp.get(k, 0.0) for k in "deo"),
+            bdy_h=sum(rh.get(k, 0.0) for k in "deo"),
             rebal_gain=(sum(rp.get(k, 0.0) for k in "deo")
                         + sum(rh.get(k, 0.0) for k in "deo")),
         ))
@@ -272,6 +283,114 @@ def centred_schedule(rows, boundaries, horizon: int, margin: float = 1.0):
     return results, used
 
 
+def centred_by_purse(rows, boundaries, horizon: int, margin: float = 1.0):
+    """Centred windows, but each purse spends only its OWN headroom.
+
+    `centred_schedule` pools personal and HUF spare. That is wrong in
+    principle: the two rebalances are separate operations bounded by separate
+    tax bands, and pooling hides a purse-specific shortfall behind the other
+    purse's slack. It happens not to change `s3_4chunk` FY24 -- both purses
+    saturate, so the residual is 110.0 either way -- but it can change M
+    elsewhere, and a screen that is right by luck is not a screen.
+
+    One window per boundary, shared by both purses: a chunk transition is a
+    single event and the plan moves both portfolios together. M is the
+    smallest for which BOTH purses complete, clamped at the band.
+    """
+    spare = {"p": {r["fy"]: r["spare_p"] for r in rows},
+             "h": {r["fy"]: r["spare_h"] for r in rows}}
+    used = {k: {fy: 0.0 for fy in spare[k]} for k in spare}
+    band = bands(boundaries, horizon)
+
+    results = []
+    for b in sorted(boundaries, key=lambda x: band[x["fy"]][1]):
+        n = b["fy"]
+        need = {"p": b["bdy_p"], "h": b["bdy_h"]}
+        lo_cap, hi_cap = band[n]
+        chosen = (0, n, n, {"p": 0.0, "h": 0.0})
+        for m_ in range(0, horizon + 1):
+            lo, hi = max(lo_cap, n - m_), min(hi_cap, n + m_)
+            cap = {k: sum(spare[k][fy] - used[k][fy] for fy in range(lo, hi + 1))
+                   for k in spare}
+            chosen = (m_, lo, hi, cap)
+            if (all(cap[k] >= need[k] * margin for k in spare)
+                    or (lo == lo_cap and hi == hi_cap)):
+                break
+        m_, lo, hi, _cap = chosen
+
+        residual, spent = {}, {}
+        for k in spare:
+            r_ = need[k]
+            per_year = {}
+            for fy in range(lo, hi + 1):        # chronological instalments
+                avail = spare[k][fy] - used[k][fy]
+                if avail <= 1e-9:
+                    continue
+                take = min(avail, r_)
+                used[k][fy] += take
+                per_year[fy] = take
+                r_ -= take
+                if r_ <= 1e-9:
+                    break
+            residual[k] = max(0.0, r_)
+            spent[k] = per_year
+
+        results.append(dict(
+            fy=n, M=m_, lo=lo, hi=hi, band=(lo_cap, hi_cap),
+            need=need, residual=residual, spent=spent,
+            complete=all(v <= 1e-6 for v in residual.values()),
+        ))
+    return results, used
+
+
+def _bases(rows, used, key: str, entity_key: str):
+    """Slab income each year already carries, before any residual is added."""
+    wd = "wd_p" if key == "p" else "wd_h"
+    assess = "assess_p" if key == "p" else "assess_h"
+    return {r["fy"]: r[assess] + r[wd] + used[key].get(r["fy"], 0.0)
+            for r in rows}
+
+
+def price_residual(rows, used, key: str, years, amount: float,
+                   step: float = 0.05):
+    """Tax on unfunded gain: dumped at one year versus spread across the band.
+
+    Part I §8. Once tax is unavoidable it is still a choice WHERE to pay it.
+    Slab tax is convex in income, so spreading a residual across years fills
+    the cheapest brackets first; dumping it in one year drives straight to the
+    top rate. This water-fills by repeatedly adding a small increment to
+    whichever year currently shows the lowest marginal rate.
+
+    Returns (tax_if_dumped_at_worst_year, tax_if_spread, per-year spread).
+    """
+    entity = "individual" if key == "p" else "huf"
+    chunk_key = "chunk_p" if key == "p" else "chunk_h"
+    chunks = {r["fy"]: r[chunk_key] for r in rows}
+    bases = _bases(rows, used, key, entity)
+
+    def tax(fy, extra):
+        c = chunks[fy]
+        return (compute_slab_tax(bases[fy] + extra, c, entity)
+                - compute_slab_tax(bases[fy], c, entity))
+
+    years = [fy for fy in years if fy in bases]
+    if not years or amount <= 1e-9:
+        return 0.0, 0.0, {}
+
+    dumped = max(tax(fy, amount) for fy in years)
+
+    extra = {fy: 0.0 for fy in years}
+    remaining = amount
+    while remaining > 1e-9:
+        s = min(step, remaining)
+        best = min(years,
+                   key=lambda fy: tax(fy, extra[fy] + s) - tax(fy, extra[fy]))
+        extra[best] += s
+        remaining -= s
+    spread = sum(tax(fy, e) for fy, e in extra.items())
+    return dumped, spread, {fy: e for fy, e in extra.items() if e > 1e-6}
+
+
 def main() -> None:
     targets = SCENARIOS
     detail = False
@@ -357,6 +476,29 @@ def main() -> None:
         print(f"  unfunded gain {resid_total:.1f}"
               + (" GUARD BREACHED " + str(over) if over
                  else "; no year over-spent"))
+
+        # Per purse — headroom is not fungible between the two entities.
+        sched, used = centred_by_purse(rows, boundaries, horizon)
+        print("  -- per purse, centred and band-capped --")
+        for s in sched:
+            for k, name in (("p", "personal"), ("h", "HUF     ")):
+                r_ = s["residual"][k]
+                mark = "zero" if r_ <= 1e-6 else f"RESIDUAL {r_:.1f}"
+                print(f"  FY{s['fy']:<3} {name} M={s['M']:<2}"
+                      f" FY{s['lo']}-{s['hi']}"
+                      f"  need {s['need'][k]:>7.1f}"
+                      f"  funded {s['need'][k] - r_:>7.1f}   {mark}")
+            if not s["complete"]:
+                years = range(s["lo"], s["hi"] + 1)
+                for k, name in (("p", "personal"), ("h", "HUF")):
+                    r_ = s["residual"][k]
+                    if r_ <= 1e-6:
+                        continue
+                    dumped, spread, _plan = price_residual(
+                        rows, used, k, years, r_)
+                    print(f"       {name} residual {r_:>6.1f}"
+                          f" -> tax {dumped:>6.2f} if dumped in one year,"
+                          f" {spread:>6.2f} if spread over FY{s['lo']}-{s['hi']}")
 
 
 if __name__ == "__main__":
