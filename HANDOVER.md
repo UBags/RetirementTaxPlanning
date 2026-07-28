@@ -190,7 +190,7 @@ that the tax totals alone hid — the same failure mode as B1d-ii's
 schedule that delivers 44.6 against a requirement of 42.5 will look like a
 brilliant tax result.
 
-Parameters used (the live plan, not the scrubbed fixtures): personal corpus
+Parameters used: personal corpus
 350, requirement 35 rising to 50 in five-year steps, other income 15.8 growing
 by an increment that ramps 0.50 -> 0.15 per year, assessable share held at
 5.95/15.8, HUF seeded with an inherited 190 at FY5 earning 7.0%, statutory
