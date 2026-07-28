@@ -78,11 +78,19 @@ def test_three_folios_sort_by_front_lot_gain_fraction():
 
 # ── the ration ───────────────────────────────────────────────────────────
 def _engine(k, chunks, override=None):
+    zero = types.SimpleNamespace(
+        assessable=lambda *a, **kw: 0.0,
+        taxable=lambda *a, **kw: 0.0,
+        non_taxable=lambda *a, **kw: 0.0)
     eng = Engine.__new__(Engine)
     eng.state = types.SimpleNamespace(
         huf_withdrawal_chunks=chunks,
         huf_annual_requirements=override or {},
-        huf_income=types.SimpleNamespace(assessable=lambda *a, **kw: 0.0),
+        huf_income=zero,
+        personal_income=zero,
+        # Large by default so the demand ceiling does not bind; the tests that
+        # exercise it set it explicitly via _engine_with_demand.
+        get_requirement=lambda fy: 1e6,
         horizon=30,
         get_debt_tax_chunk=lambda fy, entity: CHUNK,
     )
@@ -182,3 +190,66 @@ def test_an_empty_huf_rations_nothing(monkeypatch):
     _set_k(monkeypatch, 1.2)
     eng = _engine(1.2, [])
     assert eng._huf_annual_wd(6, {"F": FIFOBucket()}, {"F": NAV}, 30) == 0.0
+
+
+# ── the demand ceiling ───────────────────────────────────────────────────
+def _engine_with_demand(req, oi):
+    eng = _engine(1.2, [])
+    # split the cash across the two purses so neither is double counted
+    eng.state.personal_income = types.SimpleNamespace(
+        assessable=lambda *a, **kw: 0.0, taxable=lambda *a, **kw: oi,
+        non_taxable=lambda *a, **kw: 0.0)
+    eng.state.huf_income = types.SimpleNamespace(
+        assessable=lambda *a, **kw: 0.0, taxable=lambda *a, **kw: 0.0,
+        non_taxable=lambda *a, **kw: 0.0)
+    eng.state.get_requirement = lambda fy: req
+    return eng
+
+
+def test_the_ration_never_exceeds_the_years_demand(monkeypatch):
+    """The ration is a CEILING on what the HUF may supply, not a mandate.
+
+    Without this the HUF hands over its full ration even in years where that
+    alone exceeds the requirement. The personal draw cannot go negative to
+    compensate, so the plan OVER-DELIVERS and the solver reports
+    converged=False -- the B1d-ii shape exactly.
+
+    Measured on s0_1chunk before the fix: 7.876L of over-delivery at k=1.2,
+    concentrated in FY11-20 where the ration (9.74 at FY15) ran past the
+    corpus demand (8.715).
+    """
+    _set_k(monkeypatch, 1.2)
+    b, n = _buckets()
+    # ration 1.2*200/30 = 8.0, band cap 8.0, but only 3.0 is actually needed
+    eng = _engine_with_demand(req=12.0, oi=9.0)
+    assert eng._huf_annual_wd(1, b, n, 30) == pytest.approx(3.0)
+
+
+def test_a_year_needing_nothing_draws_nothing(monkeypatch):
+    _set_k(monkeypatch, 1.2)
+    b, n = _buckets()
+    eng = _engine_with_demand(req=5.0, oi=9.0)      # other income covers it
+    assert eng._huf_annual_wd(1, b, n, 30) == 0.0
+
+
+def test_the_demand_ceiling_does_not_bind_when_the_year_needs_more(monkeypatch):
+    """Otherwise the ceiling would silently become the whole rule."""
+    _set_k(monkeypatch, 1.2)
+    b, n = _buckets()
+    eng = _engine_with_demand(req=100.0, oi=9.0)    # demand 91, far above
+    assert eng._huf_annual_wd(1, b, n, 30) == pytest.approx(8.0)
+
+
+def test_huf_ration_is_the_minimum_of_all_three_constraints(monkeypatch):
+    """Direct cover for `_huf_ration`, which the review graph flagged as
+    reached only through `_huf_annual_wd`."""
+    _set_k(monkeypatch, 1.2)
+    b, n = _buckets()
+    eng = _engine_with_demand(req=100.0, oi=0.0)
+    # ration binds  (40 years -> 6.0 < band cap 8.0 < demand 100)
+    assert eng._huf_ration(1, b, n, 40) == pytest.approx(6.0)
+    # band binds    (1 year left -> ration 240, cap 8.0)
+    assert eng._huf_ration(30, b, n, 30) == pytest.approx(8.0)
+    # demand binds
+    eng2 = _engine_with_demand(req=12.0, oi=9.0)
+    assert eng2._huf_ration(1, b, n, 30) == pytest.approx(3.0)

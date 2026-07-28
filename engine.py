@@ -1137,7 +1137,20 @@ class Engine:
             if val <= 0.0:
                 continue
             cap += cash_within_gain_budget(b, nav, band * val / total)
-        return max(0.0, min(ration, cap))
+
+        # The ration is a CEILING on what the HUF may supply, never a mandate.
+        # Without this the HUF hands over its full ration even in years when
+        # that alone exceeds the requirement -- the personal draw cannot go
+        # negative to compensate, so the plan OVER-DELIVERS and the solver
+        # reports converged=False. Measured on s0_1chunk at k=1.2: 7.876 of
+        # over-delivery, concentrated in FY11-20 where the ration (9.74 at
+        # FY15) runs past the corpus demand (8.715).
+        m_fy = self.months_in_fy(fy)
+        pi, hi = self.state.personal_income, self.state.huf_income
+        demand = self.state.get_requirement(fy) - (
+            pi.taxable(fy, m_fy) + pi.non_taxable(fy, m_fy)
+            + hi.taxable(fy, m_fy) + hi.non_taxable(fy, m_fy))
+        return max(0.0, min(ration, cap, demand))
 
     def _huf_annual_wd(self, fy: int, buckets=None, navs=None,
                        horizon=None) -> float:
