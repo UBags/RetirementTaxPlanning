@@ -168,7 +168,108 @@ class FIFOBucket:
                 new_lots.append(Lot(leftover, lot.purchase_nav, lot.purchase_month))
         self.lots = new_lots
         return principal, gain
+        return principal, gain
 
+
+#: Folio a fund's holdings sit in when nothing has been split yet. Phase 4a
+#: creates this one and only this one, which is what makes the change inert.
+DEFAULT_FOLIO = "F1"
+
+
+class FolioSet:
+    """One fund's holdings, divided across cohort folios.
+
+    Indian practice computes capital gains FIFO **per folio**, not across a
+    PAN (CBDT Circular 704). That makes the folio the only lot-selection lever
+    there is, and the reason for this class: HANDOVER §4.5 measured
+    single-folio harvesting at 16.47L against 6.55L for not harvesting at all,
+    while three vintage folios reached zero. Rebuying into one folio appends
+    the fresh basis to the back of the queue, where withdrawals never reach it.
+
+    It presents the FIFOBucket surface -- lots, total_units, current_value,
+    invest, redeem -- so the eighty-odd existing call sites are untouched.
+    **With a single folio every operation delegates to that one bucket**, so
+    behaviour is identical by construction and no snapshot can move. That is
+    the whole safety argument for Phase 4a: prove the representation before it
+    is allowed to change anything.
+
+    `lots` returns the underlying list BY REFERENCE while there is one folio,
+    so the fifteen sites that read it and the three that rebind it (the HIFO
+    rebalance sells at engine.py:356, :508 and :2224) keep working unchanged.
+    Once a second folio exists that is no longer meaningful, and the setter
+    raises rather than silently corrupting a queue -- Phase 4b replaces those
+    sites with folio-aware selection.
+    """
+
+    __slots__ = ("folios", "order")
+
+    def __init__(self, folio_id: str = DEFAULT_FOLIO):
+        self.folios: Dict[str, FIFOBucket] = {folio_id: FIFOBucket()}
+        self.order: List[str] = [folio_id]
+
+    # ── the FIFOBucket surface ───────────────────────────────────────────
+    @property
+    def lots(self) -> List[Lot]:
+        if len(self.order) == 1:
+            return self.folios[self.order[0]].lots      # by reference
+        return [lot for fid in self.order for lot in self.folios[fid].lots]
+
+    @lots.setter
+    def lots(self, value: List[Lot]) -> None:
+        if len(self.order) != 1:
+            raise NotImplementedError(
+                "Assigning .lots across multiple folios would flatten them "
+                "into one queue and destroy the vintage separation that is "
+                "the entire point. Select a folio explicitly (Phase 4b)."
+            )
+        self.folios[self.order[0]].lots = value
+
+    @property
+    def total_units(self) -> float:
+        return sum(b.total_units for b in self.folios.values())
+
+    def current_value(self, nav: float) -> float:
+        return self.total_units * nav
+
+    def invest(self, amount: float, nav: float, month: int,
+               folio: Optional[str] = None) -> None:
+        """Fresh money goes to the newest folio unless one is named."""
+        self.folios[folio or self.order[-1]].invest(amount, nav, month)
+
+    def redeem(self, amount: float, nav: float,
+               folio: Optional[str] = None) -> Tuple[float, float]:
+        """Redeem, FIFO within the chosen folio.
+
+        With one folio this is exactly FIFOBucket.redeem. Choosing BETWEEN
+        folios -- cheapest gain fraction for cash, dearest for harvesting --
+        is Phase 4b; until then a caller that names no folio gets the oldest,
+        which is the single one.
+        """
+        if folio is not None:
+            return self.folios[folio].redeem(amount, nav)
+        if len(self.order) == 1:
+            return self.folios[self.order[0]].redeem(amount, nav)
+        raise NotImplementedError(
+            "Redeeming across folios without naming one has no defined "
+            "order. That choice is the point of the split (Phase 4b)."
+        )
+
+    # ── folio-aware, for Phase 4b onward ─────────────────────────────────
+    def open_folio(self, folio_id: str) -> str:
+        if folio_id not in self.folios:
+            self.folios[folio_id] = FIFOBucket()
+            self.order.append(folio_id)
+        return folio_id
+
+    def gain_fraction(self, folio_id: str, nav: float) -> float:
+        """Gain fraction of the lot FIFO would sell next from `folio_id`."""
+        for lot in self.folios[folio_id].lots:
+            if lot.units > 1e-12:
+                return (nav - lot.purchase_nav) / nav if nav > 0 else 0.0
+        return float("inf")
+
+    def value_by_folio(self, nav: float) -> Dict[str, float]:
+        return {fid: self.folios[fid].current_value(nav) for fid in self.order}
 
 ACCRUE_REDEMPTION_GAINS = True
 
@@ -524,7 +625,7 @@ def _rebalance_portfolio(
                 continue
             nav = fund_navs[fn]
             if fn not in fund_buckets:
-                fund_buckets[fn] = FIFOBucket()
+                fund_buckets[fn] = FolioSet()
                 fund_navs[fn]    = nav
             fund_buckets[fn].invest(actual_buy, nav, month_idx)
 
@@ -1094,10 +1195,10 @@ class Engine:
         # Each fund has its own bucket + NAV.
         # Only year-1 funds get their allocation invested at month 0.
         # Later-chunk funds get empty buckets (will be filled at rebalance).
-        p_fund_buckets: Dict[str, FIFOBucket] = {}
+        p_fund_buckets: Dict[str, FolioSet] = {}
         p_fund_navs:    Dict[str, float]      = {}
         for f in all_active:
-            bk = FIFOBucket()
+            bk = FolioSet()
             if f.name in init_fund_names:
                 bk.invest(f.allocation, 1.0, 0)
             p_fund_buckets[f.name] = bk
@@ -1122,8 +1223,8 @@ class Engine:
         # Per-fund NAVs are shared with personal (same funds, same compounding rate).
         # This ensures HUF follows the identical allocation, rebalancing, and
         # glide-path transitions as the personal corpus.
-        h_fund_buckets: Dict[str, FIFOBucket] = {
-            f.name: FIFOBucket() for f in all_active
+        h_fund_buckets: Dict[str, FolioSet] = {
+            f.name: FolioSet() for f in all_active
         }
 
         # HUF aggregate buckets — kept for backward-compat with h_acc and
@@ -1292,7 +1393,7 @@ class Engine:
                             target_val = curr_total_val * (f.allocation / new_total)
                             if f.name not in p_fund_buckets:
                                 # New fund never seen — create bucket with fresh NAV
-                                p_fund_buckets[f.name] = FIFOBucket()
+                                p_fund_buckets[f.name] = FolioSet()
                                 p_fund_navs[f.name] = 1.0
                                 # Register in all_funds_map so it gets per-fund growth
                                 all_funds_map[f.name] = f
@@ -1911,7 +2012,7 @@ class Engine:
                         for f in new_active_h:
                             target_val = curr_total_h * (f.allocation / new_total_h)
                             if f.name not in h_fund_buckets:
-                                h_fund_buckets[f.name] = FIFOBucket()
+                                h_fund_buckets[f.name] = FolioSet()
                                 all_funds_map.setdefault(f.name, f)
                             bk        = h_fund_buckets[f.name]
                             nav       = p_fund_navs.get(f.name, 1.0)
@@ -1981,7 +2082,7 @@ class Engine:
                 for fn, alloc_h in fy_alloc_h.items():
                     share_h = alloc_h / fy_total_h if fy_total_h > 0 else 0.0
                     if fn not in h_fund_buckets:
-                        h_fund_buckets[fn] = FIFOBucket()
+                        h_fund_buckets[fn] = FolioSet()
                     h_fund_buckets[fn].invest(huf_inflow * share_h, p_fund_navs.get(fn, 1.0), m)
                 # Sync aggregates
                 sd, se, so = state.get_split_3way(safe_fy)
