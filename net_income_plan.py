@@ -115,12 +115,25 @@ class PlanSolution:
     #: FY -> amount by which cash in hand falls short. Only years that could
     #: not respond appear here.
     shortfalls: Dict[int, float] = field(default_factory=dict)
+    #: FY -> amount by which cash in hand EXCEEDS the target, any year.
+    #: Recorded separately because over-delivery is a different failure from
+    #: under-delivery and must never be netted against it: B1d-ii computed
+    #: `converged = not shortfalls`, so over-delivery was invisible and the
+    #: solver reported success while drifting above target in six to thirteen
+    #: years. `converged` here excludes frozen years, so a frozen year that
+    #: over-delivers is currently absent from BOTH records. This field closes
+    #: that gap; it does not change any number.
+    overdeliveries: Dict[int, float] = field(default_factory=dict)
     iterations: int = 0
     converged: bool = False
 
     @property
     def total_shortfall(self) -> float:
         return sum(self.shortfalls.values())
+
+    @property
+    def total_overdelivery(self) -> float:
+        return sum(self.overdeliveries.values())
 
     def worst_year(self) -> int | None:
         if not self.shortfalls:
@@ -233,12 +246,16 @@ def solve_schedule(
     shortfalls = {fy: targets[fy] - net.get(fy, 0.0)
                   for fy in years
                   if frozen[fy] and targets[fy] - net.get(fy, 0.0) > tol}
+    overdeliveries = {fy: net.get(fy, 0.0) - targets[fy]
+                      for fy in years
+                      if net.get(fy, 0.0) - targets[fy] > tol}
     converged = all(
         abs(targets[fy] - net.get(fy, 0.0)) <= tol
         for fy in years if not frozen[fy]
     )
     return PlanSolution(gross=gross, net=net, targets=dict(targets),
-                        shortfalls=shortfalls, iterations=it,
+                        shortfalls=shortfalls,
+                        overdeliveries=overdeliveries, iterations=it,
                         converged=converged)
 
 
