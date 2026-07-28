@@ -472,7 +472,7 @@ def _redeem_pro_rata(buckets: Dict[str, "FIFOBucket"],
 def _rebalance_portfolio(
     target_weights:    Dict[str, float],
     prior_weights:     Dict[str, float],
-    fund_buckets:      Dict[str, 'FIFOBucket'],
+    fund_buckets:      Dict[str, 'FolioSet'],
     fund_navs:         Dict[str, float],
     fund_types:        Dict[str, str],         # fund_name -> "debt"|"equity"|"other"
     state:             'AppState',
@@ -583,6 +583,27 @@ def _rebalance_portfolio(
         if bk is None or sell_amt < 0.01:
             return 0.0, 0.0, 0.0, 0.0
         nav = fund_navs[fn]
+
+        # Multi-folio: folio choice is the only lot-selection lever there is.
+        # Gains are computed FIFO per folio (CBDT Circular 704) and an AMC
+        # cannot be instructed to sell your highest-cost units, so once a
+        # second folio exists the sort-and-reassign below is unachievable in
+        # reality and refused by the .lots setter. sell_ordered draws
+        # cheapest-folio first, FIFO within each.
+        #
+        # Unreachable while folio_cohort_threshold = 0.0 opens exactly one
+        # folio per fund, so this commit moves no snapshot. use_hifo does not
+        # reach this branch: the HIFO sort below is a modelling fiction
+        # (HANDOVER_REVISION 10.2), and correcting it for the single-folio
+        # path moves every snapshot and is a separate commit.
+        if len(bk.order) > 1:
+            stcg, ltcg, loads, sold = bk.sell_ordered(
+                sell_amt, nav, month_idx, STCG_MONTHS, EXIT_LOAD,
+                prefer="cash")
+            # sold, not sell_amt: if the folios together cannot cover the
+            # amount, returning sell_amt would claim cash that was never
+            # raised -- the 4b-i defect wearing a different hat.
+            return stcg, ltcg, loads, sold - loads
 
         if use_hifo:
             # Sort ascending by gain-per-unit → sell lowest-gain lots first
