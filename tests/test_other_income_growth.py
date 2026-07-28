@@ -161,7 +161,19 @@ def test_the_optimiser_resolves_income_inside_the_fy_loop(project_root):
     # s.24(a). The assertion is that the optimiser resolves income PER FY,
     # inside the FY loop -- not which method it calls or how many arguments
     # that method takes.
-    m = re.search(r"pi\.(taxable|assessable)\(\s*\n?\s*fy\b", src)
+    # SCOPE THE SEARCH TO THE OPTIMISER. Broken a fourth time, by the HUF
+    # ration: `_huf_ration` resolves `pi.taxable(fy, m_fy)` for its demand
+    # ceiling, sits ~1500 lines earlier, and is correctly NOT inside an FY
+    # loop -- it is called once per year from the monthly loop. The regex hit
+    # that first and the backwards search for a loop then found nothing.
+    #
+    # Every one of the four breakages has the same cause: a whole-file search
+    # for something that belongs to one function. The assertion is about
+    # `optimize_withdrawal_split`, so search inside it and nowhere else.
+    start = src.find("def optimize_withdrawal_split(")
+    assert start != -1, "optimize_withdrawal_split has been renamed or removed"
+    body = src[start:]
+    m = re.search(r"pi\.(taxable|assessable)\(\s*\n?\s*fy\b", body)
     assert m, "the optimiser does not resolve income per FY"
     idx = m.start()
     # Match the loop by what it is, not by one spelling of it. This used to
@@ -169,7 +181,7 @@ def test_the_optimiser_resolves_income_inside_the_fy_loop(project_root):
     # replaced that with `state.fy_range()` — the assertion is about where the
     # resolution sits, not about how the horizon happens to be written.
     loop = max((m.start() for m in re.finditer(r"^\s*for fy in .+:$",
-                                               src[:idx], re.M)), default=-1)
+                                               body[:idx], re.M)), default=-1)
     assert loop != -1, "the per-FY resolution is not inside the FY loop"
 
 
