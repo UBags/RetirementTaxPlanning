@@ -279,12 +279,18 @@ def test_engine_windfall():
 
 def test_engine_no_trade_threshold():
     _section("Engine — No-Trade Threshold (Garleanu & Pedersen)")
-    from engine import FIFOBucket, Lot, _rebalance_portfolio
+    from engine import Lot, _rebalance_portfolio, new_folio_set
+
+    # new_folio_set(), not FIFOBucket(): _rebalance_portfolio takes
+    # FolioSets since Phase 4a and reads .order to detect the multi-folio
+    # case. At folio_cohort_threshold = 0.0 a FolioSet opens exactly one
+    # folio and delegates every operation to it, so these numbers are
+    # unchanged -- but a bare FIFOBucket has no .order and raises.
 
     # Build a tiny portfolio that is well within 3% drift
     fund_buckets = {
-        "Debt A": FIFOBucket(),
-        "Eq A":   FIFOBucket(),
+        "Debt A": new_folio_set(),
+        "Eq A":   new_folio_set(),
     }
     fund_buckets["Debt A"].invest(80.0, 1.0, 0)
     fund_buckets["Eq A"].invest(20.0, 1.0, 0)
@@ -553,13 +559,19 @@ def test_fifo_bucket_basic():
 
 def test_hifo_vs_fifo_gain_difference():
     _section("HIFO — Lower gains than FIFO (tax alpha)")
-    from engine import FIFOBucket, Lot, _rebalance_portfolio
+    from engine import Lot, _rebalance_portfolio, new_folio_set
+
+    # new_folio_set(), not FIFOBucket(): _rebalance_portfolio takes
+    # FolioSets since Phase 4a and reads .order to detect the multi-folio
+    # case. At folio_cohort_threshold = 0.0 a FolioSet opens exactly one
+    # folio and delegates every operation to it, so these numbers are
+    # unchanged -- but a bare FIFOBucket has no .order and raises.
 
     # Two lots: Lot A (old, high gain), Lot B (recent, low gain)
     # FIFO sells Lot A first (high gain = more tax)
     # HIFO sells Lot B first (low gain = less tax)
     def _build_buckets():
-        bk = FIFOBucket()
+        bk = new_folio_set()
         # Lot A: bought at NAV 1.0, month 0 (old = LTCG, big gain at current nav=3.0)
         bk.lots.append(Lot(units=50.0, purchase_nav=1.0, purchase_month=0))
         # Lot B: bought at NAV 2.5, month 50 (still old, small gain at nav=3.0)
@@ -572,7 +584,7 @@ def test_hifo_vs_fifo_gain_difference():
     state = _make_state()
 
     # FIFO (use_hifo=False)
-    bk_fifo = {"FundX": _build_buckets(), "FundY": FIFOBucket()}
+    bk_fifo = {"FundX": _build_buckets(), "FundY": new_folio_set()}
     bk_fifo["FundY"].invest(150.0, 1.0, 0)
     fifo_cost, fifo_gains, _ = _rebalance_portfolio(
         target_weights={"FundX": 0.3, "FundY": 0.7},
@@ -585,7 +597,7 @@ def test_hifo_vs_fifo_gain_difference():
     )
 
     # HIFO (use_hifo=True)
-    bk_hifo = {"FundX": _build_buckets(), "FundY": FIFOBucket()}
+    bk_hifo = {"FundX": _build_buckets(), "FundY": new_folio_set()}
     bk_hifo["FundY"].invest(150.0, 1.0, 0)
     hifo_cost, hifo_gains, _ = _rebalance_portfolio(
         target_weights={"FundX": 0.3, "FundY": 0.7},
