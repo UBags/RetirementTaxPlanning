@@ -199,6 +199,79 @@ def schedule_all(rows, boundaries, horizon: int, respect_prior: bool = False):
     return results, used
 
 
+def bands(boundaries, horizon: int) -> dict:
+    """The years a boundary's window may occupy: previous boundary to next-1.
+
+    A chunk's portfolio is the minimum-risk portfolio achieving THAT chunk's
+    target return, so it only does its job while it is actually held during
+    that chunk. A window crossing a neighbouring boundary would leave the
+    portfolio delivering the wrong chunk's risk profile, which is a mandate
+    breach rather than a tax cost. The band is therefore a hard cap.
+    """
+    fys = [b["fy"] for b in boundaries]
+    out = {}
+    for i, fy in enumerate(fys):
+        lo = fys[i - 1] if i > 0 else 1
+        hi = (fys[i + 1] - 1) if i + 1 < len(fys) else horizon
+        out[fy] = (lo, hi)
+    return out
+
+
+def centred_schedule(rows, boundaries, horizon: int, margin: float = 1.0):
+    """Windows centred on N per `N +/- (M +/- m)`, capped at the band.
+
+    Search M upward from 0 and take the smallest that completes -- cost does
+    not rise with window length (Part I §7 G7), so a wider window buys nothing
+    but risk of straddling. Stop growing once both ends hit the band.
+
+    Spending runs CHRONOLOGICALLY across the window, each year taking what it
+    can afford. Part I §7 G6: instalments track capacity, not a schedule.
+
+    `margin` requires capacity >= need * margin before declaring completion.
+    At 1.0 a window completing exactly is accepted; `hist_8yr` completes with
+    0.8% to spare, which is a point estimate standing between zero and a tax
+    bill, so 1.2 is the defensible setting once the shape is agreed.
+
+    Where a boundary cannot complete inside its band the residual is REPORTED,
+    not bought by widening. A scheduler that silently over-runs its mandate to
+    protect a tax figure is the B1d-ii failure in a new costume (Part I §8).
+    """
+    spare = {r["fy"]: r["spare_p"] + r["spare_h"] for r in rows}
+    used = {fy: 0.0 for fy in spare}
+    band = bands(boundaries, horizon)
+
+    results = []
+    for b in sorted(boundaries, key=lambda x: band[x["fy"]][1]):
+        n, need = b["fy"], b["rebal_gain"]
+        lo_cap, hi_cap = band[n]
+        chosen = (0, n, n, 0.0)
+        for m_ in range(0, horizon + 1):
+            lo, hi = max(lo_cap, n - m_), min(hi_cap, n + m_)
+            cap = sum(spare[fy] - used[fy] for fy in range(lo, hi + 1))
+            chosen = (m_, lo, hi, cap)
+            if cap >= need * margin or (lo == lo_cap and hi == hi_cap):
+                break
+        m_, lo, hi, cap = chosen
+
+        remaining = need
+        for fy in range(lo, hi + 1):          # chronological instalments
+            avail = spare[fy] - used[fy]
+            if avail <= 1e-9:
+                continue
+            take = min(avail, remaining)
+            used[fy] += take
+            remaining -= take
+            if remaining <= 1e-9:
+                break
+
+        results.append(dict(
+            fy=n, need=need, M=m_, lo=lo, hi=hi, band=(lo_cap, hi_cap),
+            assigned=need - remaining, residual=max(0.0, remaining),
+            complete=remaining <= 1e-6,
+        ))
+    return results, used
+
+
 def main() -> None:
     targets = SCENARIOS
     detail = False
@@ -267,6 +340,23 @@ def main() -> None:
                   f" ({tot_used / sum(spare.values()):.0%} utilisation);"
                   + (" GUARD BREACHED " + str(over) if over
                      else " no year over-spent"))
+
+        # The policy the plan actually mandates: centred on N, capped so a
+        # window never crosses a neighbouring boundary.
+        sched, used = centred_schedule(rows, boundaries, horizon)
+        over = [fy for fy, u in used.items() if u > spare[fy] + 1e-6]
+        print("  -- centred windows N +/- M, capped at the adjacent boundary --")
+        resid_total = 0.0
+        for s in sched:
+            state_s = "completes" if s["complete"] else "RESIDUAL"
+            print(f"  boundary FY{s['fy']:<3} band FY{s['band'][0]}-{s['band'][1]}"
+                  f"  M={s['M']:<2} window FY{s['lo']}-{s['hi']}"
+                  f"  assigned {s['assigned']:>7.1f} of {s['need']:>7.1f}"
+                  f"  residual {s['residual']:>6.1f}  {state_s}")
+            resid_total += s["residual"]
+        print(f"  unfunded gain {resid_total:.1f}"
+              + (" GUARD BREACHED " + str(over) if over
+                 else "; no year over-spent"))
 
 
 if __name__ == "__main__":
