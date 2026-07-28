@@ -1,8 +1,14 @@
 # METHODOLOGY — two-purse SWP tax minimisation
 
-Companion to `HANDOVER_merged.md`. That document says what is true about the
-**codebase**; this one says how the **model** works, why each rule is the rule,
-and how to apply it to inputs it has never seen.
+**Part I (§0–12)** — how the standalone model works, why each rule is the
+rule, and how to apply it to inputs it has never seen. Validated: it
+reproduces every published reference figure.
+
+**Part II (§13–20)** — the ENGINE: what it actually does today, what has been
+measured on it, and every remaining phase in implementation detail. Read
+Part II first if you are here to write code.
+
+Companion to `HANDOVER_merged.md`.
 
 Written so that none of it has to be rediscovered. Where a number appears it
 came from a run, and the run is named. Where a constant was fitted rather than
@@ -460,12 +466,37 @@ every year spent part-transitioned is a real cost the tax figure will not show.
 If the transition moves toward a *higher*-returning allocation, this rule
 reverses and you should start as early as capacity allows.
 
-### G7. Turnover is roughly linear in cost, so reducing it is worth as much as spreading it
+### G7. Turnover sets the window LENGTH, not the cost
 
-Measured, all moved in one year: 0% → 0.30, 25% → 50.38, 50% → 102.38,
-75% → 154.09, 100% → 160.70. If the two allocations share funds, the true
-turnover is lower than the naive difference between them, and that should be
-established before scheduling anything.
+**Corrected.** This section previously said cost was roughly linear in
+turnover and concluded that reducing turnover was worth as much as spreading
+it. That is false, and the evidence against it was already in §7 G6.
+
+Linearity holds only when the whole move is **compressed into one year**:
+0% → 0.30, 25% → 50.38, 50% → 102.38, 75% → 154.09, 100% → 160.70.
+
+Spread against capacity the cost is ~0 at **every** turnover. Measured across
+windows, with the fraction of the target that actually completes in brackets:
+
+| window | even instalments | capacity-driven |
+|---|---:|---:|
+| FY16 only | 50.38 | **0.19** (3% moved) |
+| FY12–20 | 23.91 | **0.19** (25% moved) |
+| FY8–20 | 14.93 | **0.19** (54% moved) |
+| FY6–20 | 7.55 | **0.19** (77% moved) |
+| FY4–26 | 1.06 | **0.19** (100% moved) |
+
+The capacity-driven column does not move. **A capacity-driven transition never
+pays tax; the window decides whether it FINISHES, not what it costs.** Doubling
+turnover does not double the bill — it doubles the years needed to complete at
+the same bill.
+
+Therefore: **do not reduce turnover in order to reduce tax.** Reduce turnover
+only to shorten the window, and the reason to want a shorter window is the
+real, untaxed cost of sitting between two allocations (§12) — not the tax.
+
+Establishing the true turnover still matters, because two allocations that
+share funds need a shorter window than their naive difference suggests.
 
 ---
 
@@ -593,3 +624,366 @@ relative to withdrawals — not the chunking, and not the transition, which is f
   operating three folios.
 - **The tax treatment is not advice.** s.64(2), CBDT Circular 704, GAAR exposure
   on deliberate folio separation, and the HUF's slab treatment all need a CA.
+
+---
+---
+
+# PART II — THE ENGINE
+
+Part I describes a standalone model that reaches zero tax. Part II describes
+the application, which does not, and exactly what stands between them.
+
+---
+
+## 13. What the engine does today
+
+**HEAD `7a1daa5`, 804 tests, ruff clean.** Both tax-minimisation gates are at
+zero, so **the engine computes the same numbers it computed before any of this
+work started.** Six patchers have landed; none has moved a snapshot.
+
+| lever | built? | live? | why not |
+|---|---|---|---|
+| vintage folios | yes, tested | **no** | `folio_cohort_threshold = 0.0` → one folio per fund |
+| HUF ration | yes, tested | **no** | `huf_ration_k = 0.0` → `huf_withdrawal_chunks` still drives (`engine.py:1173`) |
+| capacity-driven transition | **no** | no | retired in `bfbf226`; nothing replaced it. Boundary is a hard cut |
+| personal water-fill on slab headroom | **no** | no | `_execute_ltcg_harvest` targets the *equity LTCG exemption*, not slab headroom |
+
+### What has landed, and what each is for
+
+| patch | commit | content |
+|---|---|---|
+| 01 | — | `PlanSolution.overdeliveries` + delivery-precedence guard. **Found the defect in 05.** |
+| 02 | — | `free_gain_capacity(chunk, entity, assessable_other, gain_realised)` — per-entity tax-free headroom |
+| 03 | `9e2d058` | `cash_within_gain_budget(bucket, nav, gain_budget)` + `_cash_consumption_order` |
+| 04 | `5ba659c` | `_huf_ration` / `_huf_annual_wd`, gated |
+| 05 | `7a1daa5` | ration ceiling at the year's demand — a defect fix |
+| 06 | `cfae423` | scoped `test_the_optimiser_resolves_income_inside_the_fy_loop` |
+
+The two primitives from 02 and 03 are the shared machinery every remaining
+phase needs. They are tested and live; only their callers are missing.
+
+---
+
+## 14. Measurements on the engine — the evidence base
+
+Everything here came from a run. The harness is two throwaway scripts;
+**commit them** (§20).
+
+### 14.1 The tax is concentrated in a handful of years
+
+| scenario | lifetime tax | where it lands | lifetime free headroom |
+|---|---:|---|---:|
+| `s0_1chunk` | 0.00 | — | 564.1 |
+| `s1_2chunk` | 74.78 | **FY16 56.20** (46.10 rebalancing) + FY17 6.05 | 564.1 |
+| `s2_3chunk` | 51.61 | boundary years | 564.1 |
+| `s3_4chunk` | 106.76 | **FY9 8.47, FY24 66.02, FY25 13.50, FY26 1.31** | 564.1 |
+| `hist_8yr` | 40.90 | boundary years | 564.1 |
+
+**Twenty-six to twenty-eight years out of thirty pay exactly zero.** The whole
+problem is two to four years wide. Against 564.1 of lifetime free headroom,
+the capacity to absorb it exists several times over — **zero tax is reachable
+in principle**, which is what Part I §7 G7's window table already implied.
+
+### 14.2 Not every boundary is expensive
+
+`s3_4chunk` has three boundaries and one of them — FY17 — costs **nothing**.
+Its two allocations overlap heavily, so true turnover is near zero. A
+scheduler that opens a window at every boundary would churn for no reason.
+**Size each boundary from the actual fund-list difference.**
+
+### 14.3 The HUF ration, measured on all five — it makes things WORSE
+
+| scenario | tax k=0 | tax k=1.2 | Δtax | corpus k=0 | corpus k=1.2 | Δcorpus |
+|---|---:|---:|---:|---:|---:|---:|
+| `s0_1chunk` | 0.000 | 0.167 | +0.17 | 1708.6 | 1708.8 | +0.2 |
+| `hist_8yr` | 40.898 | 41.582 | +0.68 | 1760.5 | 1741.8 | −18.7 |
+| `s1_2chunk` | 74.784 | 77.692 | +2.91 | 1211.7 | 1157.1 | −54.6 |
+| `s2_3chunk` | 51.614 | 55.349 | +3.74 | 1304.0 | 1252.6 | −51.4 |
+| `s3_4chunk` | 106.763 | 113.094 | +6.33 | 1339.2 | 1270.7 | −68.5 |
+
+Five of five worse on tax; four of five worse on corpus. Across the four
+`main` scenarios the damage rises monotonically with chunk count — 0.17, 2.91,
+3.74, 6.33 for 1, 2, 3, 4 chunks.
+
+No gentler setting helps. On `s1_2chunk`, k = 0.0 / 0.3 / 0.6 / 1.2 gives tax
+74.784 / 75.688 / 76.409 / 77.692 and corpus 1211.7 / 1197.2 / 1179.9 /
+1157.1 — **monotone in both, in the wrong direction.**
+
+**Mechanism.** HUF tax falls in every scenario (the ration works). Personal
+tax rises by more. Drawing the HUF harder leaves the personal corpus *larger*
+at each boundary, and boundary rebalancing tax scales with the corpus
+reallocated. There is also no return arbitrage to collect here: both purses
+hold the **same funds at the same returns**, unlike Part I §7 G4 where the HUF
+returns 7.0% against personal 7.25–7.5%.
+
+**Therefore the ration is blocked on the transition, not the other way round.
+This reverses `HANDOVER_merged` §4.2 / §4.3.**
+
+### 14.4 The fixtures are not the live plan
+
+`tests/golden/` carries monetary fields scaled down from an **older** plan —
+FY1 requirement 20 against the live 35, HUF windfall 185 against 190 — with
+the statutory bands left unscaled. Their tax-free headroom is therefore
+generous relative to their portfolio in a way the live plan's is not.
+
+**They can never reproduce Part I's 0.00 / 1934.3 and must not be expected
+to.** They are behavioural pins: use them to detect unintended change, never
+to size anything. Comparing engine output against Part I needs a **sixth
+scenario carrying the live parameters** — corpus 350, requirement 35→50,
+other income 15.80 ramping, HUF 190 at FY5 — added as a *comparison* fixture,
+not a regression pin. Do that after Phase 07, when there is something worth
+comparing.
+
+---
+
+## 15. Phase 07 — capacity-driven transition. **LIVE. Do this first.**
+
+The dominant term by an order of magnitude: 46.10 of rebalancing tax inside
+FY16 on `s1_2chunk`, 48.23 inside FY24 on `s3_4chunk`.
+
+### 15.1 The site
+
+| what | where |
+|---|---|
+| personal boundary rebalance | `engine.py:1435` — `old_chunk_fy = fy - 1`, `old_funds = state.get_funds_for_year(old_chunk_fy)` |
+| HUF mirror | `engine.py:2058` — `old_chunk_fy_h`, `old_funds_h` |
+| dead residue to remove | `glide_costs_by_fy` — initialised `~1358`, read `~2482`, **never written** |
+| available, no callers since `bfbf226` | `FolioSet.sell_to_tax_budget`, `FolioSet.pick_for_harvest` |
+| available, landed by 02/03 | `free_gain_capacity`, `cash_within_gain_budget` |
+
+`glide_path.py::build_glide_path` exists but its only callers are in
+`test_swp_engine.py`. Nothing on the live path builds or consumes a glide
+path. Phase 07 builds into an empty socket.
+
+### 15.2 The algorithm
+
+**Per boundary N**, before the run starts:
+
+1. **True turnover** = value that must actually move, from the difference
+    between the old and new allocations' fund lists and target weights. Not
+    the naive "everything changes". If it is ~0, **open no window** (§14.2).
+2. **Window** `N−M … N+M`. Choose the **smallest M that completes at zero
+    tax**, not the M that minimises cost — cost does not rise with window
+    length (Part I §7 G7). Search M upward from 0. The window may be
+    asymmetric; nothing requires N−M and N+M to be equal, and the reference
+    run used FY4–26 for a boundary at 16.
+
+**Per year, in this order** — this ordering is not cosmetic (Part I §5.3):
+
+3. **Ordinary withdrawal** takes its headroom first.
+4. **Transition** takes what remains, capped by what is still to move.
+5. **Harvest** takes whatever is left after that.
+
+**Where windows overlap** — `s3_4chunk` has three boundaries in 30 years —
+shared headroom is **allocated nearest-deadline-first and spent once**, never
+offered to each window. Double-spending produces a scheduler that reports
+success while over-committing, which is the B1d-ii shape.
+
+6. **Carry the balance forward.** Instalments track capacity, not a schedule.
+    In the reference run they went 4.15, 10.26, 6.96, 5.44, 2.41, 1.20.
+
+### 15.3 Predicted diff — write this down before running
+
+**Amended after measurement — patchers 07a–07e, HEAD `725bb46`.** The original
+prediction assumed windows could open anywhere. They cannot. §15.2's policy is
+now fixed: windows are centred on N per `N ± (M ± m)` and hard-capped so a
+window never crosses a neighbouring boundary. Each chunk's portfolio is the
+minimum-risk portfolio achieving THAT chunk's target return, so it only does
+its job while actually held during that chunk; a window running past a
+neighbouring boundary is a mandate breach, not a tax optimum. What follows is
+the measured consequence.
+
+| scenario | tax now | after 07 | boundary | M | window |
+|---|---:|---:|---|---:|---|
+| `s0_1chunk` | 0.00 | 0.00 | — | — | one chunk, nothing to schedule |
+| `s1_2chunk` | 74.78 | ~0 | FY16 | 9 | FY7–25 |
+| `s2_3chunk` | 51.61 | ~0 | FY11 | 5 | FY6–16 |
+| | | | FY21 | 4 | FY17–25 |
+| `s3_4chunk` | 106.76 | **~25.5** | FY9 | 2 | FY7–11 |
+| | | | FY17 | 0 | FY17 |
+| | | | FY24 | 7, clamped | FY17–30 |
+| `hist_8yr` | 40.90 | ~0 | FY16 | 6 | FY10–22 |
+
+Four corrections to the original prediction:
+
+1. **`s3_4chunk` FY24 does NOT reach zero.** M clamps at 7 against its band of
+   FY17–30, funding 127.2 of the 237.2 it must realise and leaving **110.0
+   unfunded** — 79.4 personal, 30.6 HUF. Priced, that residual costs 30.83
+   dumped in one year and **25.51 spread across the band**. Treating
+   "FY24 → ~0" as an acceptance test would fail a correct implementation.
+2. **FY17 does open a window, at M = 0.** The original said no window should
+   open there. It books 11.4 of gain on 1.1% turnover and absorbs all of it
+   within its own year. The correct pin is "no window WIDER than M = 0", and
+   the general rule is not "turnover ≈ 0" but **"year N covers its own gain"**,
+   which needs no threshold.
+3. **Headroom is per purse and is not fungible.** The personal and HUF
+   rebalances are separate operations — `engine.py:1435` and `2058` — each
+   bounded by its own entity's bands. Pooling them understates the window:
+   `hist_8yr` FY16 needs M = 6, not the M = 5 a pooled calculation reports.
+4. **The residual is spread, never dumped.** Part I §8: once tax is
+   unavoidable it is still a choice where to pay it. Almost all of the 5.3
+   saving is the HUF — 5.89 → 1.59, a narrow nil band rewarding thin annual
+   slices — while personal moves only 24.94 → 23.92.
+
+Unchanged from the original: total corpus rises materially in `s1`, `s2`,
+`s3` and `hist_8yr`; `s0_1chunk` does not move; all ten snapshots move.
+
+**Every figure here is a first-order screen on TODAY's corpus path, not a
+prediction of the post-fix run.** Spreading a transition changes the
+withdrawals, which changes the spare profile. The FY24–26 zeros in the spare
+column are the current hard cut's own damage, and some of that will reappear
+as capacity once the cut is gone.
+
+**Falsifier: if any scenario's lifetime tax rises, it does not ship.**
+
+### 15.4 Tests it needs
+
+- a window completes its turnover by its end year
+- a zero-turnover boundary opens no window (pin `s3_4chunk` FY17)
+- overlapping windows spend shared headroom once — construct two boundaries
+   whose windows overlap and assert total gain ≤ total headroom
+- the withdrawal's own gain is charged before the transition's
+- per-year cash identity holds; `overdeliveries` stays empty
+- instalments are not a fixed fraction
+
+---
+
+## 16. Phase 08 — personal water-fill on slab headroom. **LIVE.**
+
+### 16.1 What is wrong now
+
+`_execute_ltcg_harvest` budgets against `ec_harvest.exempt_limit` — the
+**equity LTCG exemption**, ~1.25–2.50 — and iterates `eq_fund_names` only.
+The fixtures and the live plan are debt-heavy, and `engine.py:1224` confirms
+debt gains are what get taxed at slab (`total_slab_income = assessable_other +
+gain_d`). **So the personal harvest does nothing on this plan at all.**
+
+### 16.2 What it should be
+
+Budget = `free_gain_capacity(state.get_debt_tax_chunk(fy, "individual"),
+"individual", assessable_other + gain_d_already_realised)`, iterate **debt**
+funds, and book the realised gain into `accumulator["gain_d"]` — not
+`gain_e`, which is a different tax regime entirely.
+
+Keep the existing step-basis-in-place mechanic (`Lot(lot.units, nav, m)`):
+it avoids the exit-load question and is equivalent to sell-and-rebuy at one
+NAV. Keep the `stcg_holding_months` guard.
+
+Runs in March, **after** the year's withdrawals are known, so the withdrawal's
+own gain has already consumed its share (Part I §5.3, §7 G6).
+
+### 16.3 Expected effect
+
+Raises personal cost basis, lowering the late-plan gain fraction from ~88%
+toward ~64% (Part I §5.3 measured this as the real prize: margin, not
+headline tax). On its own it may move lifetime tax little — headroom is
+largely unused in non-boundary years anyway — but it is what makes Phase 09
+worth anything.
+
+---
+
+## 17. Phase 09 — raise `folio_cohort_threshold`. **LIVE.**
+
+One-line config change; the entire diff is snapshot movement.
+
+- **Measure the threshold on the fixtures.** Do not carry 0.05 across from
+   Part I §9 — that was fitted to the standalone model's drawdown shape. The
+   engine docstring's "0.50 settles on three, 0.10 on five" disagrees with the
+   model's "0.50 opens two", which is itself evidence the dial is
+   workload-dependent.
+- **Monotonicity is the guard.** More folios can never be worse; a folio can
+   always be ignored. Non-monotonicity means a bug (Part I §10.2).
+- **Do this after 08.** Folios park fresh basis where a cash draw will reach
+   it; without a water-fill creating that basis they have little to place.
+
+---
+
+## 18. Phase 10 — raise `huf_ration_k`, delete `huf_withdrawal_chunks`. **LIVE, conditional.**
+
+- **Re-measure after 07.** §14.3 measured it worse on five of five, and the
+   mechanism was boundary tax. Phase 07 removes the boundary tax. Whether the
+   ration then pays is an open empirical question — do not assume either way.
+- Sweep k lexicographically: minimise shortfall, then tax, then end corpus
+   (Part I §7 G4). Expect a plateau, not a point.
+- If it is still worse, **it does not ship**, and that is recorded as a
+   finding rather than worked around.
+- **B1d-iii lands with it**: delete `huf_withdrawal_chunks` (nine files),
+   archive `optimize_withdrawal_split` (`engine.py:2564`) and
+   `allocate_funds_v0.9.py`. Blocked until the ration replaces them.
+
+---
+
+## 19. Independent of the above
+
+None of these block or help Phases 07–10. Do them when convenient.
+
+| item | size | note |
+|---|---|---|
+| **Phase E** — `build_sensitivity_table` hardcodes `QTableWidget(30, …)` | one line + test | **live defect**: at horizon 40 the table drops FY31–40, at 20 it shows ten blank rows. Reachable today |
+| **Phase D** — Monte Carlo horizon | bounded | `MC_FIXED_HORIZON = 30`; `test_gui_horizon` asserts it and that no module carries a bare `range(30)` — those tests are the spec |
+| **Phase F** — investment profile, 0–36 month staggered deployment | feature | staggered deployment is itself a vintage-generating mechanism, so it creates folio separation at inception free |
+| exit load | decision | structurally zero on every live path; `exit_load_fraction` in `UNUSED_KEYS`. Whether an SWP redemption inside `stcg_holding_months` should bear one is unresolved |
+| audit | small | `glide_costs_by_fy` residue; `best_cash_split` orphaned; `dialogs.py` labels "1–30" against a ceiling of 40; no `LICENSE`; `allocate_funds_v0.9.py` at root |
+| exporter | small | the bundle picks up new files under `tests/` but **not** new directories such as `docs/` |
+
+---
+
+## 20. Process — what has actually worked, and what has not
+
+### 20.1 Rules that earned their place
+
+1. **Measure the lever on the fixtures BEFORE building it.** Four patchers
+    went into the HUF ration before a ten-minute measurement showed it could
+    not pay until the transition existed. The harness that showed it could
+    have been run first.
+2. **Validate on all five scenarios, never one or two.** B1d-ii was declared
+    benign on `s0_1chunk` alone and the other four got worse. The ration was
+    later declared harmful on two before the other three were checked. Same
+    error, both directions.
+3. **Run the WHOLE suite before emitting a patcher.** Patcher 05 was verified
+    against `tests/golden` plus its own new file; it broke a test 1500 lines
+    away in `tests/test_other_income_growth.py`.
+4. **Predict the diff before running it.** A wrong prediction is information.
+    Of five predictions made for the ration gate, two were wrong and one
+    outcome — over-delivery — had not been predicted at all.
+5. **Derive hunks mechanically from a verified tree and prove they reproduce
+    it byte-for-byte before embedding.** Never hand-write a hunk.
+6. **Bound every command's output.** A single unbounded regex dumped the
+    entire fixture corpus into a context window.
+
+### 20.2 Gating: useful once, then over-applied
+
+`folio_cohort_threshold = 0.0` let a large representation change land provably
+inert, and that was correct. Applying the same pattern to the ration produced
+a mechanism that shipped, was tested, and computed nothing.
+
+**From Phase 07: no gates.** Build it, measure it, turn it on in the same
+commit, review the predicted diff. If the numbers get worse it does not ship.
+
+### 20.3 The measurement harness — commit it
+
+Two scripts did all the work in §14 and neither lives in the repo:
+
+- **`review.py`** — runs `project_plan` on one scenario at a chosen
+   `huf_ration_k`, reporting lifetime tax split by entity, FY30 corpora, HUF
+   cash by year, shortfall, over-delivery, convergence.
+- **`probe7.py`** — runs one scenario and reports, per FY, `tax_personal`,
+   `rebalance_tax_paid` and the free headroom of both entities, plus lifetime
+   totals.
+
+Both are ~30 lines. **They belong in `scripts/` under version control.** Every
+Phase 4 verification lived in a throwaway script and had to be rebuilt; that
+is `HANDOVER` §9.14's second half and it has now happened twice.
+
+### 20.4 Patcher house style
+
+SHA-256 pin before and after; anchors validated before a byte is written;
+post-hash embedded so the patcher proves its own output; `--check`,
+`--dry-run`, `.bak`, `py_compile` after. **No `--revert`** — `git checkout --`
+is the recovery mechanism. Assert exactly one substitution per hunk. Embed
+payloads as **base64**, never as `repr()` inside a triple-quoted template —
+that fails to parse and has done.
+
+`git add` with explicit paths, never `-A`. The `.gitignore` is an allowlist
+whose line 2 is `*`; the reliable check that a new file is admitted is `??` in
+`git status --porcelain -uall`.
