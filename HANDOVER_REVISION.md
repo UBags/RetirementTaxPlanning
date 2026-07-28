@@ -420,30 +420,30 @@ what makes a change this wide safe, exactly as in A1.
 
 - **Every figure in §3 comes from a standalone model, not the engine.** Nothing
   in it is pinned by a test. The engine has not been run against any of it.
+- **The folio threshold default is not settled.** 0.50 gave three folios on the
+  retirement model and four on a synthetic drawdown. It is a dial for how many
+  folios you run, not for the tax outcome — every value measured reached the
+  same answer. Measure it on the real plan when the gate is raised rather than
+  carrying a number across from the model.
+- **Nothing above the gate has been run through the engine.** The 29-47%
+  reduction in realised gain is from a synthetic drawdown against
+  `FolioSet` in isolation. `folio_cohort_threshold` is 0.0 in the repo, so the
+  engine has never executed a multi-folio path.
 - **The engine's withdrawal response is non-smooth and unexplained.** Asked for
-  0.10 more in `s0_1chunk` FY7-FY10 it withdraws 0.17. The same years measured
-  1.000 at a 0.5 perturbation, so it is a discontinuity being straddled, not a
-  derivative — most likely `weight_drift_threshold = 0.015` or
-  `drift_cap_personal = 0.0015` flipping which funds the monthly loop draws
-  from. `PLAN_TOL = 1e-2` stopped the solver caring; it did not make the
-  behaviour go away, and Phase 4 rewrites exactly that machinery.
+  0.10 more in `s0_1chunk` FY7-FY10 it withdraws 0.17, while the same years
+  measure 1.000 at a 0.5 perturbation. `PLAN_TOL = 1e-2` stopped the solver
+  caring; it did not make the behaviour go away, and Phase 4's remaining
+  conversions touch exactly that machinery.
 - **The Phase 3 snapshot review was narrower than its commit message says.**
   `s0_1chunk_annual.csv` was read in full; the other four annual files and all
-  five MC bootstrap files were reviewed only by diffstat. The message claims all
-  ten were read value by value. Correct that in the next commit rather than
-  leaving it standing.
+  five MC bootstrap files were reviewed only by diffstat.
 - The 2-chunk model runs treat turnover as sell-and-rebuy at a single NAV. Real
-  transitions move between funds with different NAVs and return paths; the tax
-  arithmetic is unaffected, the corpus path is approximate.
+  transitions move between funds with different NAVs and return paths.
 - HUF slabs above the nil band are extrapolated from the old-regime structure
-  (0-N nil, N-2N at 5%, 2N-4N at 20%, above 4N at 30%). That reproduces today's
-  regime exactly at N=2.5 but is a projection at N=9.
-- The assessable share of other income is held constant at 5.95/15.8. If the
-  0.5-to-0.15 increment lands disproportionately in taxable or tax-free
-  components, personal headroom moves and every zero in §3 moves with it.
-- No Monte Carlo on any of the §3 figures. They assume the stated return
-  realises exactly. The margin in §5.3 is the only defence against that and it
-  has not been stress tested.
+  (0-N nil, N-2N at 5%, 2N-4N at 20%, above 4N at 30%). Exact at N=2.5, a
+  projection at N=9.
+- The assessable share of other income is held constant at 5.95/15.8.
+- No Monte Carlo on any of the §3 figures.
 
 ## 9. How Phase 3 was actually found, and what it costs
 
@@ -471,3 +471,70 @@ invariant every change is measured against and must never be allowed to go red.
 And the missing conservation test in §7.3 should exist before Phase 4 touches
 the withdrawal machinery — it would have turned five rounds of investigation
 into one red test.
+
+---
+
+## 10. Phase 4 — state, and the three conversions left
+
+Three commits landed, all inert. `folio_cohort_threshold = 0.0` opens exactly
+one folio per fund and every operation delegates to it, so nothing in the
+engine's behaviour has changed yet.
+
+| | what | how it was verified |
+|---|---|---|
+| **4a** | `FolioSet`: `Dict[folio_id, FIFOBucket]` per fund, presenting the `FIFOBucket` surface so ~80 call sites are untouched | 4000 randomised invest/redeem steps against a plain `FIFOBucket`, identical at every step on returns, `total_units`, `current_value` and the full lot list — including the HIFO sort-and-reassign, which works because `.lots` returns the list by reference at one folio |
+| **4b-i** | `pick_for_cash`, `pick_for_harvest`, `ensure_cohort`, `sell_ordered` | `sell_ordered` at one folio identical to the loop it replaces to nine decimals; the two orderings realise 6.99 vs 63.88 of gain on the same sale |
+| **4b-ii** | the config gate; `FolioSet` self-manages vintages | 3000 steps inert at 0.0; on a realistic drawdown, units conserved exactly while realised gain falls 29-47% |
+
+### 10.1 What remains
+
+Three conversions, and they are three different problems. Each assigns to
+`.lots`, which the setter refuses once a second folio exists — a deliberate
+guard, and the thing that stops the single-folio behaviour that measured
+*worse than not harvesting at all* (§4.1).
+
+Find them with `grep -n "\.lots = " engine.py`; line numbers move every commit.
+
+1. **`_sell_hifo`** — forced rebalancing sell. Clean:
+   `sell_ordered(prefer="cash")` behind a `len(bk.order) > 1` guard.
+2. **The second rebalance sell** — carries `rebal_tax_tally` and stops
+   **mid-lot** when running tax reaches `annual_tax_budget`. `sell_ordered`
+   knows nothing about a budget, so this needs a budget-aware variant.
+3. **The equity LTCG harvest** — works to a *gain* budget and steps up basis
+   in place (`Lot(units, nav, m)`) rather than selling an amount. Needs a
+   `harvest_to_budget`, drawing `prefer="harvest"`.
+
+Guard each on `len(bk.order) > 1` so the single-folio path is untouched and
+each commit stays inert. Then raising the gate is a one-line config change
+whose entire diff is snapshot movement — the cleanest thing there is to review.
+
+### 10.2 HIFO is a fiction, and correcting it is a separate commit
+
+Those rebalance sells sort **all** lots by gain and take the cheapest. That is
+not achievable in reality: Indian practice computes gains FIFO per folio, and
+an AMC cannot be instructed to sell your highest-cost units. Folio choice is
+the only lever there is.
+
+So the engine has been modelling rebalancing as more tax-efficient than it can
+be, and **every glided figure ever measured inherits that optimism** — including
+the 57.40 → 24.42 in §4.2. Correcting it moves single-folio behaviour from HIFO
+to FIFO and moves every snapshot.
+
+Own commit, own review. Do not let it ride along on a refactor, and do not
+raise the folio gate in the same change — two sets of moving numbers in one
+diff is exactly how the Phase 3 double debit stayed hidden.
+
+### 10.3 The lesson from the 4b-i defect
+
+`redeem` picked the cheapest folio and delegated; where that folio could not
+cover the amount, the remainder was silently dropped. It shipped green.
+
+The verification was 3000 randomised invest/redeem steps — identical
+throughout, and worthless. Constant FIFO churn keeps the queue front fresh, so
+no second folio ever opened and the multi-folio path never ran once. A
+realistic pattern found it immediately: 240.5 units remaining against 228.3 for
+plain FIFO, i.e. redemptions coming up short.
+
+**Shape the fixture like the plan** — a large corpus drawn down slowly — not
+like a random walk. It is the same failure as asserting from truncated pytest
+output: checking what was easy to check rather than what needed checking.

@@ -13,7 +13,7 @@ last session and is written up in §4 — it is not in any earlier plan.
 
 ## 0. Do these first
 
-1. `ruff check .` then `python3 -m pytest -q -n 4`. Expect **677 passing**, no
+1. `ruff check .` then `python3 -m pytest -q -n 4`. Expect **722 passing**, no
    warnings summary. Three minutes under `-n 4`: since the cash identity
    changed, `project_plan()` needs twenty to forty passes on some scenarios
    rather than four, and each pass is a full engine run. Run
@@ -44,7 +44,7 @@ verification had all passed. See §9.9.
 
 ## 1. What changed, and why
 
-Twenty-three commits. Tests 382 → 677. Grouped by what they were for.
+Twenty-eight commits. Tests 382 → 722. Grouped by what they were for.
 
 ### Phase A — a flexible calendar and a variable horizon (complete)
 
@@ -81,6 +81,10 @@ Twenty-three commits. Tests 382 → 677. Grouped by what they were for.
 | **C3** `bfbf226` | The glide-path transition scheduler retired to a hard cut. Measured, it turned two zero-tax years into 10.75L of tax — it smoothed brackets rather than harvesting capacity. 341 lines removed, no snapshot moved. |
 | **C4** `3a3813c` | Secant step in `solve_schedule`, gated so it cannot fire under the old identity. Inert; no snapshot moved. |
 | **C5** | The final identity: no transfer to the HUF, rebalancing tax counted as tax paid, `PLAN_TOL = 1e-2`. Uncovered a double debit that predated all of it — see §9.13. All ten snapshots moved. |
+
+| **D1** `?` | Phase 4a: `FolioSet`, cohort ledger per fund, exactly one cohort. Inert; no snapshot moved. |
+| **D2** `?` | Phase 4b-i: folio-selection API. Dead code on landing. |
+| **D3** `?` | Phase 4b-ii: the config gate, switched off. Fixed a defect in 4b-i where `redeem` dropped the remainder when one folio could not cover the amount. |
 
 ### Defects found and fixed along the way
 
@@ -356,15 +360,17 @@ not after.
 
 ### 4.9 What to build, in order
 
-**Status after Phase 3.** Item 4 landed first, deliberately, as `ac41ad7`:
+**Status.** Item 4 landed first, deliberately, as `ac41ad7`:
 `tests/golden/test_requirement_delivery.py` asserts per year, per scenario,
 that the plan delivers the stated requirement. It is the guard every later
-phase is measured against and it should never be allowed to go red.
+phase is measured against and must never be allowed to go red. The
+conservation identity that was missing beneath it landed too — see §9.13.
 
-1. **Corpus representation**: a ledger per cohort folio per fund, with a
-   redemption-order policy. Everything else sits on top of this, so it comes
-   first — building the transition scheduler on the present one-bucket-per-fund
-   model means writing it twice. **Next.**
+1. **Corpus representation** — **in progress, three quarters done.**
+   `FolioSet` (4a `?`), the selection API (4b-i), and the config gate (4b-ii)
+   are landed, verified and **inert**: `folio_cohort_threshold = 0.0` opens
+   exactly one folio per fund and every operation delegates to it, so nothing
+   has changed yet. See §4.10 for what remains.
 2. **Horizon-aware split** replacing the per-year optimiser, with the HUF ration
    as a constraint.
 3. **Capacity-driven transition scheduler**, with straddling windows and
@@ -373,20 +379,49 @@ phase is measured against and it should never be allowed to go red.
    rather than around a live one.
 4. ~~The identity check as a test on every scenario, every year.~~ Done.
 
-**Before item 1, write the missing conservation test.** Nothing in the suite
-crosses the boundary between the corpus and the user's hand. `test_conservation
-.py::test_monthly_corpus_flow_balances` balances the corpus against *itself*
-(`corpus_end == corpus_start - withdrawal`), which held perfectly for years
-while a rupee a year was being destroyed — see §9.13. The invariant that was
-missing is:
+### 4.10 Phase 4 — where it stands, and the three conversions left
 
-    what leaves both corpora, plus other income
-      == cash delivered + tax paid + transfers out
+Landed and inert. The gate is off, so none of it changes a number yet:
 
-Item 1 rewrites how withdrawals are chosen. Going in without that guard is
-going in blind to the one class of defect this codebase has actually had.
+| | |
+|---|---|
+| **4a** | `FolioSet`: `Dict[folio_id, FIFOBucket]` per fund, presenting the `FIFOBucket` surface so eighty-odd call sites are untouched. Six construction sites changed. Verified against a plain `FIFOBucket` over 4000 randomised operations. |
+| **4b-i** | `pick_for_cash` (lowest front-lot gain fraction), `pick_for_harvest` (highest), `ensure_cohort`, `sell_ordered`. Dead code on landing. |
+| **4b-ii** | `FolioSet` self-manages: threshold in the constructor, `invest` opens cohorts, unnamed `redeem` draws cheapest-first **and spills onward**. Config keys `folio_cohort_threshold` (0.0) and `folio_max_cohorts` (5). |
 
-Golden coverage for the glided path is no longer needed: that code is gone.
+**Three conversions remain, and they are three different problems, not three
+instances of one.** Each assigns to `.lots`, which the setter refuses once a
+second folio exists — that guard is deliberate, and it is what stops the
+single-folio behaviour that measured *worse than not harvesting at all*.
+
+| site | shape | needs |
+|---|---|---|
+| `_sell_hifo`, sell + rebuild | forced rebalancing sell | `sell_ordered(prefer="cash")` behind a `len(bk.order) > 1` guard. Clean. |
+| the second rebalance sell | carries `rebal_tax_tally` and stops **mid-lot** when running tax hits `annual_tax_budget` | a budget-aware variant; `sell_ordered` knows nothing about a budget |
+| the equity LTCG harvest | a **gain budget**, and it steps up basis in place (`Lot(units, nav, m)`) rather than selling an amount | a new `harvest_to_budget`, drawing `prefer="harvest"` |
+
+Line numbers shift with every commit — find them with
+`grep -n "\.lots = " engine.py`.
+
+**Guard each conversion on `len(bk.order) > 1`** so the single-folio path is
+untouched and the commit stays inert. Then raising the gate is a one-line
+config change whose entire diff is snapshot movement, which is the cleanest
+possible thing to review.
+
+**A separate decision, not part of the above.** Those sells currently sort ALL
+lots by gain and take the cheapest — HIFO. **That is not achievable in
+reality.** Indian practice computes gains FIFO per folio and an AMC cannot be
+instructed to sell your highest-cost units; folio choice is the only lever.
+So the engine models rebalancing as more tax-efficient than it can be, and
+every glided figure ever measured inherits that optimism. Correcting it moves
+single-folio behaviour from HIFO to FIFO and moves every snapshot. Own commit,
+own review, and do not let it ride along on a refactor.
+
+**The threshold default is not settled.** `0.50` gave three folios on the
+retirement model and four on a synthetic drawdown. It is a dial for how many
+folios you run, not for the tax outcome — every value measured reached the
+same answer. Measure it on the real plan when the gate is raised, rather than
+carrying my number across.
 
 ## 5. Phase F — investment profile and staggered deployment
 
@@ -576,6 +611,24 @@ holding, that part is wiring rather than a new feature.
     Its docstring claims it catches "exactly how the tax and HUF-transfer leaks
     manifested." It cannot. A conservation test that never crosses the boundary
     between the corpus and the user's hand is not a conservation test.
+
+14. **A synthetic test that does not resemble the workload can pass while
+    proving nothing.** Phase 4b-i's `redeem` picked the cheapest folio and
+    delegated; where that folio could not cover the amount, the remainder was
+    silently dropped. It shipped green.
+
+    The verification was 3000 randomised invest/redeem steps against a plain
+    `FIFOBucket`, identical throughout — and worthless, because constant FIFO
+    churn keeps the queue front fresh, so no second folio ever opened and the
+    multi-folio path never ran once. A realistic pattern — one large initial
+    investment, small regular draws, annual reinvestment — exposed it at once:
+    240.5 units remaining against 228.3 for plain FIFO, i.e. redemptions coming
+    up short.
+
+    The same failure as asserting from truncated pytest output (§9.13), in a
+    different costume: checking the thing that was easy to check rather than the
+    thing that needed checking. **Shape the fixture like the plan** — a large
+    corpus drawn down slowly — not like a random walk.
 
 ---
 
