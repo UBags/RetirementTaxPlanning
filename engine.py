@@ -599,6 +599,75 @@ def new_folio_set() -> "FolioSet":
     return FolioSet(threshold=t, max_cohorts=mx)
 
 
+def _cash_consumption_order(bucket, nav: float):
+    """The lots a CASH draw would consume, in the order `redeem()` takes them.
+
+    For a plain FIFOBucket that is simply `bucket.lots`. For a FolioSet it is
+    the cheapest folio first -- `redeem()` picks by lowest front-lot gain
+    fraction and drains that folio before re-picking, so folios are ordered by
+    their front-lot fraction and each is consumed whole, in FIFO order.
+
+    Checked against `folios` first, because FolioSet also exposes `.lots`.
+    """
+    folios = getattr(bucket, "folios", None)
+    if folios is None:
+        return list(bucket.lots)
+    live = [f for f in getattr(bucket, "order", list(folios))
+            if folios[f].total_units > 1e-12]
+    live.sort(key=lambda f: bucket.gain_fraction(f, nav))
+    out = []
+    for f in live:
+        out.extend(folios[f].lots)
+    return out
+
+
+def cash_within_gain_budget(bucket, nav: float, gain_budget: float) -> float:
+    """Most cash raisable from `bucket` while realising at most `gain_budget`.
+
+    A pure query -- it mutates nothing. Pair it with `free_gain_capacity` to
+    answer "how much can this purse hand over without paying tax".
+
+    DO NOT substitute `gain_budget / front_gain_fraction`. That is exact only
+    while the draw stays inside one lot at one basis; the moment it spills into
+    an older lot or a dearer folio the marginal gain per rupee changes and the
+    formula overstates the cash available. Measured consequence in the
+    standalone model: the HUF drew `band / f_cheapest` -- 76, 92, 107, 122
+    against a band of 5 to 9 -- realising far more than its nil band and paying
+    tax that more folios were supposed to remove. The symptom was lifetime tax
+    RISING with folio count, which cannot happen, since a folio can always be
+    ignored. Non-monotonicity in a parameter that must be monotone is a bug
+    signal (HANDOVER 9.16), and this was the bug.
+
+    Lots carrying no gain are free: all of their value is available whatever
+    the budget.
+
+    No caller yet. Landed dead, with tests, ahead of the ration and water-fill
+    work that both need it.
+    """
+    if bucket is None or nav <= 0 or gain_budget < 0:
+        return 0.0
+    remaining = gain_budget
+    cash = 0.0
+    for lot in _cash_consumption_order(bucket, nav):
+        if lot.units <= 1e-12:
+            continue
+        value = lot.units * nav
+        frac = (nav - lot.purchase_nav) / nav
+        if frac <= 1e-12:
+            cash += value                      # no gain in it; take it all
+            continue
+        if remaining <= 1e-12:
+            break
+        gain = value * frac
+        if gain <= remaining:
+            cash += value
+            remaining -= gain
+        else:
+            cash += remaining / frac
+            remaining = 0.0
+    return cash
+
+
 ACCRUE_REDEMPTION_GAINS = True
 
 def _redeem_pro_rata(buckets: Dict[str, "FIFOBucket"],
