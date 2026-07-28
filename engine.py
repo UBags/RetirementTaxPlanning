@@ -605,6 +605,15 @@ class YearSummary:
     rebalance_tax_paid: float = 0.0
     # Exit loads paid due to glide-path rebalancing (separate from tax).
     rebalance_exit_loads: float = 0.0
+    # Cash the HUF sent to a depleted personal corpus. Already inside
+    # swp_cash_personal (= ann_wd_p + ann_topup_p) and inside
+    # net_cash_personal, but not separable from either — which is what stopped
+    # the cash-conservation identity being written. See §7.3 of the revision.
+    topup_from_huf: float = 0.0
+    # Pension, rent and interest for the year, taxable and non-taxable summed.
+    # Inside net_cash_personal but it never entered the corpus, so it has to
+    # come off before corpus outflow and cash delivered can be compared.
+    other_income_personal: float = 0.0
 
 
 # ─── Engine ───────────────────────────────────────────────────────────────────
@@ -2328,6 +2337,8 @@ class Engine:
                 rebalance_tax_paid=rebal_tax_fy,
                 rebalance_exit_loads=glide_exit_loads,
                 swp_cash_personal=ann_wd_p + ann_topup_p,
+                topup_from_huf=ann_topup_p,
+                other_income_personal=taxable_other + non_taxable_other,
             ))
 
         return yearly
