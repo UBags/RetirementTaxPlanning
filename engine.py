@@ -271,6 +271,113 @@ class FolioSet:
     def value_by_folio(self, nav: float) -> Dict[str, float]:
         return {fid: self.folios[fid].current_value(nav) for fid in self.order}
 
+    # ── folio selection: the two orderings, deliberately opposite ────────
+    #
+    # Within a folio FIFO is forced, so the only lever is WHICH folio. The two
+    # rules point opposite ways, and that opposition is the whole reason the
+    # split earns its keep — a single "pick the cheapest" scan implements half
+    # of it and gets the wrong half. HANDOVER §4.5.
+
+    def pick_for_cash(self, nav: float) -> str:
+        """Folio to raise cash from: LOWEST front-lot gain fraction.
+
+        Minimises taxable gain per rupee raised. Used for withdrawals and for
+        forced rebalancing sells, where the sale is not optional and the only
+        aim is to realise as little gain as possible.
+        """
+        live = [f for f in self.order if self.folios[f].total_units > 1e-12]
+        if not live:
+            return self.order[0]
+        return min(live, key=lambda f: self.gain_fraction(f, nav))
+
+    def pick_for_harvest(self, nav: float) -> str:
+        """Folio to harvest from: HIGHEST front-lot gain fraction.
+
+        Maximises gain realised per rupee of capital churned, and retires the
+        units that would cost most later. Used when deliberately realising gain
+        to fill tax-free headroom.
+        """
+        live = [f for f in self.order if self.folios[f].total_units > 1e-12]
+        if not live:
+            return self.order[0]
+        return max(live, key=lambda f: self.gain_fraction(f, nav))
+
+    def ensure_cohort(self, nav: float, threshold: float,
+                      max_cohorts: int) -> str:
+        """Open a new cohort if the newest has staled past `threshold`.
+
+        The rule measured in HANDOVER §4.5: a folio earns its place while its
+        basis is still fresh. Once its front-lot gain fraction passes
+        `threshold`, fresh money should start a new one rather than being
+        appended behind stale stock.
+
+        `threshold` is the dial for how many folios you end up running, not for
+        the tax outcome — 0.50 settles on three, 0.10 on five, and every value
+        tested reached the same answer. Three is the default because AMC
+        consolidation rights and GAAR both argue for few, deliberate folios.
+
+        At `threshold <= 0` this is a no-op and exactly one folio ever exists,
+        which is what makes the gated-off state bit-identical to Phase 4a.
+        """
+        if threshold <= 0.0 or len(self.order) >= max_cohorts:
+            return self.order[-1]
+        newest = self.order[-1]
+        if self.folios[newest].total_units <= 1e-12:
+            return newest                      # nothing in it yet
+        if self.gain_fraction(newest, nav) > threshold:
+            return self.open_folio(f"F{len(self.order) + 1}")
+        return newest
+
+    def sell_ordered(self, amount: float, nav: float, month: int,
+                     stcg_months: int, exit_load: float,
+                     prefer: str = "cash"):
+        """Sell `amount` of value across folios, FIFO within each.
+
+        Replaces the sort-lots / rebuild / reassign pattern that the `.lots`
+        setter now refuses once a second folio exists — that pattern flattens
+        every vintage into one queue, which destroys exactly what the split is
+        for.
+
+        prefer='cash'    -> cheapest folio first  (minimise realised gain)
+        prefer='harvest' -> dearest folio first   (maximise gain per rupee)
+
+        Returns (stcg, ltcg, exit_loads, gross_sold). Exit load applies to
+        anything held less than `stcg_months`, matching FIFOBucket semantics.
+        """
+        pick = self.pick_for_harvest if prefer == "harvest" else self.pick_for_cash
+        remaining = amount
+        stcg = ltcg = loads = sold = 0.0
+
+        for _ in range(len(self.order)):
+            if remaining <= 1e-12:
+                break
+            fid = pick(nav)
+            bucket = self.folios[fid]
+            if bucket.total_units <= 1e-12:
+                break
+            kept = []
+            for lot in bucket.lots:            # FIFO within the folio
+                if remaining <= 1e-12:
+                    kept.append(lot)
+                    continue
+                lot_val = lot.units * nav
+                take_val = min(lot_val, remaining)
+                take_units = take_val / nav
+                gain = take_units * (nav - lot.purchase_nav)
+                if month - lot.purchase_month < stcg_months:
+                    stcg += max(0.0, gain)
+                    loads += take_val * exit_load
+                else:
+                    ltcg += max(0.0, gain)
+                remaining -= take_val
+                sold += take_val
+                leftover = lot.units - take_units
+                if leftover > 1e-12:
+                    kept.append(Lot(leftover, lot.purchase_nav,
+                                    lot.purchase_month))
+            bucket.lots = kept
+        return stcg, ltcg, loads, sold
+
 ACCRUE_REDEMPTION_GAINS = True
 
 def _redeem_pro_rata(buckets: Dict[str, "FIFOBucket"],
