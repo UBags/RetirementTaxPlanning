@@ -407,6 +407,69 @@ class FolioSet:
             bucket.lots = kept
         return stcg, ltcg, loads, sold
 
+    def sell_to_tax_budget(self, amount: float, nav: float, month: int,
+                           stcg_months: int, exit_load: float,
+                           budget: float, tax_of_gain,
+                           prefer: str = "cash"):
+        """sell_ordered's budget-capped twin: stop when tax reaches `budget`.
+
+        The rebalance sell this serves stops MID-LOT -- where a full slice
+        would carry the running tax past the budget, it takes the fraction
+        that exactly exhausts it and defers the rest to a later year.
+        sell_ordered knows nothing about a budget, so that site needs its own
+        method rather than another `prefer` value.
+
+        `tax_of_gain(gain) -> tax` is supplied by the caller. The rate depends
+        on fund type and on the user's slabs, which are the engine's business;
+        passing a callback keeps this class a corpus representation with no
+        tax policy inside it.
+
+        Returns (stcg, ltcg, exit_loads, net_cash, tax_charged). net_cash is
+        net of exit load, matching the caller's accumulator.
+        """
+        pick = self.pick_for_harvest if prefer == "harvest" else self.pick_for_cash
+        remaining = amount
+        spent = stcg = ltcg = loads = net = 0.0
+
+        for _ in range(len(self.order)):
+            if remaining <= 1e-6 or budget - spent <= 1e-4:
+                break
+            fid = pick(nav)
+            bucket = self.folios[fid]
+            if bucket.total_units <= 1e-12:
+                break
+            kept = []
+            for lot in bucket.lots:            # FIFO within the folio
+                budget_left = budget - spent
+                if remaining <= 1e-6 or budget_left <= 1e-4:
+                    kept.append(lot)
+                    continue
+                take_val = min(lot.units * nav, remaining)
+                take_units = take_val / nav
+                gain = take_units * (nav - lot.purchase_nav)
+                slice_tax = tax_of_gain(gain)
+                if slice_tax > budget_left:
+                    fraction = budget_left / slice_tax if slice_tax > 0 else 1.0
+                    take_val *= fraction
+                    take_units *= fraction
+                    gain *= fraction
+                    slice_tax = budget_left
+                if month - lot.purchase_month < stcg_months:
+                    stcg += max(0.0, gain)
+                    loads += take_val * exit_load
+                    net += take_val - take_val * exit_load
+                else:
+                    ltcg += max(0.0, gain)
+                    net += take_val
+                spent += slice_tax
+                remaining -= take_val
+                leftover = lot.units - take_units
+                if leftover > 1e-12:
+                    kept.append(Lot(leftover, lot.purchase_nav,
+                                    lot.purchase_month))
+            bucket.lots = kept
+        return stcg, ltcg, loads, net, spent
+
 def _folio_gate():
     """(threshold, max_cohorts) from config, both safely defaulted.
 
@@ -664,6 +727,26 @@ def _rebalance_portfolio(
     def _ck(ftype: str) -> str:
         return 'e' if ftype == "equity" else ('o' if ftype == "other" else 'd')
 
+    def _slice_tax_of(ftype: str):
+        """Marginal tax on one lot slice's gain, as a callable of gain alone.
+
+        Handed to FolioSet.sell_to_tax_budget so the folio walk lives in the
+        corpus representation while the rate schedule stays here.
+
+        MIRRORS the inline rate block in the budget-capped sell below, rather
+        than replacing it. Rewriting that block would touch the single-folio
+        path, and this commit's whole claim is that the single-folio path is
+        untouched. Both go when the HIFO correction retires that branch
+        (HANDOVER_REVISION 10.2).
+        """
+        if ftype == "equity":
+            rate = EQUITY_LTCG_RATE * (1 + CESS)
+        elif ftype == "other":
+            rate = OTHER_LTCG_RATE * (1 + CESS)
+        else:
+            rate = _debt_top_rate
+        return lambda gain: max(0.0, gain) * rate
+
     # ─────────────────────────────────────────────────────────────────
     # Step 1: Smart buy-side / SWP-assisted rebalancing (Improvement #4)
     #
@@ -738,6 +821,23 @@ def _rebalance_portfolio(
         bk    = fund_buckets.get(fn)
         if bk is None:
             continue
+
+        # Multi-folio: site 1's guard, applied to the budget-capped sell.
+        # bk.lots = kept below is refused once a second folio exists, and the
+        # mid-lot budget stop is why sell_ordered cannot serve here.
+        # Unreachable while folio_cohort_threshold = 0.0 opens exactly one
+        # folio per fund, so this commit moves no snapshot.
+        if len(bk.order) > 1:
+            stcg_f, ltcg_f, ld_f, net_f, tax_f = bk.sell_to_tax_budget(
+                sell_amt, nav, month_idx, STCG_MONTHS, EXIT_LOAD,
+                budget_left, _slice_tax_of(ftype), prefer="cash")
+            rebal_tax_tally         += tax_f
+            rebal_gains[_ck(ftype)] += stcg_f + ltcg_f
+            taxes_paid              += _tax_for(ftype, stcg_f, ltcg_f)
+            exit_loads_paid         += ld_f
+            cash_raised             += net_f
+            continue
+
         # HIFO sort (or FIFO)
         sorted_lots = (sorted(bk.lots, key=lambda lot: (nav - lot.purchase_nav))
                        if use_hifo else list(bk.lots))
