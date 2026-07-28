@@ -45,6 +45,11 @@ exit_load_fraction = 0.01
 # settling on three folios and 0.10 on five. Few, deliberate folios are
 # preferable: AMCs reserve the right to consolidate folios under one PAN, and
 # a proliferation of micro-folios invites GAAR scrutiny.
+# HUF ration: annual draw = k * huf_value / years_remaining, capped at
+# the cash raisable inside the nil band. 0.0 disables it and the fixed
+# huf_withdrawal_chunks schedule applies unchanged. HANDOVER 4.2.
+huf_ration_k = 0.0
+
 folio_cohort_threshold = 0.0
 
 # Hard ceiling on simultaneous folios per fund, whatever the threshold implies.

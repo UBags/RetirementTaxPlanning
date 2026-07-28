@@ -1100,10 +1100,63 @@ class Engine:
         inv_fy = inv.year if inv.month >= 4 else inv.year - 1
         return max(1, cal_fy - inv_fy + 1)
 
-    def _huf_annual_wd(self, fy: int) -> float:
+    def _huf_ration(self, fy, buckets, navs, horizon) -> float:
+        """The HUF's annual draw as a RATION, not a schedule.
+
+        `k * value / years_remaining`, capped at the cash raisable inside the
+        nil band. HANDOVER 4.2: a per-year optimiser drains the HUF as fast as
+        it looks locally cheap, it empties around FY25-29, and the personal
+        purse then carries everything alone at an 85-88% gain fraction --
+        which is where every rupee of late-plan tax comes from. Rationing is
+        98% of the tax reduction; the folios are the other 2%.
+
+        The band cap uses `cash_within_gain_budget`, never
+        `band / front_gain_fraction`. See that function for why.
+
+        The budget is split across funds PRO RATA by value, because the draw
+        itself is spread across funds by `_compute_smart_withdrawal`. That is
+        an approximation: a global cheapest-first allocation would raise
+        slightly more cash for the same gain. It is deliberately the
+        conservative direction -- it under-states capacity, so the cap binds
+        a little early and never lets the HUF overshoot its band.
+        """
+        total = sum(b.current_value(navs.get(n, 1.0)) for n, b in buckets.items())
+        if total <= 0.01:
+            return 0.0
+        years_left = max(1, horizon - fy + 1)
+        ration = float(config.get("huf_ration_k", 0.0)) * total / years_left
+
+        chunk = self.state.get_debt_tax_chunk(fy, "huf")
+        band = free_gain_capacity(
+            chunk, "huf",
+            self.state.huf_income.assessable(fy, self.months_in_fy(fy), "huf"))
+        cap = 0.0
+        for n, b in buckets.items():
+            nav = navs.get(n, 1.0)
+            val = b.current_value(nav)
+            if val <= 0.0:
+                continue
+            cap += cash_within_gain_budget(b, nav, band * val / total)
+        return max(0.0, min(ration, cap))
+
+    def _huf_annual_wd(self, fy: int, buckets=None, navs=None,
+                       horizon=None) -> float:
         # Per-FY override (set by tax-optimal split optimizer) takes precedence
         if hasattr(self.state, 'huf_annual_requirements') and fy in self.state.huf_annual_requirements:
             return self.state.huf_annual_requirements[fy]
+        # The ration, computed once per FY and cached: this is called monthly.
+        # GATED. At huf_ration_k = 0.0 the branch cannot fire and the fixed
+        # chunk schedule below is unchanged, so no snapshot can move. Raising
+        # the gate is a separate one-line commit whose entire diff is that
+        # movement -- the sequence folio_cohort_threshold used.
+        if buckets is not None and float(config.get("huf_ration_k", 0.0)) > 0.0:
+            cache = getattr(self, "_huf_ration_by_fy", None)
+            if cache is None:
+                cache = self._huf_ration_by_fy = {}
+            if fy not in cache:
+                cache[fy] = self._huf_ration(fy, buckets, navs,
+                                             horizon or self.state.horizon)
+            return cache[fy]
         for c in self.state.huf_withdrawal_chunks:
             if c.year_from <= fy <= c.year_to:
                 return c.annual_withdrawal
@@ -2148,7 +2201,8 @@ class Engine:
             h_topup_this = 0.0   # amount topped up to personal this month
             h_fund_details: List[FundWithdrawalDetail] = []
             if fy <= horizon:
-                huf_req = self._huf_annual_wd(fy) / 12
+                huf_req = self._huf_annual_wd(
+                    fy, h_fund_buckets, p_fund_navs, horizon) / 12
                 # Add any personal shortfall (personal corpus insufficient).
                 # _topup_needed is zero unless the personal SWP block raised less
                 # than req_monthly this month.
