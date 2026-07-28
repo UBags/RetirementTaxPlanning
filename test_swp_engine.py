@@ -277,50 +277,6 @@ def test_engine_windfall():
            any(r.windfall_personal > 0 for r in p_rows or []))
 
 
-def test_engine_no_trade_threshold():
-    _section("Engine — No-Trade Threshold (Garleanu & Pedersen)")
-    from engine import Lot, _rebalance_portfolio, new_folio_set
-
-    # new_folio_set(), not FIFOBucket(): _rebalance_portfolio takes
-    # FolioSets since Phase 4a and reads .order to detect the multi-folio
-    # case. At folio_cohort_threshold = 0.0 a FolioSet opens exactly one
-    # folio and delegates every operation to it, so these numbers are
-    # unchanged -- but a bare FIFOBucket has no .order and raises.
-
-    # Build a tiny portfolio that is well within 3% drift
-    fund_buckets = {
-        "Debt A": new_folio_set(),
-        "Eq A":   new_folio_set(),
-    }
-    fund_buckets["Debt A"].invest(80.0, 1.0, 0)
-    fund_buckets["Eq A"].invest(20.0, 1.0, 0)
-    fund_navs  = {"Debt A": 1.05, "Eq A": 1.02}
-    fund_types = {"Debt A": "debt", "Eq A": "equity"}
-
-    # Current weights ≈ {Debt: 80.5%, Eq: 19.5%}  Target: {Debt: 80%, Eq: 20%}
-    # Total drift ≈ 1.0% — below 3% threshold
-    target = {"Debt A": 0.80, "Eq A": 0.20}
-    prior  = {"Debt A": 0.80, "Eq A": 0.20}
-
-    from models import AppState, default_state
-    state = _make_state()
-
-    cost, gains, _ = _rebalance_portfolio(
-        target_weights=target, prior_weights=prior,
-        fund_buckets=fund_buckets, fund_navs=fund_navs,
-        fund_types=fund_types, state=state, fy=5, month_idx=48,
-        drift_tolerance=0.03,
-    )
-    _check("No-trade: zero tax when drift < 3%",
-           cost.taxes_paid == 0.0, f"taxes={cost.taxes_paid}")
-    _check("No-trade: zero exit loads when drift < 3%",
-           cost.exit_loads_paid == 0.0)
-    # Verify buckets unchanged
-    debt_val = fund_buckets["Debt A"].current_value(fund_navs["Debt A"])
-    _check("No-trade: Debt A bucket untouched",
-           _approx(debt_val, 80.0 * 1.05), f"val={debt_val:.4f}")
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Section 2 — GlidePath edge cases
 # ─────────────────────────────────────────────────────────────────────────────
@@ -557,66 +513,6 @@ def test_fifo_bucket_basic():
            _approx(bk.lots[0].purchase_nav, 1.0), f"first_lot_nav={bk.lots[0].purchase_nav}")
 
 
-def test_hifo_vs_fifo_gain_difference():
-    _section("HIFO — Lower gains than FIFO (tax alpha)")
-    from engine import Lot, _rebalance_portfolio, new_folio_set
-
-    # new_folio_set(), not FIFOBucket(): _rebalance_portfolio takes
-    # FolioSets since Phase 4a and reads .order to detect the multi-folio
-    # case. At folio_cohort_threshold = 0.0 a FolioSet opens exactly one
-    # folio and delegates every operation to it, so these numbers are
-    # unchanged -- but a bare FIFOBucket has no .order and raises.
-
-    # Two lots: Lot A (old, high gain), Lot B (recent, low gain)
-    # FIFO sells Lot A first (high gain = more tax)
-    # HIFO sells Lot B first (low gain = less tax)
-    def _build_buckets():
-        bk = new_folio_set()
-        # Lot A: bought at NAV 1.0, month 0 (old = LTCG, big gain at current nav=3.0)
-        bk.lots.append(Lot(units=50.0, purchase_nav=1.0, purchase_month=0))
-        # Lot B: bought at NAV 2.5, month 50 (still old, small gain at nav=3.0)
-        bk.lots.append(Lot(units=50.0, purchase_nav=2.5, purchase_month=50))
-        return bk
-
-    fund_navs  = {"FundX": 3.0}
-    fund_types = {"FundX": "equity"}
-
-    state = _make_state()
-
-    # FIFO (use_hifo=False)
-    bk_fifo = {"FundX": _build_buckets(), "FundY": new_folio_set()}
-    bk_fifo["FundY"].invest(150.0, 1.0, 0)
-    fifo_cost, fifo_gains, _ = _rebalance_portfolio(
-        target_weights={"FundX": 0.3, "FundY": 0.7},
-        prior_weights= {"FundX": 0.5, "FundY": 0.5},
-        fund_buckets=bk_fifo, fund_navs={"FundX": 3.0, "FundY": 1.5},
-        fund_types=fund_types | {"FundY": "debt"},
-        state=state, fy=5, month_idx=60,
-        drift_tolerance=0.0,   # force rebalance
-        use_hifo=False,
-    )
-
-    # HIFO (use_hifo=True)
-    bk_hifo = {"FundX": _build_buckets(), "FundY": new_folio_set()}
-    bk_hifo["FundY"].invest(150.0, 1.0, 0)
-    hifo_cost, hifo_gains, _ = _rebalance_portfolio(
-        target_weights={"FundX": 0.3, "FundY": 0.7},
-        prior_weights= {"FundX": 0.5, "FundY": 0.5},
-        fund_buckets=bk_hifo, fund_navs={"FundX": 3.0, "FundY": 1.5},
-        fund_types=fund_types | {"FundY": "debt"},
-        state=state, fy=5, month_idx=60,
-        drift_tolerance=0.0,
-        use_hifo=True,
-    )
-
-    _check("HIFO produces same or lower tax than FIFO (tax alpha)",
-           hifo_cost.taxes_paid <= fifo_cost.taxes_paid + 1e-4,
-           f"HIFO={hifo_cost.taxes_paid:.4f}L  FIFO={fifo_cost.taxes_paid:.4f}L")
-    _check("HIFO equity gains same or lower",
-           hifo_gains.get('e', 0.0) <= fifo_gains.get('e', 0.0) + 1e-4,
-           f"HIFO_gains={hifo_gains.get('e',0):.4f}  FIFO_gains={fifo_gains.get('e',0):.4f}")
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Runner
 # ─────────────────────────────────────────────────────────────────────────────
@@ -629,7 +525,6 @@ ALL_TESTS = [
     test_engine_zero_allocation_funds,
     test_rebalancing_tax_reduces_cash_and_the_solver_covers_it,
     test_engine_windfall,
-    test_engine_no_trade_threshold,
     test_glide_path_single_chunk,
     test_glide_path_year1_and_year30_are_clean,
     test_glide_path_zero_spread,
@@ -640,7 +535,6 @@ ALL_TESTS = [
     test_tax_equity_ltcg_exemption,
     test_tax_other_ltcg_no_exemption,
     test_fifo_bucket_basic,
-    test_hifo_vs_fifo_gain_difference,
 ]
 
 

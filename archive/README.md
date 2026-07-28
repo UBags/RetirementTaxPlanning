@@ -34,3 +34,4 @@ open; archiving it records the answer.
 | file | replaced by | why |
 |---|---|---|
 | `chunk_defaults_suggest_risk_free_rate.py` | `percentile_metrics.risk_free_from_liquid_funds()` | wrong metric (`min(Avg_CAGR_*)` rather than P33 of the cross-fund monthly average), wrong classifier (fund name rather than AMFI category), and swept Overnight and Money Market funds in with Liquid |
+| `rebalance_portfolio.py` | nothing yet -- HANDOVER 4.3's capacity-driven transition scheduler will occupy the socket | dead since `bfbf226` removed its caller, and the only two places in the engine that used HIFO, which is not achievable: gains are FIFO per folio (CBDT Circular 704) and an AMC cannot be told to sell your highest-cost units |

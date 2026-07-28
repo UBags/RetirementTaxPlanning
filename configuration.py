@@ -49,13 +49,8 @@ _CONFIG_FILENAME = "RetirementTaxPlanning.configuration"
 REQUIRED_KEYS = frozenset({
     # Tax
     "cess_rate",
-    "fallback_equity_ltcg_rate",
-    "fallback_other_ltcg_rate",
-    "fallback_debt_top_rate",
-    "fallback_stcg_rate",
     # Fund / portfolio
     "stcg_holding_months",
-    "exit_load_fraction",
     "smart_withdrawal_start_month",
     "max_simulation_years",
     "min_simulation_years",
@@ -105,10 +100,31 @@ REQUIRED_KEYS = frozenset({
 # pointless) and not deleted from the file, because deciding whether the
 # optimiser ought to read them belongs to whoever owns that feature.
 #
+# Five more arrived when _rebalance_portfolio was archived: it was their only
+# reader, and it had been dead since bfbf226 removed its caller.  The four
+# fallback_* rates were estimation rates used to size the rebalancing tax
+# budget, and nothing else ever wanted them.
+#
+# exit_load_fraction is the one worth a second look.  It is listed here as
+# unread, which it now is -- but that means the engine charges NO EXIT LOAD
+# ANYWHERE on the live path.  FolioSet.sell_ordered and sell_to_tax_budget
+# take an exit_load argument and apply it correctly; both are currently
+# without callers.  This is why exit loads measured 0.000000 in every golden
+# scenario during the Phase 3 investigation: structurally zero, not
+# coincidentally so.  Whether an SWP redemption inside stcg_holding_months
+# ought to bear one is a modelling decision, not a config question, and it is
+# recorded here so that demoting the key is not mistaken for settling it.
+#
 # Verified by test_no_required_key_is_silently_unused, which greps every
 # module.  If one of these acquires a reader, move it into REQUIRED_KEYS.
 UNUSED_KEYS = frozenset({
     "default_cagr_fallback",
+    # Read only by the archived glide-path rebalancer.
+    "fallback_equity_ltcg_rate",
+    "fallback_other_ltcg_rate",
+    "fallback_debt_top_rate",
+    "fallback_stcg_rate",
+    "exit_load_fraction",
     "optimizer_default_user_cap",
     "optimizer_min_personal_fraction",
     "optimizer_max_huf_corpus_drain",
