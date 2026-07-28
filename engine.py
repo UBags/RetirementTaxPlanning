@@ -94,6 +94,43 @@ def compute_slab_tax(income: float, chunk: TaxChunk, entity: str) -> float:
     return tax * (1 + CESS)
 
 
+def free_gain_capacity(chunk: TaxChunk, entity: str,
+                       assessable_other: float,
+                       gain_realised: float = 0.0) -> float:
+    """Slab-taxed gain still realisable this FY at ZERO tax.
+
+    The per-entity headroom the whole tax-minimisation design is built on:
+    personal `H_p = exempt_limit - assessable_other_income - gain_already`,
+    HUF `H_h = nil_band - gain_already`. Debt gains are taxed at slab and are
+    added to assessable other income (see the `total_slab_income` assembly in
+    `run()`), so this is the quantity a withdrawal or a harvest is measured
+    against.
+
+    Pinned to `compute_slab_tax` from both sides by
+    `test_free_gain_capacity.py`: realising exactly this much does not INCREASE
+    tax, realising a rupee more does. Note the wording -- it is not a promise of
+    zero tax. Where assessable other income already exceeds the band, capacity
+    is zero and tax is already being paid; the guarantee is about the margin,
+    not the level.
+
+    The individual limit is the s.87A rebate threshold. **The HUF gets no
+    rebate**, so its free band is the 0% slab and nothing more -- which is why
+    HUF income above the nil band pays 5% immediately while the personal purse
+    pays nothing up to 12L. That asymmetry decides where a shortfall is sent.
+
+    Headroom is a FLOW: it arrives each year and expires unused at year end.
+    Cost basis is a STOCK. Harvesting is the only conversion between them.
+
+    No caller yet. Landed dead, with tests, ahead of the harvest and ration
+    work that needs it -- the same sequence Phase 4b-i used.
+    """
+    if chunk is None:
+        return 0.0
+    limit = (chunk.exempt_limit if entity == "individual"
+             else _nil_slab_upper(chunk))
+    return max(0.0, limit - assessable_other - gain_realised)
+
+
 def compute_ltcg_individual(gains: float, eq_chunk: EquityTaxChunk) -> float:
     if gains <= 0 or eq_chunk is None:
         return 0.0
