@@ -470,6 +470,69 @@ class FolioSet:
             bucket.lots = kept
         return stcg, ltcg, loads, net, spent
 
+    def harvest_to_budget(self, budget: float, nav: float, month: int,
+                          stcg_months: int, prefer: str = "harvest") -> float:
+        """Step up basis in place, up to `budget` of realised gain.
+
+        NOTHING IS SOLD. Units are conserved exactly: a harvested lot is
+        replaced by one of the same size at today's NAV. That is why this
+        cannot route through sell_ordered, which sells an AMOUNT of value.
+
+        The folio ordering is the OPPOSITE of a cash draw. HANDOVER 4.5: a
+        harvest wants the folio whose front lot has the HIGHEST gain fraction,
+        to realise the most gain per rupee churned and retire the units that
+        would cost most later. prefer='cash' implements the wrong half.
+
+        This is also the site that makes folios pay at all. Single-folio
+        harvesting measured WORSE than not harvesting (16.47 against 6.55),
+        because rebuying appends fresh basis to the BACK of the FIFO queue
+        while the front stays original-basis stock -- the gain fraction on
+        withdrawals came back identical in every year, with and without.
+
+        Folios are ordered ONCE, up front. A harvest moves no value between
+        folios, so unlike sell_ordered there is nothing to re-pick for, and
+        re-picking would risk looping: a just-harvested folio still fronts a
+        high-gain lot whenever that lot was skipped for holding period.
+
+        Returns the gain harvested.
+        """
+        live = [f for f in self.order if self.folios[f].total_units > 1e-12]
+        live.sort(key=lambda f: self.gain_fraction(f, nav),
+                  reverse=(prefer != "cash"))
+
+        harvested = 0.0
+        for fid in live:
+            if budget - harvested < 0.001:
+                break
+            bucket = self.folios[fid]
+            new_lots = []
+            for lot in bucket.lots:
+                remaining = budget - harvested
+                if remaining < 0.001:
+                    new_lots.append(lot)
+                    continue
+                if month - lot.purchase_month < stcg_months:
+                    new_lots.append(lot)
+                    continue
+                unrealised = lot.units * (nav - lot.purchase_nav)
+                if unrealised <= 0.001:
+                    new_lots.append(lot)
+                    continue
+                if unrealised <= remaining:
+                    harvested += unrealised
+                    new_lots.append(Lot(lot.units, nav, month))
+                else:
+                    fraction = remaining / unrealised
+                    harvest_units = lot.units * fraction
+                    keep_units = lot.units - harvest_units
+                    harvested += remaining
+                    new_lots.append(Lot(harvest_units, nav, month))
+                    if keep_units > 1e-12:
+                        new_lots.append(Lot(keep_units, lot.purchase_nav,
+                                            lot.purchase_month))
+            bucket.lots = new_lots
+        return harvested
+
 def _folio_gate():
     """(threshold, max_cohorts) from config, both safely defaulted.
 
@@ -2575,6 +2638,20 @@ class Engine:
                 break
             bk  = p_fund_buckets[fn]
             nav = p_fund_navs[fn]
+
+            # Multi-folio: harvest orders folios the OPPOSITE way to a cash
+            # draw -- highest front-lot gain fraction first (HANDOVER 4.5) --
+            # and steps up basis in place rather than selling an amount, which
+            # is why neither sell_ordered nor a `prefer` argument can serve it.
+            #
+            # Unreachable while folio_cohort_threshold = 0.0 opens exactly one
+            # folio per fund, so this commit moves no snapshot.
+            if len(bk.order) > 1:
+                harvest_total += bk.harvest_to_budget(
+                    harvest_budget - harvest_total, nav, m,
+                    config.stcg_holding_months, prefer="harvest")
+                continue
+
             new_lots = []
             for lot in bk.lots:
                 remaining_budget = harvest_budget - harvest_total
