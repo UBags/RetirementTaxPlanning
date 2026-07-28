@@ -80,11 +80,27 @@ Twenty-eight commits. Tests 382 → 722. Grouped by what they were for.
 | **C2** `ac41ad7` | Per-year requirement-delivery guard across all five golden scenarios. 25 items. The invariant every later phase is measured against. |
 | **C3** `bfbf226` | The glide-path transition scheduler retired to a hard cut. Measured, it turned two zero-tax years into 10.75L of tax — it smoothed brackets rather than harvesting capacity. 341 lines removed, no snapshot moved. |
 | **C4** `3a3813c` | Secant step in `solve_schedule`, gated so it cannot fire under the old identity. Inert; no snapshot moved. |
-| **C5** | The final identity: no transfer to the HUF, rebalancing tax counted as tax paid, `PLAN_TOL = 1e-2`. Uncovered a double debit that predated all of it — see §9.13. All ten snapshots moved. |
+| **C5** `46fd0f2` | The final identity: no transfer to the HUF, rebalancing tax counted as tax paid, `PLAN_TOL = 1e-2`. Uncovered a double debit that predated all of it — see §9.13. All ten snapshots moved. |
 
-| **D1** `?` | Phase 4a: `FolioSet`, cohort ledger per fund, exactly one cohort. Inert; no snapshot moved. |
-| **D2** `?` | Phase 4b-i: folio-selection API. Dead code on landing. |
-| **D3** `?` | Phase 4b-ii: the config gate, switched off. Fixed a defect in 4b-i where `redeem` dropped the remainder when one folio could not cover the amount. |
+| **C6** `212da5e` | The Phase 3 review claim corrected, and what the review missed recorded. |
+| **C7** `67eaaf3` | `YearSummary` gains `topup_from_huf` and `other_income_personal`; the conservation identity becomes writable, then written. |
+
+Phase 4. Named 4a/4b-* throughout, **not** D — §7 already uses "Phase D" for
+the Monte Carlo horizon:
+
+| | |
+|---|---|
+| **4a** `8f06b19` | Cohort ledger per fund, with exactly one cohort. Inert; no snapshot moved. |
+| **4b-i** `388b15a` | Folio-selection API on `FolioSet`. Dead code on landing. |
+| **4b-ii** `28da7b8` | The config gate, switched off. Fixed a defect in 4b-i where `redeem` dropped the remainder when one folio could not cover the amount. |
+| — `1266f4b` | Phase 4's state recorded in both handover documents. |
+| **4b-iii/1** `7f271a5` | `_sell_hifo` routed through `sell_ordered`. Inert. |
+| — `7c5d2f8` | The bucket type contract fixed in `test_swp_engine.py` — see §9.16. |
+| **4b-iii/2** `2cb57ce` | The budget-capped rebalance sell; `sell_to_tax_budget` added. Inert. |
+| **4b-iii/3** `1ba8718` | The equity LTCG harvest; `harvest_to_budget` added. Inert. The only one of the three that ever blocked the gate. |
+| — `73103bf` | The glide-path rebalancer archived, and with it the last of HIFO. 722 → 720. |
+| — `6b0e567` | The fixture-scaling note removed from the documents and the fixture header. |
+| — `5b72d42` | `tests/test_folio_set.py`. 720 → 736. |
 
 ### Defects found and fixed along the way
 
@@ -366,11 +382,12 @@ that the plan delivers the stated requirement. It is the guard every later
 phase is measured against and must never be allowed to go red. The
 conservation identity that was missing beneath it landed too — see §9.13.
 
-1. **Corpus representation** — **in progress, three quarters done.**
-   `FolioSet` (4a `?`), the selection API (4b-i), and the config gate (4b-ii)
-   are landed, verified and **inert**: `folio_cohort_threshold = 0.0` opens
-   exactly one folio per fund and every operation delegates to it, so nothing
-   has changed yet. See §4.10 for what remains.
+1. **Corpus representation** — **done, and inert.** `FolioSet` (4a `8f06b19`),
+   the selection API (4b-i `388b15a`), the config gate (4b-ii `28da7b8`), all
+   three call-site conversions (4b-iii) and `tests/test_folio_set.py` are
+   landed: `folio_cohort_threshold = 0.0` opens exactly one folio per fund and
+   every operation delegates to it, so nothing has changed yet. Only raising
+   the gate remains. See §4.10.
 2. **Horizon-aware split** replacing the per-year optimiser, with the HUF ration
    as a constraint.
 3. **Capacity-driven transition scheduler**, with straddling windows and
@@ -379,49 +396,64 @@ conservation identity that was missing beneath it landed too — see §9.13.
    rather than around a live one.
 4. ~~The identity check as a test on every scenario, every year.~~ Done.
 
-### 4.10 Phase 4 — where it stands, and the three conversions left
+### 4.10 Phase 4 — complete, and inert
 
-Landed and inert. The gate is off, so none of it changes a number yet:
+All of it is landed and the gate is off, so none of it changes a number yet.
 
 | | |
 |---|---|
-| **4a** | `FolioSet`: `Dict[folio_id, FIFOBucket]` per fund, presenting the `FIFOBucket` surface so eighty-odd call sites are untouched. Six construction sites changed. Verified against a plain `FIFOBucket` over 4000 randomised operations. |
+| **4a** | `FolioSet`: `Dict[folio_id, FIFOBucket]` per fund, presenting the `FIFOBucket` surface so eighty-odd call sites are untouched. `.lots` returns the underlying list **by reference** while there is one folio, and the setter raises once there is more than one. |
 | **4b-i** | `pick_for_cash` (lowest front-lot gain fraction), `pick_for_harvest` (highest), `ensure_cohort`, `sell_ordered`. Dead code on landing. |
 | **4b-ii** | `FolioSet` self-manages: threshold in the constructor, `invest` opens cohorts, unnamed `redeem` draws cheapest-first **and spills onward**. Config keys `folio_cohort_threshold` (0.0) and `folio_max_cohorts` (5). |
+| **4b-iii** | The three lot-mutating sites converted, each guarded on `len(bk.order) > 1`. `sell_to_tax_budget` (budget-capped, stops mid-lot) and `harvest_to_budget` (gain budget, steps up basis in place) added. |
+| **tests** | `tests/test_folio_set.py`, 16 tests. Until it landed, **nothing in the suite exercised a multi-folio path at all** — six commits of "inert" rested on verification that lived in throwaway scripts. |
 
-**Three conversions remain, and they are three different problems, not three
-instances of one.** Each assigns to `.lots`, which the setter refuses once a
-second folio exists — that guard is deliberate, and it is what stops the
-single-folio behaviour that measured *worse than not harvesting at all*.
+**The previous version of this section was wrong, and how it was wrong is worth
+keeping.** It said three conversions blocked the gate. Only one did.
+`_rebalance_portfolio`, which held the other two, is called nowhere in the
+engine: its caller went with the 341 lines retired in `bfbf226`, and
+`glide_costs_by_fy` was initialised and read while nothing ever wrote to it.
+That inventory was built with `grep -n "\.lots = "`, which finds assignments but
+not callers. **Dead code can be dead upstream** — see §9.15.
 
-| site | shape | needs |
-|---|---|---|
-| `_sell_hifo`, sell + rebuild | forced rebalancing sell | `sell_ordered(prefer="cash")` behind a `len(bk.order) > 1` guard. Clean. |
-| the second rebalance sell | carries `rebal_tax_tally` and stops **mid-lot** when running tax hits `annual_tax_budget` | a budget-aware variant; `sell_ordered` knows nothing about a budget |
-| the equity LTCG harvest | a **gain budget**, and it steps up basis in place (`Lot(units, nav, m)`) rather than selling an amount | a new `harvest_to_budget`, drawing `prefer="harvest"` |
+Those two sites and `_estimate_transition_tax` are now in
+`archive/rebalance_portfolio.py`. Only `_execute_ltcg_harvest`, called from
+`run()` every March, was ever live.
 
-Line numbers shift with every commit — find them with
-`grep -n "\.lots = " engine.py`.
+**HIFO is gone, and it cost nothing.** Those two archived functions were the
+only places in the engine that sorted lots by gain and sold the cheapest first.
+`HANDOVER_REVISION` §10.2 predicted that correcting it would move every
+snapshot; it moved none, because the code was dead. Redemption is now FIFO
+within a folio and `FolioSet` chooses between folios, which is the only
+lot-selection lever that exists in practice —
+Indian practice computes gains FIFO per folio and an AMC cannot be instructed to
+sell your highest-cost units. `test_folio_set.py` asserts `use_hifo` and
+gain-sorted selection do not come back.
 
-**Guard each conversion on `len(bk.order) > 1`** so the single-folio path is
-untouched and the commit stays inert. Then raising the gate is a one-line
-config change whose entire diff is snapshot movement, which is the cleanest
-possible thing to review.
+**What remains is the gate itself**: a one-line config change whose entire diff
+is snapshot movement, which is the cleanest possible thing to review. The
+threshold default is not settled. `0.50` gave three folios on the retirement
+model and four on a synthetic drawdown. It is a dial for how many folios you
+run, not for the tax outcome — every value measured reached the same answer.
+Measure it on the real plan rather than carrying my number across.
 
-**A separate decision, not part of the above.** Those sells currently sort ALL
-lots by gain and take the cheapest — HIFO. **That is not achievable in
-reality.** Indian practice computes gains FIFO per folio and an AMC cannot be
-instructed to sell your highest-cost units; folio choice is the only lever.
-So the engine models rebalancing as more tax-efficient than it can be, and
-every glided figure ever measured inherits that optimism. Correcting it moves
-single-folio behaviour from HIFO to FIFO and moves every snapshot. Own commit,
-own review, and do not let it ride along on a refactor.
+**Three `FolioSet` methods currently have no caller.** `sell_ordered` and
+`sell_to_tax_budget` lost theirs to the archive, and `pick_for_harvest` is then
+referenced only from those two. They are left in place deliberately: they are
+the reviewed Phase 4 interface, and §4.3's capacity-driven transition scheduler
+is itself a budget-capped seller, so deleting them now would mean rewriting them
+shortly. `harvest_to_budget` keeps its live caller. Recorded rather than
+assumed — revisit when that scheduler is designed.
 
-**The threshold default is not settled.** `0.50` gave three folios on the
-retirement model and four on a synthetic drawdown. It is a dial for how many
-folios you run, not for the tax outcome — every value measured reached the
-same answer. Measure it on the real plan when the gate is raised, rather than
-carrying my number across.
+**The engine charges no exit load anywhere on the live path.** `sell_ordered`
+and `sell_to_tax_budget` both take an `exit_load` argument and apply it
+correctly, and neither has a caller; `glide_exit_loads` read `glide_costs_by_fy`,
+which nothing wrote. `exit_load_fraction` is therefore in `UNUSED_KEYS`. This
+retrospectively explains the fifth wrong hypothesis of the Phase 3
+investigation — exit loads measured `0.000000` in every scenario because they
+are structurally zero, not coincidentally so. Whether an SWP redemption inside
+`stcg_holding_months` ought to bear one is a modelling decision, and demoting
+the key did not settle it.
 
 ## 5. Phase F — investment profile and staggered deployment
 
@@ -491,10 +523,21 @@ holding, that part is wiring rather than a new feature.
   structural value remaining, and Phase B's outer-loop design exists partly
   because the engine cannot re-run a single financial year. Blocks 3.2.
 - **Phase C** — solver interactions. Cannot be specified until B settles.
-- **Phase D** — Monte Carlo horizon. 18 sites; `MC_FIXED_HORIZON = 30` is now
-  explicit everywhere and `run_monte_carlo()` refuses any other horizon by
-  name, so the work is bounded and the failure mode is loud.
-- **Phase E** — sensitivity horizon.
+- **Phase D** — Monte Carlo horizon. `MC_FIXED_HORIZON = 30` is explicit
+  everywhere and `run_monte_carlo()` refuses any other horizon by name, so the
+  work is bounded and the failure mode is loud. Two things scope it that are
+  easy to miss: `tests/test_gui_horizon.py` asserts `MC_FIXED_HORIZON == 30`
+  **and** that no module carries a bare `range(30)` — those tests are the
+  spec and change with it; and `mc_history.json` plus the five bootstrap
+  snapshots are 30-row, so either they stay pinned at horizon 30 or every one
+  of them moves.
+- **Phase E** — sensitivity horizon. **Smaller than it sounds, and it is a
+  live defect rather than future work.** `run_sensitivity` and
+  `_sensitivity_rows` are already horizon-agnostic. `build_sensitivity_table`
+  hardcodes `QTableWidget(30, …)`, so the CSV export and the on-screen table
+  already disagree at any horizon ≠ 30: at 40 the table silently drops
+  FY31–40, at 20 it shows ten blank rows numbered 21–30. The ceiling has been
+  40 since A3-iii, so this is reachable today. One line, plus a test.
 - **Phase 2.3 — delete dead code.** `ruff check --select F841 .`, plus
   `allocate_funds_v0.9.py`. Delete the `F841` ignore from `ruff.toml` when it
   lands.
@@ -630,6 +673,43 @@ holding, that part is wiring rather than a new feature.
     thing that needed checking. **Shape the fixture like the plan** — a large
     corpus drawn down slowly — not like a random walk.
 
+15. **Dead code can be dead *upstream*.** `_rebalance_portfolio` and
+    `_estimate_transition_tax` were converted, reviewed and reasoned about as
+    live blockers on raising the folio gate. Neither had been called since
+    `bfbf226` removed the glide path. The inventory that named them came from
+    `grep -n "\.lots = "`, which finds assignments but not callers. Check the
+    call chain before treating a site as a blocker — and treat a
+    write-never/read-once variable like `glide_costs_by_fy` as the tell that a
+    caller was removed and the machinery left behind.
+
+16. **A type contract can be violated latently in two places at once.** Three
+    call sites in `test_swp_engine.py` passed a bare `FIFOBucket` to
+    `_rebalance_portfolio`, whose annotation had said `FolioSet` since 4a.
+    Nothing failed: `_sell_hifo` is reached only when `swp_cash_needed > 0.01`
+    and neither test passed it, and the other test returned early on
+    `drift_tolerance`. So the folio guard added in 4b-iii site 1 shipped green
+    carrying the same `AttributeError` the next one would raise. **Build
+    fixtures the way production builds them** — every engine call site uses
+    `new_folio_set()`.
+
+17. **A generator's own output needs verifying, not just the patch it emits.**
+    A patcher emitter used `re.sub` with a *string* replacement containing
+    `repr()`'d hunks. `re.sub` interprets backslash escapes in the replacement,
+    so every `\n` became a real newline and the emitted patcher would not
+    parse. The second attempt fixed that but silently failed to replace the
+    SHA-256 pins, because the template quoted them differently than the
+    pattern expected — and the patcher then reported "Already applied" while
+    pinned to the wrong tree. Assert that each substitution made exactly one
+    replacement, and assert no stale pin survives in the output.
+
+18. **Do not emit unbounded output into a terminal or a context window.** A
+    `grep` over `tests/golden/golden_projects.py` printed the entire fixture
+    corpus: one line, hundreds of kilobytes. It is the mirror image of §9.13's
+    truncated-output trap — there too little was read to conclude safely, here
+    far too much was emitted to work with. Bound the output before running the
+    command, not after.
+
+
 ---
 
 ## 10. What is not verified, and cannot be from an assistant's side
@@ -647,7 +727,11 @@ holding, that part is wiring rather than a new feature.
 
 ---
 
-## 11. Live figures, for orientation
+## 11. Fixture figures, for orientation
+
+These are the golden fixtures' values, not a real portfolio — there is no
+portfolio yet. They are here so a reader recognises the magnitudes in a
+snapshot diff. Size anything quantitative against the real plan parameters.
 
 ```
 corpus at FY1                    ~215 L

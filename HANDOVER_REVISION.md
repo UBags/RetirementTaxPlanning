@@ -453,55 +453,52 @@ into one red test.
 
 ---
 
-## 10. Phase 4 — state, and the three conversions left
+## 10. Phase 4 — complete, and inert
 
-Three commits landed, all inert. `folio_cohort_threshold = 0.0` opens exactly
-one folio per fund and every operation delegates to it, so nothing in the
-engine's behaviour has changed yet.
+### 10.1 What landed, and what remains
 
-| | what | how it was verified |
-|---|---|---|
-| **4a** | `FolioSet`: `Dict[folio_id, FIFOBucket]` per fund, presenting the `FIFOBucket` surface so ~80 call sites are untouched | 4000 randomised invest/redeem steps against a plain `FIFOBucket`, identical at every step on returns, `total_units`, `current_value` and the full lot list — including the HIFO sort-and-reassign, which works because `.lots` returns the list by reference at one folio |
-| **4b-i** | `pick_for_cash`, `pick_for_harvest`, `ensure_cohort`, `sell_ordered` | `sell_ordered` at one folio identical to the loop it replaces to nine decimals; the two orderings realise 6.99 vs 63.88 of gain on the same sale |
-| **4b-ii** | the config gate; `FolioSet` self-manages vintages | 3000 steps inert at 0.0; on a realistic drawdown, units conserved exactly while realised gain falls 29-47% |
+All of Phase 4 is in. `folio_cohort_threshold = 0.0`, one folio per fund,
+nothing changed yet. The three lot-mutating sites are converted, each guarded
+on `len(bk.order) > 1`, and `tests/test_folio_set.py` exercises every
+multi-folio path — until it landed, nothing in the suite did.
 
-### 10.1 What remains
+Only the gate remains: a one-line config change whose entire diff is snapshot
+movement. Measure the threshold on the real plan; `0.50` gave three folios on
+the retirement model and four on a synthetic drawdown, and every value measured
+reached the same tax answer, so it is a dial for how many folios you run rather
+than for the outcome.
 
-Three conversions, and they are three different problems. Each assigns to
-`.lots`, which the setter refuses once a second folio exists — a deliberate
-guard, and the thing that stops the single-folio behaviour that measured
-*worse than not harvesting at all* (§4.1).
+**This section previously said three conversions blocked the gate. Only one
+did.** `_rebalance_portfolio`, which held two of the three, was called nowhere
+in the engine — its caller went with the 341 lines retired in `bfbf226`. It and
+`_estimate_transition_tax` are now in `archive/rebalance_portfolio.py`. Only
+`_execute_ltcg_harvest`, called from `run()` every March, was ever live. See
+`HANDOVER` §9.15.
 
-Find them with `grep -n "\.lots = " engine.py`; line numbers move every commit.
+### 10.2 RESOLVED — HIFO is gone, and it cost nothing
 
-1. **`_sell_hifo`** — forced rebalancing sell. Clean:
-   `sell_ordered(prefer="cash")` behind a `len(bk.order) > 1` guard.
-2. **The second rebalance sell** — carries `rebal_tax_tally` and stops
-   **mid-lot** when running tax reaches `annual_tax_budget`. `sell_ordered`
-   knows nothing about a budget, so this needs a budget-aware variant.
-3. **The equity LTCG harvest** — works to a *gain* budget and steps up basis
-   in place (`Lot(units, nav, m)`) rather than selling an amount. Needs a
-   `harvest_to_budget`, drawing `prefer="harvest"`.
+This section previously argued that the rebalance sells modelled a lot
+selection that cannot be achieved — sorting every lot by gain and taking the
+cheapest — and that correcting it would move every snapshot and therefore
+needed its own commit and its own review.
 
-Guard each on `len(bk.order) > 1` so the single-folio path is untouched and
-each commit stays inert. Then raising the gate is a one-line config change
-whose entire diff is snapshot movement — the cleanest thing there is to review.
+The premise was right and the prediction was wrong. Indian practice computes
+capital gains FIFO per folio (CBDT Circular 704) and an AMC cannot be
+instructed to sell your highest-cost units, so folio choice is the only
+lot-selection lever there is. But the only two places in the engine that did it
+were `_rebalance_portfolio` and `_estimate_transition_tax`, **both already
+dead**. Archiving them removed HIFO entirely and moved no snapshot, because
+dead code cannot move one. `use_hifo` and both gain-sorts are gone.
 
-### 10.2 HIFO is a fiction, and correcting it is a separate commit
+The engine now holds no HIFO anywhere: `FIFOBucket.redeem` is pure FIFO within
+a folio, and `FolioSet` chooses between folios. `tests/test_folio_set.py`
+asserts it does not come back, in the same spirit as `test_gui_horizon`'s
+assertion that no module carries a bare `range(30)`.
 
-Those rebalance sells sort **all** lots by gain and take the cheapest. That is
-not achievable in reality: Indian practice computes gains FIFO per folio, and
-an AMC cannot be instructed to sell your highest-cost units. Folio choice is
-the only lever there is.
-
-So the engine has been modelling rebalancing as more tax-efficient than it can
-be, and **every glided figure ever measured inherits that optimism** — including
-the 57.40 → 24.42 in §4.2. Correcting it moves single-folio behaviour from HIFO
-to FIFO and moves every snapshot.
-
-Own commit, own review. Do not let it ride along on a refactor, and do not
-raise the folio gate in the same change — two sets of moving numbers in one
-diff is exactly how the Phase 3 double debit stayed hidden.
+**The optimism this section warned about was real while it lasted.** Every
+glided figure measured before `bfbf226` inherited it, including the 57.40 →
+24.42 in §4.2. Those numbers should be read as an upper bound on what
+rebalancing could deliver, not as a measurement of what it would.
 
 ### 10.3 The lesson from the 4b-i defect
 
