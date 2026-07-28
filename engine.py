@@ -201,11 +201,16 @@ class FolioSet:
     sites with folio-aware selection.
     """
 
-    __slots__ = ("folios", "order")
+    __slots__ = ("folios", "order", "threshold", "max_cohorts")
 
-    def __init__(self, folio_id: str = DEFAULT_FOLIO):
+    def __init__(self, folio_id: str = DEFAULT_FOLIO,
+                 threshold: float = 0.0, max_cohorts: int = 5):
         self.folios: Dict[str, FIFOBucket] = {folio_id: FIFOBucket()}
         self.order: List[str] = [folio_id]
+        #: Front-lot gain fraction past which fresh money starts a new cohort.
+        #: 0.0 disables splitting -- see _folio_gate().
+        self.threshold: float = threshold
+        self.max_cohorts: int = max_cohorts
 
     # ── the FIFOBucket surface ───────────────────────────────────────────
     @property
@@ -233,27 +238,51 @@ class FolioSet:
 
     def invest(self, amount: float, nav: float, month: int,
                folio: Optional[str] = None) -> None:
-        """Fresh money goes to the newest folio unless one is named."""
+        """Fresh money goes to the newest folio, opening one if it has staled.
+
+        The cohort check lives here so that the forty-odd invest call sites
+        stay untouched: a FolioSet manages its own vintages. At threshold 0.0
+        ensure_cohort is a strict no-op, so exactly one folio exists and this
+        is bit-identical to Phase 4a.
+        """
+        if folio is None:
+            self.ensure_cohort(nav, self.threshold, self.max_cohorts)
         self.folios[folio or self.order[-1]].invest(amount, nav, month)
 
     def redeem(self, amount: float, nav: float,
                folio: Optional[str] = None) -> Tuple[float, float]:
         """Redeem, FIFO within the chosen folio.
 
-        With one folio this is exactly FIFOBucket.redeem. Choosing BETWEEN
-        folios -- cheapest gain fraction for cash, dearest for harvesting --
-        is Phase 4b; until then a caller that names no folio gets the oldest,
-        which is the single one.
+        Unnamed redemptions are CASH draws, so they take the cheapest folio --
+        lowest front-lot gain fraction, minimising taxable gain per rupee
+        raised. Harvesting wants the opposite and must say so explicitly.
+
+        With one folio this is exactly FIFOBucket.redeem.
         """
         if folio is not None:
             return self.folios[folio].redeem(amount, nav)
         if len(self.order) == 1:
             return self.folios[self.order[0]].redeem(amount, nav)
-        raise NotImplementedError(
-            "Redeeming across folios without naming one has no defined "
-            "order. That choice is the point of the split (Phase 4b)."
-        )
 
+        # Cheapest first, SPILLING onward until the amount is met. A single
+        # folio may not hold enough, and stopping there would silently
+        # under-deliver -- caught in testing as 240.5 units remaining against
+        # 228.3 for plain FIFO over the same drawdown.
+        remaining, principal, gain = amount, 0.0, 0.0
+        for _ in range(len(self.order)):
+            if remaining <= 1e-12:
+                break
+            bucket = self.folios[self.pick_for_cash(nav)]
+            before = bucket.total_units
+            if before <= 1e-12:
+                break
+            p, g = bucket.redeem(remaining, nav)
+            if bucket.total_units >= before - 1e-15:
+                break                      # no progress; do not spin
+            principal += p
+            gain += g
+            remaining -= (p + g)           # p + g == units sold * nav
+        return principal, gain
     # ── folio-aware, for Phase 4b onward ─────────────────────────────────
     def open_folio(self, folio_id: str) -> str:
         if folio_id not in self.folios:
@@ -377,6 +406,27 @@ class FolioSet:
                                     lot.purchase_month))
             bucket.lots = kept
         return stcg, ltcg, loads, sold
+
+def _folio_gate():
+    """(threshold, max_cohorts) from config, both safely defaulted.
+
+    Read with config.get so a stale RetirementTaxPlanning.configuration cannot
+    stop the application starting — config raises AttributeError on a missing
+    key, and this one is new.
+
+    threshold 0.0 disables cohort splitting entirely: exactly one folio is ever
+    opened, every FolioSet operation delegates to it, and behaviour is
+    bit-identical to Phase 4a. That is the gate.
+    """
+    return (float(config.get("folio_cohort_threshold", 0.0)),
+            int(config.get("folio_max_cohorts", 5)))
+
+
+def new_folio_set() -> "FolioSet":
+    """A FolioSet wired to the configured gate."""
+    t, mx = _folio_gate()
+    return FolioSet(threshold=t, max_cohorts=mx)
+
 
 ACCRUE_REDEMPTION_GAINS = True
 
@@ -732,7 +782,7 @@ def _rebalance_portfolio(
                 continue
             nav = fund_navs[fn]
             if fn not in fund_buckets:
-                fund_buckets[fn] = FolioSet()
+                fund_buckets[fn] = new_folio_set()
                 fund_navs[fn]    = nav
             fund_buckets[fn].invest(actual_buy, nav, month_idx)
 
@@ -1305,7 +1355,7 @@ class Engine:
         p_fund_buckets: Dict[str, FolioSet] = {}
         p_fund_navs:    Dict[str, float]      = {}
         for f in all_active:
-            bk = FolioSet()
+            bk = new_folio_set()
             if f.name in init_fund_names:
                 bk.invest(f.allocation, 1.0, 0)
             p_fund_buckets[f.name] = bk
@@ -1331,7 +1381,7 @@ class Engine:
         # This ensures HUF follows the identical allocation, rebalancing, and
         # glide-path transitions as the personal corpus.
         h_fund_buckets: Dict[str, FolioSet] = {
-            f.name: FolioSet() for f in all_active
+            f.name: new_folio_set() for f in all_active
         }
 
         # HUF aggregate buckets — kept for backward-compat with h_acc and
@@ -1500,7 +1550,7 @@ class Engine:
                             target_val = curr_total_val * (f.allocation / new_total)
                             if f.name not in p_fund_buckets:
                                 # New fund never seen — create bucket with fresh NAV
-                                p_fund_buckets[f.name] = FolioSet()
+                                p_fund_buckets[f.name] = new_folio_set()
                                 p_fund_navs[f.name] = 1.0
                                 # Register in all_funds_map so it gets per-fund growth
                                 all_funds_map[f.name] = f
@@ -2119,7 +2169,7 @@ class Engine:
                         for f in new_active_h:
                             target_val = curr_total_h * (f.allocation / new_total_h)
                             if f.name not in h_fund_buckets:
-                                h_fund_buckets[f.name] = FolioSet()
+                                h_fund_buckets[f.name] = new_folio_set()
                                 all_funds_map.setdefault(f.name, f)
                             bk        = h_fund_buckets[f.name]
                             nav       = p_fund_navs.get(f.name, 1.0)
@@ -2189,7 +2239,7 @@ class Engine:
                 for fn, alloc_h in fy_alloc_h.items():
                     share_h = alloc_h / fy_total_h if fy_total_h > 0 else 0.0
                     if fn not in h_fund_buckets:
-                        h_fund_buckets[fn] = FolioSet()
+                        h_fund_buckets[fn] = new_folio_set()
                     h_fund_buckets[fn].invest(huf_inflow * share_h, p_fund_navs.get(fn, 1.0), m)
                 # Sync aggregates
                 sd, se, so = state.get_split_3way(safe_fy)

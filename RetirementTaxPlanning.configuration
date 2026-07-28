@@ -28,6 +28,28 @@ stcg_holding_months = 12
 # Exit load fraction for redemptions within stcg_holding_months
 exit_load_fraction = 0.01
 
+# ─── Vintage folios ───────────────────────────────────────────────────────────
+# Front-lot gain fraction past which fresh money starts a NEW folio.
+#
+# Indian practice computes capital gains FIFO per folio, not across a PAN
+# (CBDT Circular 704), so the folio is the only lot-selection lever there is.
+# Splitting by vintage lets cash be drawn from the cheapest folio and gain
+# harvested from the dearest -- two rules that point opposite ways, which is
+# exactly why the split is worth anything (HANDOVER 4.5).
+#
+# 0.0 DISABLES splitting: one folio per fund, behaviour identical to before
+# folios existed. Raise it to switch the strategy on.
+#
+# The threshold is a dial for how many folios you end up running, not for the
+# tax outcome -- every value measured reached the same answer, with 0.50
+# settling on three folios and 0.10 on five. Few, deliberate folios are
+# preferable: AMCs reserve the right to consolidate folios under one PAN, and
+# a proliferation of micro-folios invites GAAR scrutiny.
+folio_cohort_threshold = 0.0
+
+# Hard ceiling on simultaneous folios per fund, whatever the threshold implies.
+folio_max_cohorts = 5
+
 # Month index at which Bounded Smart Withdrawal activates (corpus needs time to drift)
 smart_withdrawal_start_month = 18
 
