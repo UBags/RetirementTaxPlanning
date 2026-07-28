@@ -127,6 +127,78 @@ def forward_window(rows, n: int, need: float, horizon: int):
     return None, sum(spare.get(fy, 0.0) for fy in range(n, horizon + 1))
 
 
+def deadlines(boundaries, horizon: int) -> dict:
+    """A boundary must complete before the NEXT boundary opens.
+
+    You cannot still be transitioning into chunk 2 once chunk 3 has begun --
+    the portfolio would be straddling three allocations at once. The last
+    boundary's deadline is the horizon.
+    """
+    fys = [b["fy"] for b in boundaries]
+    out = {}
+    for i, fy in enumerate(fys):
+        out[fy] = (fys[i + 1] - 1) if i + 1 < len(fys) else horizon
+    return out
+
+
+def schedule_all(rows, boundaries, horizon: int, respect_prior: bool = False):
+    """Allocate spare capacity across ALL boundaries at once.
+
+    METHODOLOGY §15.2: where windows overlap, shared headroom is allocated
+    nearest-deadline-first and spent ONCE, never offered to each window. The
+    per-boundary table sizes each window in isolation and therefore proves
+    nothing about whether they coexist -- `s3_4chunk` needs 291.6 against
+    339.7 of total spare, so 86% of every spare rupee has to land in the
+    right year.
+
+    Allocation runs BACKWARDS from each deadline. Part I §7 G6: start as late
+    as capacity allows. Note this reasons differently in the engine than in
+    the standalone model: `_fund_annual_return` takes each fund's own CAGR, so
+    returns follow the funds actually HELD, not the chunk calendar. A late
+    window therefore keeps the older funds -- and their higher returns --
+    working for longer, which Part I §12 said the model could not see. It can.
+
+    `respect_prior` forbids a window opening before the previous boundary, so
+    the portfolio is never transitioning toward chunk k+1 while chunk k-1 is
+    still live. Operationally sane; it is also what makes `s3_4chunk` FY24
+    infeasible, which is the finding.
+
+    Returns (results, used) where `used` is per-FY consumption, which the
+    caller asserts never exceeds that year's spare -- the double-spend guard.
+    """
+    spare = {r["fy"]: r["spare_p"] + r["spare_h"] for r in rows}
+    used = {fy: 0.0 for fy in spare}
+    dl = deadlines(boundaries, horizon)
+    fys = [b["fy"] for b in boundaries]
+
+    results = []
+    for b in sorted(boundaries, key=lambda x: dl[x["fy"]]):
+        n, need = b["fy"], b["rebal_gain"]
+        floor = 1
+        if respect_prior:
+            prior = [f for f in fys if f < n]
+            floor = prior[-1] if prior else 1
+        remaining, touched = need, []
+        for fy in range(dl[n], floor - 1, -1):
+            if remaining <= 1e-9:
+                break
+            avail = spare.get(fy, 0.0) - used[fy]
+            if avail <= 1e-9:
+                continue
+            take = min(avail, remaining)
+            used[fy] += take
+            remaining -= take
+            touched.append(fy)
+        results.append(dict(
+            fy=n, need=need, deadline=dl[n], floor=floor,
+            start=min(touched) if touched else None,
+            end=max(touched) if touched else None,
+            assigned=need - remaining,
+            complete=remaining <= 1e-6,
+        ))
+    return results, used
+
+
 def main() -> None:
     targets = SCENARIOS
     detail = False
@@ -173,6 +245,28 @@ def main() -> None:
                    if k is not None
                    else f"UNREACHABLE forward-only  capacity {fcap:.1f}")
             print(f"{'':>17}forward-only  ->  {fwd}")
+
+        # Do the windows coexist? The table above sizes each in isolation.
+        spare = {r["fy"]: r["spare_p"] + r["spare_h"] for r in rows}
+        for respect in (False, True):
+            sched, used = schedule_all(rows, boundaries, horizon, respect)
+            over = [fy for fy, u in used.items() if u > spare[fy] + 1e-6]
+            title = ("windows may open no earlier than the previous boundary"
+                     if respect else "windows may open anywhere")
+            print(f"  -- simultaneous allocation, {title} --")
+            for s in sched:
+                state_s = "completes" if s["complete"] else "STARVES"
+                span = (f"FY{s['start']}-{s['end']}"
+                        if s["start"] is not None else "no years")
+                print(f"  boundary FY{s['fy']:<3} deadline FY{s['deadline']:<3}"
+                      f" {span:>10}  assigned {s['assigned']:>7.1f}"
+                      f" of {s['need']:>7.1f}  {state_s}")
+            tot_used = sum(used.values())
+            print(f"  allocated {tot_used:.1f} of {sum(s['need'] for s in sched):.1f}"
+                  f" needed, spare {sum(spare.values()):.1f}"
+                  f" ({tot_used / sum(spare.values()):.0%} utilisation);"
+                  + (" GUARD BREACHED " + str(over) if over
+                     else " no year over-spent"))
 
 
 if __name__ == "__main__":
