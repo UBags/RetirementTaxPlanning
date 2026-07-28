@@ -27,9 +27,11 @@ import pytest
 from transition_plan import (
     PURSES,
     Boundary,
+    Measurement,
     TransitionPlan,
     bands,
     build_plan,
+    converge,
     normalise,
     plans_equal,
     spread_residual,
@@ -307,3 +309,114 @@ def test_spread_uses_more_than_one_year_when_it_must():
 def test_spread_of_nothing_is_nothing():
     assert spread_residual([1, 2, 3], 0.0, _convex_tax) == {}
     assert spread_residual([], 10.0, _convex_tax) == {}
+
+
+# ─── the fixed point ──────────────────────────────────────────────────────────
+
+def _measurement(gain_p: float, gain_h: float = 9.0,
+                 fys=(11,)) -> Measurement:
+    return Measurement(
+        boundaries=tuple(
+            Boundary(fy=fy, turnover=0.2,
+                     gain={"personal": gain_p, "huf": gain_h})
+            for fy in fys),
+        spare=corpus_like_spare(),
+        horizon=HORIZON,
+    )
+
+
+class Projector:
+    """Stub engine. Returns a scripted measurement per call, recording plans.
+
+    The real engine cannot exercise this path until the rebalance sites
+    consume a plan, so the driver is tested against something that responds to
+    one by construction.
+    """
+
+    def __init__(self, script):
+        self.script = list(script)
+        self.plans = []
+
+    def __call__(self, plan):
+        self.plans.append(plan)
+        i = min(len(self.plans) - 1, len(self.script) - 1)
+        return self.script[i]
+
+
+def test_converge_baseline_is_measured_without_a_plan():
+    proj = Projector([_measurement(40.0)])
+    converge(proj, max_iterations=3)
+    assert proj.plans[0] is None, "the first projection must be the baseline"
+
+
+def test_converge_settles_when_the_projection_stops_moving():
+    proj = Projector([_measurement(40.0)])
+    result = converge(proj, max_iterations=5)
+    assert result.converged
+    assert not result.oscillated
+    assert result.iterations == 2
+    assert len(proj.plans) == 2
+
+
+def test_converge_takes_several_passes_when_the_measurement_drifts():
+    proj = Projector([_measurement(40.0), _measurement(50.0),
+                      _measurement(60.0), _measurement(60.0)])
+    result = converge(proj, max_iterations=5)
+    assert result.converged
+    assert result.iterations == 4
+
+
+def test_converge_never_exceeds_its_cap():
+    """The cost ceiling. project_plan already runs the engine three or four
+    times, so an unbounded fixed point around it would be ruinous."""
+    proj = Projector([_measurement(40.0 + 7.0 * k) for k in range(50)])
+    result = converge(proj, max_iterations=5)
+    assert not result.converged
+    assert len(proj.plans) == 5
+    assert result.iterations == 5
+
+
+def test_converge_detects_an_oscillation():
+    """A two-cycle, which a naive 'compare with previous' would never end."""
+    a, b = _measurement(45.0), _measurement(80.0)
+    assert not plans_equal(
+        build_plan(a.boundaries, a.spare, a.horizon, 1.2),
+        build_plan(b.boundaries, b.spare, b.horizon, 1.2)), (
+        "the stub does not actually oscillate — this test proves nothing")
+    proj = Projector([a, b, a, b, a, b, a, b])
+    result = converge(proj, max_iterations=5)
+    assert not result.converged
+    assert result.oscillated
+
+
+def test_converge_returns_the_least_unfunded_plan_when_it_fails():
+    big = _measurement(400.0, gain_h=200.0)     # cannot complete
+    small = _measurement(40.0)                  # completes
+    proj = Projector([big, small, big, small, big])
+    result = converge(proj, max_iterations=5)
+    assert not result.converged
+    assert result.plan.residual_total() == pytest.approx(min(result.residuals))
+    assert result.chosen == result.residuals.index(min(result.residuals))
+
+
+def test_converge_is_deterministic():
+    script = [_measurement(40.0 + 7.0 * k) for k in range(50)]
+    a = converge(Projector(list(script)), max_iterations=5)
+    b = converge(Projector(list(script)), max_iterations=5)
+    assert plans_equal(a.plan, b.plan)
+    assert (a.converged, a.oscillated, a.chosen) == (
+        b.converged, b.oscillated, b.chosen)
+
+
+def test_converge_passes_the_margin_through():
+    """A wider margin must buy a wider window, or it is not being applied."""
+    proj_lo = Projector([_measurement(45.0)])
+    proj_hi = Projector([_measurement(45.0)])
+    lo = converge(proj_lo, max_iterations=2, margin=1.0)
+    hi = converge(proj_hi, max_iterations=2, margin=1.5)
+    assert hi.plan.windows[0].m > lo.plan.windows[0].m
+
+
+def test_converge_rejects_a_nonsense_cap():
+    with pytest.raises(ValueError):
+        converge(Projector([_measurement(40.0)]), max_iterations=0)

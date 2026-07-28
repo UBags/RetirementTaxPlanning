@@ -70,8 +70,9 @@ PURSES: Tuple[str, ...] = ("personal", "huf")
 
 __all__ = [
     "PURSES", "Boundary", "Window", "TransitionPlan",
+    "Measurement", "Convergence",
     "normalise", "turnover_fraction", "bands", "build_plan",
-    "plans_equal", "spread_residual",
+    "plans_equal", "spread_residual", "converge",
 ]
 
 
@@ -290,3 +291,101 @@ def spread_residual(years: Sequence[int], amount: float,
         extra[best] += s
         outstanding -= s
     return {fy: v for fy, v in extra.items() if v > 1e-9}
+
+
+# ─── the fixed point ──────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class Measurement:
+    """What one projection reveals about a run.
+
+    `spare[purse][fy]` is gain still realisable tax-free after the ordinary
+    withdrawal has taken its share; `boundaries` carries the gain each purse
+    must realise to cross each boundary.
+    """
+    boundaries: Tuple[Boundary, ...]
+    spare: Mapping[str, Mapping[int, float]]
+    horizon: int
+
+
+@dataclass(frozen=True)
+class Convergence:
+    plan: TransitionPlan
+    iterations: int
+    converged: bool
+    oscillated: bool
+    residuals: Tuple[float, ...]
+    chosen: int
+
+
+def converge(project: Callable[[TransitionPlan | None], Measurement],
+             max_iterations: int = 5,
+             margin: float = 1.2) -> Convergence:
+    """Iterate a transition plan to a fixed point.
+
+    Every window is sized against the spare capacity a run leaves it, and
+    spreading a transition CHANGES that capacity: the boundary stops dumping
+    its whole turnover into one year, so the withdrawal's own gain in the
+    surrounding years shifts and the spare profile moves under the plan that
+    was sized against it. Measuring once and building on it takes the numbers
+    from a run the fix then invalidates. So: measure, plan, re-measure under
+    that plan, and repeat until the plan stops moving.
+
+    `project(plan)` runs a projection under `plan` and returns what it
+    measured; `project(None)` is the unscheduled baseline. Passing it in keeps
+    this function free of engine imports and -- more to the point -- lets the
+    oscillation and capping paths be tested with stubs that actually respond
+    to a plan, which the engine cannot do until the rebalance sites consume
+    one.
+
+    `project` is called at most `max_iterations` times, so the cost is bounded
+    and visible. That ceiling matters: `project_plan` already runs the engine
+    three or four times to solve the net-cash schedule.
+
+    WHY THE MARGIN DEFAULTS ABOVE 1.0
+
+    At margin 1.0 the window search is knife-edge -- with 9.0 of capacity a
+    year, a need of exactly 45.0 takes M=2 and one nano-rupee more takes M=3
+    (`test_window_choice_is_knife_edge_at_margin_one`). Since the need is
+    re-measured every pass, a boundary near an exact multiple of capacity can
+    alternate between two widths forever, exhausting the cap while looking
+    like a mere failure to settle. A margin above 1.0 moves the decision off
+    that edge, and separately buys back the case where a window completes with
+    under a percent to spare.
+
+    ON NOT CONVERGING
+
+    Non-convergence is reported, never disguised. The plan returned is the one
+    with the least unfunded gain among those seen, earliest on a tie, which is
+    deterministic and is the best of a bad set rather than an arbitrary last
+    value. `oscillated` distinguishes a cycle from slow drift, because the two
+    want different responses: a cycle wants a wider margin, drift wants a
+    higher cap.
+    """
+    if max_iterations < 1:
+        raise ValueError("max_iterations must be at least 1")
+
+    m = project(None)
+    plan = build_plan(m.boundaries, m.spare, m.horizon, margin)
+    seen = [plan]
+    oscillated = False
+
+    for i in range(2, max_iterations + 1):
+        m = project(plan)
+        nxt = build_plan(m.boundaries, m.spare, m.horizon, margin)
+        if plans_equal(nxt, plan):
+            return Convergence(
+                plan=nxt, iterations=i, converged=True, oscillated=False,
+                residuals=tuple(p.residual_total() for p in seen + [nxt]),
+                chosen=len(seen))
+        if any(plans_equal(nxt, older) for older in seen[:-1]):
+            oscillated = True
+        seen.append(nxt)
+        plan = nxt
+
+    chosen, best = min(enumerate(seen),
+                       key=lambda kv: (kv[1].residual_total(), kv[0]))
+    return Convergence(
+        plan=best, iterations=max_iterations, converged=False,
+        oscillated=oscillated,
+        residuals=tuple(p.residual_total() for p in seen), chosen=chosen)
