@@ -909,27 +909,58 @@ verdicts. `s3_4chunk` at 0.90 of lifetime tax was called a failure against a
 0.5 cut-off, when the honest question is what the same corpus would have cost
 in the alternative anyone would actually have chosen.
 
-### 16A.1 The benchmark
+### 16A.1 The benchmark — and why the shipped one is wrong
 
-`YearSummary.fd_tax_benchmark` already computes it: the corpus held at the
-per-year FD rate, taxed at slab alongside assessable other income. Summed over
-the plan it is **23.04** on the `main` fixtures and **30.06** on `hist_8yr`.
+`YearSummary.fd_tax_benchmark` is NOT a counterfactual and must not be used as
+the denominator. It computes
 
-**A lifetime tax reduction of 95% or more against the FD benchmark is
-acceptable.** The effort continues below that, but the phase ships.
+    state.total_allocation() * fd_rate(fy)
 
-| scenario | FD benchmark | lifetime tax | reduction |
-|---|---:|---:|---:|
-| `s0_1chunk` | 23.04 | 0.00 | 100.00% |
-| `s1_2chunk` | 23.04 | 0.00 | 100.00% |
-| `s2_3chunk` | 23.04 | 0.02 | 99.91% |
-| `s3_4chunk` | 23.04 | 0.90 | **96.09%** |
-| `hist_8yr` | 30.06 | 0.01 | 99.97% |
+taxed at slab. Two faults, both large:
 
-Two properties of the denominator, both conservative. It uses a STATIC corpus,
-so it earns no compounding an actual FD would. And it is personal-only -- the
-HUF pays nothing in it. Both understate the real FD burden, so every
-percentage above is a floor rather than a flattering estimate.
+* **The HUF is absent.** `total_allocation()` is the PERSONAL opening corpus.
+  The HUF's inheritance never enters, so a third of the money pays no tax in
+  the benchmark at all.
+* **The corpus is frozen.** Interest is identical in FY30 and FY1, so it sets
+  a strategy ending with 1708.6 of corpus against a benchmark ending with
+  214.8.
+
+Together they understate the alternative **6.2x**: 23.04 where the honest
+figure is 142.70.
+
+The honest counterfactual holds the same opening money, meets the same
+requirement, keeps the same other income, and sits entirely in fixed deposits.
+Interest accrues on each purse's own balance and is taxed in that purse's own
+hands; whatever the requirement still needs comes out of principal.
+`scripts/probe_fd_benchmark.py` computes it.
+
+| scenario | FD tax | FD end corpus | lifetime tax | end corpus | reduction |
+|---|---:|---:|---:|---:|---:|
+| `s0_1chunk` | 142.70 | 1114.2 | 0.00 | 1708.6 | 100.00% |
+| `s1_2chunk` | 142.70 | 1114.2 | 0.00 | 1682.8 | 100.00% |
+| `s2_3chunk` | 142.70 | 1114.2 | 0.02 | 1698.6 | 99.99% |
+| `s3_4chunk` | 142.70 | 1114.2 | 0.90 | 1800.1 | **99.37%** |
+| `hist_8yr` | 162.31 | 1161.6 | 0.01 | 2042.9 | 99.99% |
+
+**A lifetime tax reduction of 95% or more against this benchmark is
+acceptable.** The effort continues below that, but the phase ships. The
+strategy also ends with roughly 50% more corpus than the FD alternative, which
+is the ornament rather than the target.
+
+**Interest is not understated.** The fixtures are scaled by 0.6137: a corpus
+of 214.79 IS 350.0, and 15.04 of annual interest IS 24.50 at the 7% FD rate --
+slightly above a 6.5% illustration on the same money. What was wrong was the
+frozen corpus and the missing HUF, not the rate.
+
+**One open question, recorded rather than settled.** The fixtures carry 7.00
+(unscaled) of TAX-FREE interest inside other income. Treating it as FD
+interest in the counterfactual raises the denominator to 162.22 and every
+reduction by about 0.08 points -- no verdict changes. It is left exempt on the
+grounds that `total_allocation()` is the corpus while `personal_income` is
+income the plan holder has regardless of how the corpus is invested; the
+counterfactual asks what happens to the CORPUS. If that interest is in fact
+thrown off by the corpus, it belongs inside `total_allocation()` and the
+fixture is what needs correcting, not the benchmark.
 
 ### 16A.2 Corpus is the ornament, tax is the target
 
@@ -939,9 +970,10 @@ minimise tax outflow, and take the corpus that follows. They agree closely
 enough in practice that optimising the first gets near the second.
 
 **Stop rules.** Below 95% of the FD benchmark, keep going. Above it, stop when
-successive iterations buy less than 2 to 3 of end corpus -- past that there is
-no more blood in the stone, and further tuning is fitting to five synthetic
-fixtures rather than improving the mechanism (§20.1 rule 2).
+**three successive optimisation attempts each buy less than 2 to 3 of end
+corpus** -- one thin iteration proves nothing, three in a row means the stone
+is dry. Past that, further tuning is fitting to five synthetic fixtures rather
+than improving the mechanism (§20.1 rule 2).
 
 ---
 
