@@ -35,9 +35,11 @@ from transition_plan import (
     distance_to_target,
     normalise,
     plans_equal,
+    plans_same_shape,
     rebalance_moves,
     spread_residual,
     turnover_fraction,
+    widest_seen,
 )
 
 HORIZON = 30
@@ -516,3 +518,86 @@ def test_no_moves_when_already_at_target():
 
 def test_no_moves_for_a_zero_slice():
     assert rebalance_moves(OLD_MIX, NEW_W, 0.0) == ({}, {})
+
+
+# ─── geometry comparison, M floors, chatter resolution (07i-2f) ──────────────
+
+def test_same_shape_ignores_instalment_drift():
+    """The decision is which years to spend in; instalments are derived."""
+    a = _two_boundary_plan(44.0)
+    b = _two_boundary_plan(44.5)
+    assert not plans_equal(a, b), "fixture chosen badly — instalments match"
+    assert [(w.fy, w.m, w.lo, w.hi) for w in a.windows] == \
+           [(w.fy, w.m, w.lo, w.hi) for w in b.windows]
+    assert plans_same_shape(a, b)
+
+
+def test_same_shape_detects_a_moved_window():
+    assert not plans_same_shape(_two_boundary_plan(45.0),
+                                _two_boundary_plan(200.0))
+
+
+def test_same_shape_detects_a_changed_window_count():
+    one = build_plan(
+        [Boundary(fy=11, turnover=0.2, gain={"personal": 45.0, "huf": 9.0})],
+        corpus_like_spare(), HORIZON)
+    assert not plans_same_shape(_two_boundary_plan(), one)
+
+
+def test_converge_accepts_an_injected_comparator():
+    """Geometry-only comparison settles what instalment equality cannot."""
+    # Drifting every pass, so the stub never repeats itself inside the cap --
+    # a repeated measurement would let instalment equality converge too and
+    # the test would prove nothing.
+    script = [_measurement(40.0 + 0.1 * k) for k in range(8)]
+    loose = converge(Projector(list(script)), max_iterations=5,
+                     compare=plans_same_shape)
+    strict = converge(Projector(list(script)), max_iterations=5,
+                      compare=plans_equal)
+    assert [(w.fy, w.m) for w in loose.plan.windows] == \
+           [(w.fy, w.m) for w in strict.plan.windows], (
+        "the drift moved the geometry — fixture proves nothing")
+    assert loose.converged
+    assert not strict.converged
+
+
+def test_min_m_floors_the_search():
+    b = Boundary(fy=17, turnover=0.01, gain={"personal": 7.8, "huf": 2.5})
+    free = build_plan([b], corpus_like_spare(), HORIZON)
+    assert free.windows[0].m == 0
+    floored = build_plan([b], corpus_like_spare(), HORIZON, min_m={17: 3})
+    assert floored.windows[0].m == 3
+    assert floored.windows[0].complete, "a wider window must still complete"
+
+
+def test_min_m_of_zero_changes_nothing():
+    b = Boundary(fy=16, turnover=0.4, gain={"personal": 80.0, "huf": 25.0})
+    a = build_plan([b], corpus_like_spare(), HORIZON)
+    z = build_plan([b], corpus_like_spare(), HORIZON, min_m={16: 0})
+    assert plans_equal(a, z)
+
+
+def test_min_m_never_narrows_a_window():
+    """A floor is a floor: a boundary needing more than the floor keeps it."""
+    b = Boundary(fy=16, turnover=0.4, gain={"personal": 80.0, "huf": 25.0})
+    wide = build_plan([b], corpus_like_spare(), HORIZON).windows[0].m
+    floored = build_plan([b], corpus_like_spare(), HORIZON,
+                         min_m={16: 1}).windows[0].m
+    assert floored == wide, f"floor of 1 changed a window needing M={wide}"
+
+
+def test_widest_seen_takes_the_maximum_per_boundary():
+    a = build_plan([Boundary(fy=17, turnover=0.0,
+                             gain={"personal": 7.8, "huf": 2.5})],
+                   corpus_like_spare(), HORIZON)
+    b = build_plan([Boundary(fy=17, turnover=0.0,
+                             gain={"personal": 30.0, "huf": 9.0})],
+                   corpus_like_spare(), HORIZON)
+    assert a.windows[0].m < b.windows[0].m, "fixture does not differ"
+    assert widest_seen([a, b]) == {17: b.windows[0].m}
+    assert widest_seen([b, a]) == {17: b.windows[0].m}
+
+
+def test_widest_seen_of_nothing_is_empty():
+    assert widest_seen([]) == {}
+    assert widest_seen([TransitionPlan()]) == {}

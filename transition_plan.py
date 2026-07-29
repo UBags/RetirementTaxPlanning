@@ -64,7 +64,7 @@ same sequence `free_gain_capacity` and `cash_within_gain_budget` used.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Mapping, Sequence, Tuple
+from typing import Callable, Dict, Mapping, Optional, Sequence, Tuple
 
 PURSES: Tuple[str, ...] = ("personal", "huf")
 
@@ -72,7 +72,8 @@ __all__ = [
     "PURSES", "Boundary", "Window", "TransitionPlan",
     "Measurement", "Convergence",
     "normalise", "turnover_fraction", "bands", "build_plan",
-    "plans_equal", "spread_residual", "converge",
+    "plans_equal", "plans_same_shape", "spread_residual", "converge",
+    "widest_seen",
     "distance_to_target", "rebalance_moves",
 ]
 
@@ -175,7 +176,8 @@ class TransitionPlan:
 def build_plan(boundaries: Sequence[Boundary],
                spare: Mapping[str, Mapping[int, float]],
                horizon: int,
-               margin: float = 1.0) -> TransitionPlan:
+               margin: float = 1.0,
+               min_m: Optional[Mapping[int, int]] = None) -> TransitionPlan:
     """Centred, band-capped windows; shared headroom spent exactly once.
 
     `spare[purse][fy]` is the gain that purse may still realise tax-free in
@@ -187,6 +189,15 @@ def build_plan(boundaries: Sequence[Boundary],
     a later one can eat its years, and every rupee of capacity is decremented
     as it is spent -- never offered to two windows. Double-spending produces a
     scheduler that reports success while over-committing.
+
+    `min_m` floors the search per boundary, which is how the fixed-point
+    driver resolves a window that chatters between two widths. A boundary
+    whose need lands almost exactly on one year's capacity flips between M=0
+    and M=1 on the fourth decimal forever -- measured on `s3_4chunk` FY17,
+    where need x margin came to 9.0 personal against 9.00 available. Forcing
+    the wider of the two costs nothing, since cost does not rise with window
+    length (Part I §7 G7), and a wider window completes whenever a narrower
+    one does.
 
     `margin` requires capacity >= need * margin before a window is declared
     complete. At 1.0 a window completing exactly is accepted; `hist_8yr`
@@ -203,9 +214,10 @@ def build_plan(boundaries: Sequence[Boundary],
     windows = []
     for b in sorted(boundaries, key=lambda x: band[x.fy][1]):
         lo_cap, hi_cap = band[b.fy]
+        floor_m = int((min_m or {}).get(b.fy, 0))
         lo = hi = b.fy
-        m = 0
-        for m in range(0, horizon + 1):
+        m = floor_m
+        for m in range(floor_m, horizon + 1):
             lo, hi = max(lo_cap, b.fy - m), min(hi_cap, b.fy + m)
             enough = all(
                 sum(remaining_cap[p].get(fy, 0.0) for fy in range(lo, hi + 1))
@@ -319,9 +331,32 @@ class Convergence:
     chosen: int
 
 
+def plans_same_shape(a: TransitionPlan, b: TransitionPlan,
+                     tol: float = 0.0) -> bool:
+    """Compare window GEOMETRY only -- boundary, width, span.
+
+    The decision a plan makes is which years each boundary may spend in;
+    instalments are derived from whatever the latest measurement said the
+    capacity was. Comparing instalments therefore keeps reporting "changed"
+    long after the geometry has settled: measured on `s1_2chunk`, the window
+    fixed at M=7 spanning FY9-23 on the second pass and never moved again,
+    while the requirement drifted 116.7 -> 112.8 by fractions that no
+    tolerance worth setting would absorb.
+
+    `tol` is accepted and ignored, so this is substitutable for
+    `plans_equal` wherever a comparison is injected.
+    """
+    if len(a.windows) != len(b.windows):
+        return False
+    return all((wa.fy, wa.m, wa.lo, wa.hi) == (wb.fy, wb.m, wb.lo, wb.hi)
+               for wa, wb in zip(a.windows, b.windows))
+
+
 def converge(project: Callable[[TransitionPlan | None], Measurement],
              max_iterations: int = 5,
-             margin: float = 1.2) -> Convergence:
+             margin: float = 1.2,
+             compare: Callable[[TransitionPlan, TransitionPlan], bool]
+             = plans_equal) -> Convergence:
     """Iterate a transition plan to a fixed point.
 
     Every window is sized against the spare capacity a run leaves it, and
@@ -374,12 +409,12 @@ def converge(project: Callable[[TransitionPlan | None], Measurement],
     for i in range(2, max_iterations + 1):
         m = project(plan)
         nxt = build_plan(m.boundaries, m.spare, m.horizon, margin)
-        if plans_equal(nxt, plan):
+        if compare(nxt, plan):
             return Convergence(
                 plan=nxt, iterations=i, converged=True, oscillated=False,
                 residuals=tuple(p.residual_total() for p in seen + [nxt]),
                 chosen=len(seen))
-        if any(plans_equal(nxt, older) for older in seen[:-1]):
+        if any(compare(nxt, older) for older in seen[:-1]):
             oscillated = True
         seen.append(nxt)
         plan = nxt
@@ -390,6 +425,21 @@ def converge(project: Callable[[TransitionPlan | None], Measurement],
         plan=best, iterations=max_iterations, converged=False,
         oscillated=oscillated,
         residuals=tuple(p.residual_total() for p in seen), chosen=chosen)
+
+
+def widest_seen(plans: Sequence[TransitionPlan]) -> Dict[int, int]:
+    """The largest M each boundary reached across a set of plans.
+
+    Feeds `build_plan(min_m=...)` to stop a boundary chattering between two
+    widths. Taking the wider is safe rather than merely convenient: cost does
+    not rise with window length (Part I §7 G7), and a wider window completes
+    whenever a narrower one does.
+    """
+    out: Dict[int, int] = {}
+    for plan in plans:
+        for w in plan.windows:
+            out[w.fy] = max(out.get(w.fy, 0), w.m)
+    return out
 
 
 # ─── translating a slice into fund movements ──────────────────────────────────
