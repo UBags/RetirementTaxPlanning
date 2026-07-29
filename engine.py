@@ -2279,6 +2279,34 @@ class Engine:
 
             # ── HUF chunk-boundary rebalancing ───────────────────────────────
             # Mirror the personal chunk-boundary rebalancing exactly.
+            #
+            # Phase 07, same shape as the personal site: the plan is
+            # authoritative, so where one exists the hard cut never fires and
+            # every window year moves an instalment. Without this the HUF
+            # would keep dumping its whole turnover at the boundary while the
+            # personal purse spread its own -- half a mechanism, and invisible
+            # to any test reading only `rebalance_personal`.
+            #
+            # `p_fund_navs` is correct here: NAVs are shared across purses,
+            # only the buckets differ. The HUF's own tax bands make its budget
+            # a separate line in the plan, which is why headroom is not
+            # fungible between the two.
+            _win_h = None
+            if self.transition_plan is not None and fy not in h_rebalanced_set:
+                _win_h = next((w for w in self.transition_plan.windows
+                               if w.lo <= fy <= w.hi), None)
+                if _win_h is not None or fy in rebalance_years:
+                    h_rebalanced_set.add(fy)
+            if _win_h is not None:
+                _slice_h = self._transition_slice(
+                    fy, m, "huf", h_fund_buckets, p_fund_navs,
+                    all_funds_map, acc_get(h_acc, fy), target_fy=_win_h.fy)
+                if any(_slice_h.values()):
+                    _rgh = h_rebal_gains_by_fy.setdefault(
+                        fy, {"d": 0.0, "e": 0.0, "o": 0.0})
+                    for _k, _v in _slice_h.items():
+                        _rgh[_k] = _rgh.get(_k, 0.0) + _v
+
             if fy in rebalance_years and fy not in h_rebalanced_set:
                 h_rebalanced_set.add(fy)
                 new_funds = state.get_funds_for_year(fy)

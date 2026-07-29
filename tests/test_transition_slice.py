@@ -327,3 +327,60 @@ def test_ledger_remaining_gain_matches_the_primitive_today():
     assert r["remaining_gain"] == pytest.approx(naive, rel=1e-6), (
         "exact and scaled estimates have diverged — folios are probably open; "
         "the ledger is right, this pin needs updating")
+
+
+# ─── the HUF mirror (07i-2d) ─────────────────────────────────────────────────
+
+def _huf_gain_by_fy(plan):
+    eng = Engine(_state(), transition_plan=plan)
+    eng.run()
+    led = eng.gain_ledger["rebalance_huf"]
+    return {fy: sum(g.get(k, 0.0) for k in "deo") for fy, g in led.items()
+            if sum(g.get(k, 0.0) for k in "deo") > 1e-9}
+
+
+@pytest.fixture(scope="module")
+def huf_baseline() -> float:
+    eng = Engine(_state(), transition_plan=None)
+    eng.run()
+    g = eng.gain_ledger["rebalance_huf"].get(BOUNDARY_FY, {})
+    return sum(g.get(k, 0.0) for k in "deo")
+
+
+def test_the_huf_baseline_is_large_enough_to_measure_against(huf_baseline):
+    assert huf_baseline > 5.0, (
+        f"HUF boundary realises only {huf_baseline:.2f} — this fixture cannot "
+        "distinguish a spread transition from a hard cut")
+
+
+def test_a_plan_spreads_the_huf_transition_too(huf_baseline):
+    """Half a mechanism is the failure this catches.
+
+    Before the HUF site was wired, a plan spread the personal transition while
+    the HUF still dumped its whole turnover at the boundary. Every test in
+    this file passed, because they all read `rebalance_personal`.
+    """
+    by_fy = _huf_gain_by_fy(_window_plan(10, 22, 6.0))
+    assert by_fy, "the HUF realised no transition gain at all"
+    off_boundary = {fy: v for fy, v in by_fy.items() if fy != BOUNDARY_FY}
+    assert off_boundary, (
+        f"HUF gain only at the boundary {by_fy} — the mirror is not wired")
+
+
+def test_a_plan_suppresses_the_huf_hard_cut_at_an_uncovered_boundary():
+    by_fy = _huf_gain_by_fy(_window_plan(2, 5, 6.0))
+    assert BOUNDARY_FY not in by_fy, (
+        f"the HUF hard cut fired at FY{BOUNDARY_FY} despite a plan: {by_fy}")
+
+
+def test_the_huf_worst_year_is_smaller_than_its_hard_cut(huf_baseline):
+    worst = max(_huf_gain_by_fy(_window_plan(8, 24, 6.0)).values())
+    assert worst < huf_baseline, (
+        f"HUF worst year {worst:.2f} against a hard cut of {huf_baseline:.2f}")
+
+
+def test_the_ledger_records_both_purses():
+    eng = Engine(_state(), transition_plan=_window_plan(12, 20, 6.0))
+    eng.run()
+    assert set(eng.transition_ledger) == {"personal", "huf"}, (
+        f"ledger covers {sorted(eng.transition_ledger)} only")
