@@ -199,3 +199,131 @@ def test_a_pre_boundary_window_actually_pre_transitions():
     assert moved > 20.0, (
         f"a pre-boundary window moved only {moved:.2f} — the slice is "
         "targeting the calendar year's chunk, not the window's")
+
+
+# ─── the exact requirement measurement (07i-2c) ──────────────────────────────
+
+def _ledger(plan):
+    eng = Engine(_state(), transition_plan=plan)
+    eng.run()
+    return eng.transition_ledger.get("personal", {})
+
+
+def test_gain_within_cash_is_zero_for_a_fresh_lot():
+    """No gain in it, so selling it costs nothing."""
+    from engine import FIFOBucket, gain_within_cash
+    bk = FIFOBucket()
+    bk.invest(100.0, 1.0, 1)
+    assert gain_within_cash(bk, 1.0, 50.0) == pytest.approx(0.0)
+
+
+def test_gain_within_cash_tracks_the_gain_fraction():
+    from engine import FIFOBucket, gain_within_cash
+    bk = FIFOBucket()
+    bk.invest(100.0, 1.0, 1)          # 100 units at 1.00
+    # NAV doubles: half of any sale is gain.
+    assert gain_within_cash(bk, 2.0, 40.0) == pytest.approx(20.0)
+
+
+def test_gain_within_cash_is_capped_by_the_bucket():
+    from engine import FIFOBucket, gain_within_cash
+    bk = FIFOBucket()
+    bk.invest(100.0, 1.0, 1)
+    everything = gain_within_cash(bk, 2.0, 200.0)
+    assert gain_within_cash(bk, 2.0, 1e9) == pytest.approx(everything)
+
+
+def test_gain_within_cash_rejects_nonsense():
+    from engine import gain_within_cash
+    assert gain_within_cash(None, 1.0, 10.0) == 0.0
+    assert gain_within_cash(object(), 0.0, 10.0) == 0.0
+
+
+def test_ledger_records_every_window_year():
+    led = _ledger(_window_plan(12, 20, 6.0))
+    assert set(led) == set(range(12, 21)), f"years recorded: {sorted(led)}"
+
+
+def test_a_starved_window_still_reports_what_it_owes():
+    """The measurement the fixed point depends on.
+
+    A budget far too small cannot finish the transition. Reading only the gain
+    realised would report a starved window as a finished one and shrink the
+    next window; `remaining_gain` is what stops that.
+    """
+    led = _ledger(_window_plan(15, 17, 0.5))
+    last = led[max(led)]
+    assert last["outstanding_after"] > 1.0, "fixture completed — proves nothing"
+    assert last["remaining_gain"] > 0.0, (
+        "a starved window reported nothing outstanding")
+
+
+def test_a_completed_window_owes_nothing():
+    led = _ledger(_window_plan(8, 24, 40.0))
+    last = led[max(led)]
+    assert last["outstanding_after"] == pytest.approx(0.0, abs=0.05)
+    assert last["remaining_gain"] == pytest.approx(0.0, abs=0.05)
+
+
+def test_outstanding_trends_down_but_is_not_monotonic():
+    """The transition chases a moving target, and that is not a defect.
+
+    Between slices the ordinary withdrawal draws unevenly across funds and
+    growth compounds unevenly, so the portfolio drifts AWAY from the target
+    allocation. Measured on a FY10-22 window: 87.56, 76.69, 77.07, 76.85,
+    73.99, 72.65, 73.41, ... 0.0 -- two small rises inside a clear downward
+    trend.
+
+    This is why the requirement is re-measured every pass rather than fixed at
+    the start. A window sized once against the initial distance would be short
+    by whatever drift accumulated while it ran.
+    """
+    seq = [_ledger(_window_plan(10, 22, 6.0))[fy]["outstanding_after"]
+           for fy in sorted(_ledger(_window_plan(10, 22, 6.0)))]
+    assert len(seq) > 3
+    assert seq[-1] < seq[0] / 2, f"no downward trend: {seq}"
+    rises = [b - a for a, b in zip(seq, seq[1:]) if b > a]
+    assert all(r < 0.05 * seq[0] for r in rises), (
+        f"drift between slices dominates the transition: {rises}")
+
+
+def test_exact_and_average_estimate_diverge_on_mixed_lots():
+    """Why the requirement is walked rather than scaled.
+
+    Two lots at different bases: 100 units at 1.00 and 100 at 2.00, NAV now
+    4.00. Selling half the value realises 300 of gain; scaling by the
+    bucket's average gain fraction says 250.
+
+    On today's single-folio fixtures the two agree exactly -- the annual
+    re-sync leaves each fund with an effectively uniform basis, and the
+    ledger's `remaining_gain` matches a scaled estimate to the paisa. The gap
+    opens when `folio_cohort_threshold` creates real cohorts, which is
+    exactly when the fixed point would be depending on it.
+    """
+    from engine import FIFOBucket, gain_within_cash
+    bk = FIFOBucket()
+    bk.invest(100.0, 1.0, 1)
+    bk.invest(200.0, 2.0, 13)
+    nav, total = 4.0, 800.0
+    average_fraction = gain_within_cash(bk, nav, total) / total
+    exact = gain_within_cash(bk, nav, total / 2)
+    assert exact == pytest.approx(300.0)
+    assert (total / 2) * average_fraction == pytest.approx(250.0)
+    assert exact > (total / 2) * average_fraction
+
+
+def test_ledger_remaining_gain_matches_the_primitive_today():
+    """Pins the current agreement, so a future divergence is visible.
+
+    Not a claim that scaling is safe -- it is a record of where the two
+    coincide, so that when folios open and they stop coinciding the change is
+    a test failure rather than a silent drift in the requirement.
+    """
+    led = _ledger(_window_plan(15, 17, 2.0))
+    rows = [led[fy] for fy in sorted(led) if led[fy]["moved"] > 0.01]
+    assert rows, "nothing moved — fixture proves nothing"
+    r = rows[-1]
+    naive = r["outstanding_after"] * (r["gain"] / r["moved"])
+    assert r["remaining_gain"] == pytest.approx(naive, rel=1e-6), (
+        "exact and scaled estimates have diverged — folios are probably open; "
+        "the ledger is right, this pin needs updating")

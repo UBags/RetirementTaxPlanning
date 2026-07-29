@@ -674,6 +674,66 @@ def cash_within_gain_budget(bucket, nav: float, gain_budget: float) -> float:
     return cash
 
 
+
+def gain_within_cash(bucket, nav: float, amount: float) -> float:
+    """Gain that raising exactly `amount` of cash from `bucket` would realise.
+
+    The mirror of `cash_within_gain_budget`, and a pure query -- it mutates
+    nothing. Both walk `_cash_consumption_order`, which is documented as the
+    order `redeem()` actually takes, so this is the gain a real redemption
+    would book rather than an estimate of it.
+
+    WHY NOT ESTIMATE IT
+
+    Phase 07's fixed point needs to know what a boundary still requires: the
+    gain already realised plus the gain that closing the remaining distance
+    would realise. The tempting shortcut is to scale the outstanding value by
+    an observed gain fraction. That is wrong whenever a bucket holds lots at
+    different bases, and the SIGN of the error depends on the consumption
+    order, so it cannot be leaned on in either direction:
+
+      * within one folio the order is FIFO, oldest first, and the oldest lots
+        are usually the gain-heaviest -- measured on two lots of 100@1.00 and
+        200@2.00 at a NAV of 4.00, selling half realises 300 against an
+        average-fraction estimate of 250;
+      * across folios `redeem` takes the CHEAPEST first, so the remainder is
+        dearer and the same estimate errs the other way.
+
+    Measured honestly: on the current single-folio fixtures the two agree
+    exactly, because the annual re-sync leaves each fund with an effectively
+    uniform basis. The divergence appears once `folio_cohort_threshold` opens
+    real cohorts (Phase 09) -- which is precisely when the fixed point would
+    be relying on it. Being exact costs one lot walk, so there is no reason to
+    carry an approximation that is correct only until folios arrive.
+
+    Same shape as the `band / front_gain_fraction` error that
+    `cash_within_gain_budget` exists to prevent, one level up.
+
+    NOT A STRICT INVERSE
+
+    `cash_within_gain_budget` takes zero-gain lots for free wherever they sit
+    in the order, so round-tripping the two does not return the input. They
+    answer different questions: that one asks what a purse COULD raise inside
+    a budget, this one what a specific sale WILL cost.
+    """
+    if bucket is None or nav <= 0 or amount <= 0:
+        return 0.0
+    remaining = amount
+    gain_total = 0.0
+    for lot in _cash_consumption_order(bucket, nav):
+        if remaining <= 1e-12:
+            break
+        if lot.units <= 1e-12:
+            continue
+        value = lot.units * nav
+        take = min(value, remaining)
+        frac = (nav - lot.purchase_nav) / nav
+        if frac > 1e-12:
+            gain_total += take * frac
+        remaining -= take
+    return gain_total
+
+
 ACCRUE_REDEMPTION_GAINS = True
 
 def _redeem_pro_rata(buckets: Dict[str, "FIFOBucket"],
@@ -840,6 +900,10 @@ class Engine:
         # snapshot can move; given a plan the boundary realises only the
         # gain that plan budgets for the year and carries the remainder.
         self.transition_plan = transition_plan
+        # Written by `_transition_slice`, read by nothing on the live path, so
+        # no snapshot can move. purse -> fy -> what that slice did and what
+        # closing the remaining distance would still cost.
+        self.transition_ledger: Dict[str, Dict[int, dict]] = {}
 
     def _annual_return(self, fy: int) -> float:
         """Blended portfolio return (used as fallback)."""
@@ -1281,6 +1345,32 @@ class Engine:
                     funds_map[n] = match
             buckets[n].invest(v, navs.get(n, 1.0), m)
 
+        # What the boundary STILL requires, measured exactly rather than
+        # estimated. Phase 07's fixed point re-derives each window from the
+        # spare capacity the plan itself produces, so it must also know what
+        # the plan has not yet paid for -- and reading only the gain realised
+        # would report a starved window as a finished one.
+        after = {n: bk.current_value(navs.get(n, 1.0))
+                 for n, bk in buckets.items()}
+        after = {n: v for n, v in after.items() if v > 0.0}
+        outstanding_after = distance_to_target(after, weights)
+        total_after = sum(after.values())
+        w_after = normalise(weights)
+        remaining_gain = 0.0
+        for n, val in after.items():
+            over = val - total_after * w_after.get(n, 0.0)
+            if over > 1e-12 and n in buckets:
+                remaining_gain += gain_within_cash(
+                    buckets[n], navs.get(n, 1.0), over)
+
+        self.transition_ledger.setdefault(purse, {})[fy] = dict(
+            target_fy=target_fy,
+            outstanding_before=outstanding,
+            moved=amount,
+            gain=sum(booked.values()),
+            outstanding_after=outstanding_after,
+            remaining_gain=remaining_gain,
+        )
         return booked
 
     def run(self) -> Tuple[List[MonthlyRow], List[YearSummary],
