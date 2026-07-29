@@ -62,6 +62,12 @@ from models import (
     _first_available,
 )
 from pro_rated_utils import months_in_fy, plan_months, prorate_annual
+from transition_plan import (
+    TransitionPlan,
+    distance_to_target,
+    normalise,
+    rebalance_moves,
+)
 
 CESS = config.cess_rate
 
@@ -797,7 +803,8 @@ class Engine:
     def __init__(self, state: AppState, alt_return_chunks=None,
                  conservative_mode: bool = False,
                  glide_path: Optional[GlidePath] = None,
-                 gross_schedule: Optional[Dict[int, float]] = None):
+                 gross_schedule: Optional[Dict[int, float]] = None,
+                 transition_plan: Optional[TransitionPlan] = None):
         """
         Parameters
         ----------
@@ -829,6 +836,10 @@ class Engine:
         self.conservative_mode = conservative_mode
         self.glide_path = glide_path
         self.gross_schedule = dict(gross_schedule) if gross_schedule else None
+        # Phase 07. Left None the boundary rebalance is untouched, so no
+        # snapshot can move; given a plan the boundary realises only the
+        # gain that plan budgets for the year and carries the remainder.
+        self.transition_plan = transition_plan
 
     def _annual_return(self, fy: int) -> float:
         """Blended portfolio return (used as fallback)."""
@@ -1175,6 +1186,95 @@ class Engine:
                 return c.annual_withdrawal
         return 0.0
 
+    def _transition_slice(self, fy: int, m: int, purse: str, buckets, navs,
+                          funds_map, acc) -> dict:
+        """Move ONE instalment of a chunk transition, capped by the gain budget.
+
+        The hard cut this replaces moves the whole turnover in a single FY, and
+        on the golden corpus that one act is very nearly the only source of
+        lifetime tax -- on `s1_2chunk` the FY16 boundary and its FY17
+        aftershock account for 74.78 of a 74.78 bill.
+
+        Here the year sells only as much as `TransitionPlan.budget` allows it
+        to realise tax-free, rupee-capped by what is actually left to move, and
+        whatever it cannot afford stays outstanding. Sells come only from funds
+        ABOVE their new target and buys go only to those below, so a fund
+        already at target is never churned.
+
+        No tax-covering sell loop. The old path estimates the tax on what it
+        just sold and sells MORE to fund it, which realises more gain and is
+        an amplifier; a budget-capped slice has no tax to cover.
+        """
+        booked = {"d": 0.0, "e": 0.0, "o": 0.0}
+        plan = self.transition_plan
+        if plan is None:
+            return booked
+        budget = plan.budget(purse, fy)
+        if budget <= 0.0:
+            return booked
+
+        state = self.state
+        new_active = [f for f in state.get_funds_for_year(fy) if f.allocation > 0]
+        if not new_active:
+            return booked
+        old_funds = state.get_funds_for_year(fy - 1) if fy > 1 else []
+        names = ({f.name for f in new_active}
+                 | {f.name for f in old_funds if f.allocation > 0})
+        values = {n: buckets[n].current_value(navs.get(n, 1.0))
+                  for n in names if n in buckets}
+        if not values:
+            return booked
+
+        weights = {f.name: f.allocation for f in new_active}
+        outstanding = distance_to_target(values, weights)
+        if outstanding <= 0.01:
+            return booked
+
+        # How much VALUE can be sold inside the gain budget? Split the budget
+        # across over-weight funds pro rata to excess, then ask each folio what
+        # cash that buys -- `cash_within_gain_budget`, never
+        # `budget / gain_fraction`, which overstates on a multi-lot bucket.
+        total = sum(v for v in values.values() if v > 0)
+        w_new = normalise(weights)
+        excess = {n: max(0.0, values[n] - total * w_new.get(n, 0.0))
+                  for n in values}
+        e_tot = sum(excess.values())
+        if e_tot <= 0.0:
+            return booked
+        affordable = 0.0
+        for n, ex in excess.items():
+            if ex <= 0.0:
+                continue
+            affordable += min(ex, cash_within_gain_budget(
+                buckets[n], navs.get(n, 1.0), budget * ex / e_tot))
+
+        amount = min(outstanding, affordable)
+        if amount <= 0.01:
+            return booked
+        sells, buys = rebalance_moves(values, weights, amount)
+
+        for n, v in sells.items():
+            if n not in buckets or v <= 0.0:
+                continue
+            _pr, gn = buckets[n].redeem(v, navs.get(n, 1.0))
+            ft = funds_map[n].fund_type if n in funds_map else "debt"
+            short = "e" if ft == "equity" else "o" if ft == "other" else "d"
+            acc["gain_" + short] += gn
+            booked[short] += gn
+
+        for n, v in buys.items():
+            if v <= 0.0:
+                continue
+            if n not in buckets:
+                buckets[n] = new_folio_set()
+                navs[n] = 1.0
+                match = next((f for f in new_active if f.name == n), None)
+                if match is not None:
+                    funds_map[n] = match
+            buckets[n].invest(v, navs.get(n, 1.0), m)
+
+        return booked
+
     def run(self) -> Tuple[List[MonthlyRow], List[YearSummary],
                            List[MonthlyRow], List[YearSummary]]:
         state = self.state
@@ -1420,6 +1520,21 @@ class Engine:
             # or vice versa). Gains from the sell side are accumulated in the
             # PREVIOUS FY's tax accumulators (rebalancing happens at FY start).
             #
+            # Phase 07. Runs first and marks the FY done, so the hard-cut
+            # block below is skipped. With no plan this cannot fire and
+            # that block is reached exactly as before.
+            if (fy in rebalance_years and fy not in rebalanced_set
+                    and self.transition_plan is not None):
+                rebalanced_set.add(fy)
+                _slice_g = self._transition_slice(
+                    fy, m, "personal", p_fund_buckets, p_fund_navs,
+                    all_funds_map, acc_get(p_acc, fy))
+                if any(_slice_g.values()):
+                    _rg = rebal_gains_by_fy.setdefault(
+                        fy, {"d": 0.0, "e": 0.0, "o": 0.0})
+                    for _k, _v in _slice_g.items():
+                        _rg[_k] = _rg.get(_k, 0.0) + _v
+
             if fy in rebalance_years and fy not in rebalanced_set:
                 rebalanced_set.add(fy)
                 new_funds = state.get_funds_for_year(fy)
