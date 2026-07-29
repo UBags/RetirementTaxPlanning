@@ -110,7 +110,7 @@ def turnover_fraction(old: Mapping[str, float],
     if not w_old or not w_new:
         return 0.0
     return sum(max(0.0, w_old.get(n, 0.0) - w_new.get(n, 0.0))
-               for n in set(w_old) | set(w_new))
+               for n in sorted(set(w_old) | set(w_new)))
 
 
 def bands(boundary_fys: Sequence[int], horizon: int) -> Dict[int, Tuple[int, int]]:
@@ -408,7 +408,22 @@ def converge(project: Callable[[TransitionPlan | None], Measurement],
 
     for i in range(2, max_iterations + 1):
         m = project(plan)
-        nxt = build_plan(m.boundaries, m.spare, m.horizon, margin)
+        # Hysteresis. A boundary whose need sits almost exactly on one year's
+        # capacity flips between two widths forever -- `s3_4chunk` FY17
+        # alternated M=0 and M=1 to the cap while the other two boundaries had
+        # long settled. Flooring each pass at the widest width the INFORMED
+        # passes have reached lets the search widen but never narrow, so the
+        # flip resolves on its first occurrence instead of repeating.
+        #
+        # `seen[0]` is excluded: it is built from the unplanned baseline, whose
+        # requirement is inflated by the tax-covering sell loop and by selling
+        # late at high gain fractions. Flooring against it would lock in a
+        # window wider than any informed pass ever wanted.
+        #
+        # `widest_seen` is defined below; Python resolves it when this runs.
+        floors = widest_seen(seen[1:]) if len(seen) >= 2 else None
+        nxt = build_plan(m.boundaries, m.spare, m.horizon, margin,
+                         min_m=floors)
         if compare(nxt, plan):
             return Convergence(
                 plan=nxt, iterations=i, converged=True, oscillated=False,
@@ -465,7 +480,7 @@ def distance_to_target(values: Mapping[str, float],
         return 0.0
     w_new = normalise(new_weights)
     return sum(max(0.0, values.get(n, 0.0) - total * w_new.get(n, 0.0))
-               for n in set(values) | set(w_new))
+               for n in sorted(set(values) | set(w_new)))
 
 
 def rebalance_moves(values: Mapping[str, float],
@@ -493,7 +508,12 @@ def rebalance_moves(values: Mapping[str, float],
         return {}, {}
 
     w_new = normalise(new_weights)
-    names = set(values) | set(w_new)
+    # sorted, not raw set order: PYTHONHASHSEED randomises string hashing
+    # per process, so an unsorted walk changes the float summation order
+    # and the last bits with it. Measured before this line was sorted:
+    # three fresh processes projecting the same scenario produced three
+    # different results, which no snapshot at 1e-9 can ever pin.
+    names = sorted(set(values) | set(w_new))
     excess, deficit = {}, {}
     for n in names:
         gap = values.get(n, 0.0) - total * w_new.get(n, 0.0)

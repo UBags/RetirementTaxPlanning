@@ -102,6 +102,25 @@ _LEDGER_KEY = {"personal": "rebalance_personal", "huf": "rebalance_huf"}
 _ENTITY = {"personal": "individual", "huf": "huf"}
 
 
+# One paisa, in lakh. A plan is a DECISION -- which years a boundary may spend
+# in -- and a decision must not turn on the sixteenth significant figure.
+#
+# The engine carries ULP-level noise in its gain ledger: measured across two
+# PYTHONHASHSEED values, spare capacity agreed to twelve decimals in all sixty
+# year-purse cells and still differed in the last bits. Unquantised, the fixed
+# point AMPLIFIES that -- a 1e-16 wobble moves an instalment into a different
+# year, and the projection then differs by 1e-9, which is exactly the golden
+# snapshot tolerance. Quantising the plan's inputs stops the amplification at
+# source and leaves the engine's own noise where it was: at the last bit,
+# invisible to any comparison anyone makes.
+_QUANTUM = 1e-6
+
+
+def _q(value: float) -> float:
+    """Round a measurement to the quantum the plan is allowed to see."""
+    return round(value / _QUANTUM) * _QUANTUM
+
+
 def _spare(state: AppState, eng: Engine) -> Dict[str, Dict[int, float]]:
     """Gain each purse may still realise tax-free, after the withdrawal.
 
@@ -153,10 +172,11 @@ def measure(state: AppState, plan: Optional[TransitionPlan]) -> Measurement:
     horizon = state.horizon
     boundaries = tuple(
         Boundary(fy=fy, turnover=0.0,
-                 gain={p: _requirement(eng, fy, p, plan) for p in PURSES})
+                 gain={p: _q(_requirement(eng, fy, p, plan)) for p in PURSES})
         for fy in state.chunk_boundary_years())
-    return Measurement(boundaries=boundaries, spare=_spare(state, eng),
-                       horizon=horizon)
+    spare = {p: {fy: _q(v) for fy, v in cap.items()}
+             for p, cap in _spare(state, eng).items()}
+    return Measurement(boundaries=boundaries, spare=spare, horizon=horizon)
 
 
 def _blend(old: Measurement, new: Measurement, alpha: float) -> Measurement:

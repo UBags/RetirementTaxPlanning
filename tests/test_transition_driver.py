@@ -146,14 +146,29 @@ def test_two_chunks_converge_to_a_settled_window():
     assert w.complete, "a scenario with ample capacity left a residual"
 
 
-def test_undamped_iteration_does_not_settle():
-    """Damping is load-bearing, not a tuning nicety."""
+def test_damping_keeps_the_hysteresis_ratchet_from_overshooting():
+    """Damping is load-bearing, but not for the reason it started out as.
+
+    It was added because the raw iteration oscillated: 159.50, 60.48, 142.88,
+    93.60, 121.01, 106.60 on `s1_2chunk`. Hysteresis then made the search
+    one-way -- a window may widen but never narrow -- which settles the
+    oscillation on its own, so the undamped run now converges too.
+
+    What damping still does is stop the ratchet overshooting. Undamped, pass
+    two measures a low requirement under the wide baseline window and pass
+    three a high one under the narrow window that follows; the floor locks in
+    that spike and the window never comes back. Measured: `s1_2chunk` M7 -> M9,
+    `s2_3chunk` FY21 M5 -> M10, `s3_4chunk` FY17 M1 -> M2. Wider is not free
+    -- it straddles two allocations for longer.
+    """
     damped = plan_transitions(_state(1))
-    undamped = plan_transitions(_state(1), damping=1.0, max_iterations=6)
-    assert damped.converged
-    assert not undamped.converged, (
-        "the undamped iteration settled — this fixture no longer shows why "
-        "under-relaxation is needed")
+    undamped = plan_transitions(_state(1), damping=1.0)
+    assert damped.converged and undamped.converged
+    wide = undamped.plan.windows[0].m
+    tight = damped.plan.windows[0].m
+    assert wide > tight, (
+        f"undamped settled at M={wide}, damped at M={tight} — damping no "
+        "longer constrains the ratchet and this test proves nothing")
 
 
 def test_damping_must_be_a_fraction():
@@ -220,3 +235,59 @@ def test_clearing_the_cache_forces_a_recompute():
     a = plan_transitions(_state(1))
     clear_plan_cache()
     assert plan_transitions(_state(1)) is not a
+
+
+# ─── determinism ─────────────────────────────────────────────────────────────
+
+def test_projection_is_identical_across_hash_seeds():
+    """The whole projection must not depend on PYTHONHASHSEED.
+
+    Python randomises string hashing per process, so iterating a `set` of fund
+    names walks them in a different order each run. Float addition is not
+    associative, so an unsorted walk changes the last bits -- and the golden
+    snapshots are compared at a tolerance of 1e-9.
+
+    This shipped live in 07i-2g and surfaced as snapshots that failed
+    immediately after being regenerated, printing differences that looked
+    identical to six decimals: `243.322665 -> 243.322665`. Three fresh
+    processes projecting `s1_2chunk` produced three different results.
+
+    Two causes, and sorting only fixed the first. `transition_plan` walked
+    `set(values) | set(w_new)` in three places and now sorts them. Underneath
+    that, the engine's gain ledger carries ULP-level noise of its own -- spare
+    capacity agreed to twelve decimals across seeds and still differed in the
+    last bits -- which the fixed point amplified into 1e-9 by moving an
+    instalment into a different year. `transition_driver` quantises the plan's
+    inputs to a paisa so a decision cannot turn on the sixteenth significant
+    figure.
+
+    Runs the projection under four fixed seeds in separate interpreters and
+    demands one answer.
+    """
+    import os
+    import subprocess
+    import textwrap
+
+    script = textwrap.dedent("""
+        import hashlib, sys
+        sys.path.insert(0, '.'); sys.path.insert(0, 'tests/golden')
+        from golden_projects import PROJECTS
+        from models import AppState
+        from net_income_plan import project_plan
+        st = AppState.from_dict(PROJECTS['main']['scenarios'][1])
+        _pm, py, _hm, _hy, _s = project_plan(st)
+        print(hashlib.sha256(repr([(y.year, y.corpus_debt_huf, y.tax_huf)
+                                   for y in py]).encode()).hexdigest())
+    """)
+    root = pathlib.Path(__file__).resolve().parent.parent
+    results = {}
+    for seed in ("0", "1", "7", "20250729"):
+        env = dict(os.environ, PYTHONHASHSEED=seed)
+        proc = subprocess.run([sys.executable, "-c", script], env=env,
+                              cwd=str(root), capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stderr[-2000:]
+        results[seed] = proc.stdout.strip()
+
+    assert len(set(results.values())) == 1, (
+        "the projection depends on PYTHONHASHSEED — an unsorted set walk has "
+        f"crept back in: {results}")
