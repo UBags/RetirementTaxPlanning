@@ -73,6 +73,7 @@ __all__ = [
     "Measurement", "Convergence",
     "normalise", "turnover_fraction", "bands", "build_plan",
     "plans_equal", "spread_residual", "converge",
+    "distance_to_target", "rebalance_moves",
 ]
 
 
@@ -389,3 +390,73 @@ def converge(project: Callable[[TransitionPlan | None], Measurement],
         plan=best, iterations=max_iterations, converged=False,
         oscillated=oscillated,
         residuals=tuple(p.residual_total() for p in seen), chosen=chosen)
+
+
+# ─── translating a slice into fund movements ──────────────────────────────────
+
+def distance_to_target(values: Mapping[str, float],
+                       new_weights: Mapping[str, float]) -> float:
+    """Value that must still move to reach `new_weights`.
+
+    The sum of positive excesses: for each fund, how far it sits ABOVE its
+    share of the new allocation. Retiring funds have a target of zero, so
+    their whole balance counts. Sells and buys are equal by construction, so
+    this single number is the size of the remaining transition.
+
+    Recomputed each year rather than fixed at the window's first year. Part I
+    §7 G6 sets the target once, in rupees, at the start year; recomputing is
+    self-correcting instead -- it absorbs growth and any drift the ordinary
+    withdrawals introduce, and it cannot leave a transition reporting itself
+    complete while the portfolio is still off target. The difference is small
+    while instalments outrun growth and matters when they do not.
+    """
+    total = sum(v for v in values.values() if v > 0)
+    if total <= 0:
+        return 0.0
+    w_new = normalise(new_weights)
+    return sum(max(0.0, values.get(n, 0.0) - total * w_new.get(n, 0.0))
+               for n in set(values) | set(w_new))
+
+
+def rebalance_moves(values: Mapping[str, float],
+                    new_weights: Mapping[str, float],
+                    amount: float) -> Tuple[Dict[str, float], Dict[str, float]]:
+    """Sells and buys moving `amount` of value toward the new allocation.
+
+    Returns `(sells, buys)`, each fund name to a positive rupee amount, with
+    `sum(sells) == sum(buys) == min(amount, distance_to_target(...))`. Nothing
+    is created or destroyed: the slice leaves over-weight funds and arrives in
+    under-weight ones, pro rata to how far each is from its target.
+
+    Selling only from funds ABOVE target is what makes a partial transition
+    coherent. A naive slice that sold pro rata across the whole portfolio
+    would churn funds already at their target -- realising gain, paying exit
+    loads and moving nothing -- and the transition would never converge.
+
+    `amount` is the rupee value the year's gain budget affords, which the
+    caller obtains from `TransitionPlan.budget` via `cash_within_gain_budget`.
+    Passing an amount at or beyond the remaining distance completes the
+    transition exactly; passing more never overshoots.
+    """
+    total = sum(v for v in values.values() if v > 0)
+    if total <= 0 or amount <= 1e-12:
+        return {}, {}
+
+    w_new = normalise(new_weights)
+    names = set(values) | set(w_new)
+    excess, deficit = {}, {}
+    for n in names:
+        gap = values.get(n, 0.0) - total * w_new.get(n, 0.0)
+        if gap > 1e-12:
+            excess[n] = gap
+        elif gap < -1e-12:
+            deficit[n] = -gap
+
+    move = min(amount, sum(excess.values()), sum(deficit.values()))
+    if move <= 1e-12:
+        return {}, {}
+
+    e_tot, d_tot = sum(excess.values()), sum(deficit.values())
+    sells = {n: move * (v / e_tot) for n, v in excess.items()}
+    buys = {n: move * (v / d_tot) for n, v in deficit.items()}
+    return sells, buys

@@ -32,8 +32,10 @@ from transition_plan import (
     bands,
     build_plan,
     converge,
+    distance_to_target,
     normalise,
     plans_equal,
+    rebalance_moves,
     spread_residual,
     turnover_fraction,
 )
@@ -420,3 +422,97 @@ def test_converge_passes_the_margin_through():
 def test_converge_rejects_a_nonsense_cap():
     with pytest.raises(ValueError):
         converge(Projector([_measurement(40.0)]), max_iterations=0)
+
+
+# ─── slice to fund movements ──────────────────────────────────────────────────
+
+OLD_MIX = {"A": 40.0, "B": 40.0, "C": 20.0}       # 100 of value
+NEW_W = {"A": 20.0, "B": 40.0, "D": 40.0}         # C retires, D arrives
+
+
+def test_distance_counts_retiring_funds_in_full():
+    assert distance_to_target({"C": 50.0, "B": 50.0},
+                              {"B": 100.0}) == pytest.approx(50.0)
+
+
+def test_distance_is_zero_at_target():
+    assert distance_to_target({"A": 20.0, "B": 40.0, "D": 40.0},
+                              NEW_W) == pytest.approx(0.0)
+
+
+def test_distance_counts_reweighting_without_fund_changes():
+    """`s3_4chunk` FY17 changes no fund, only weights, and still must move."""
+    assert distance_to_target({"A": 60.0, "B": 40.0},
+                              {"A": 50.0, "B": 50.0}) == pytest.approx(10.0)
+
+
+def test_distance_of_an_empty_purse_is_zero():
+    assert distance_to_target({}, NEW_W) == pytest.approx(0.0)
+
+
+def test_moves_are_balanced_and_sized():
+    sells, buys = rebalance_moves(OLD_MIX, NEW_W, 12.0)
+    assert sum(sells.values()) == pytest.approx(12.0)
+    assert sum(buys.values()) == pytest.approx(12.0)
+
+
+def test_moves_only_sell_funds_above_target():
+    """Churning a fund already at target realises gain and moves nothing."""
+    sells, buys = rebalance_moves(OLD_MIX, NEW_W, 12.0)
+    assert set(sells) == {"A", "C"}      # B is exactly at target
+    assert set(buys) == {"D"}
+    assert "B" not in sells and "B" not in buys
+
+
+def test_a_full_slice_lands_exactly_on_target():
+    dist = distance_to_target(OLD_MIX, NEW_W)
+    sells, buys = rebalance_moves(OLD_MIX, NEW_W, dist)
+    after = dict(OLD_MIX)
+    for n, v in sells.items():
+        after[n] = after.get(n, 0.0) - v
+    for n, v in buys.items():
+        after[n] = after.get(n, 0.0) + v
+    total = sum(after.values())
+    for n, w in normalise(NEW_W).items():
+        assert after.get(n, 0.0) == pytest.approx(total * w, abs=1e-9)
+    assert after.get("C", 0.0) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_an_oversized_slice_never_overshoots():
+    dist = distance_to_target(OLD_MIX, NEW_W)
+    sells, _ = rebalance_moves(OLD_MIX, NEW_W, dist * 10)
+    assert sum(sells.values()) == pytest.approx(dist)
+
+
+def test_repeated_slices_converge_and_never_overshoot():
+    """The window in miniature: several partial moves reaching the target."""
+    values = dict(OLD_MIX)
+    start = distance_to_target(values, NEW_W)
+    assert start > 0, "fixture is already at target — proves nothing"
+
+    seen = [start]
+    for _ in range(12):
+        sells, buys = rebalance_moves(values, NEW_W, 4.0)
+        if not sells:
+            break
+        for n, v in sells.items():
+            values[n] = values.get(n, 0.0) - v
+        for n, v in buys.items():
+            values[n] = values.get(n, 0.0) + v
+        seen.append(distance_to_target(values, NEW_W))
+
+    assert seen[-1] == pytest.approx(0.0, abs=1e-9), f"did not converge: {seen}"
+    assert all(b <= a + 1e-9 for a, b in zip(seen, seen[1:])), (
+        f"distance increased during the transition: {seen}")
+    assert sum(values.values()) == pytest.approx(sum(OLD_MIX.values()))
+    assert len(seen) > 3, "converged in one step — not a partial transition"
+
+
+def test_no_moves_when_already_at_target():
+    sells, buys = rebalance_moves({"A": 20.0, "B": 40.0, "D": 40.0},
+                                  NEW_W, 50.0)
+    assert sells == {} and buys == {}
+
+
+def test_no_moves_for_a_zero_slice():
+    assert rebalance_moves(OLD_MIX, NEW_W, 0.0) == ({}, {})
