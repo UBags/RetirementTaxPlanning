@@ -913,6 +913,96 @@ One-line config change; the entire diff is snapshot movement.
 
 ---
 
+## 18A. Phase 11 — adjacent-pair overlap in the allocator. **PLANNED.**
+
+A chunk boundary's turnover is exactly `1 - weight overlap` with the previous
+chunk. Constraining that overlap at construction time is the only lever that
+reduces the transition requirement itself; everything in Phase 07 merely
+spreads whatever requirement the allocator hands it.
+
+### 18A.1 What already exists, and why it does not bind
+
+`find_best_commonality_combination` runs a Target Distribution Fitness
+Algorithm over every cross-chunk combination, targeting "~60% of unique funds
+present in ALL N chunks, >=20% in exactly N-1", with RMS std_dev as
+tiebreaker. `commonality_bonus` in the configuration is dead -- the code marks
+it "ignored, kept for backward compat".
+
+Three gaps between that and a turnover constraint:
+
+- **It counts funds, not weight.** Turnover follows value, and the two diverge
+  sharply. Measured on the fixtures: `s1_2chunk` FY16 has 47% of funds in
+  common but 59% of weight; `s3_4chunk` FY9 has 65% of funds but 79% of
+  weight. A portfolio can hit the fund-count target and still turn over 41%.
+- **It is a penalty, not a constraint.** The scorer prefers combinations
+  nearer the target distribution and picks the least-bad one. Nothing forbids
+  a low-overlap pairing when that is all the candidate set offers.
+- **It is pairwise-blind.** "Present in all N chunks" is a global property;
+  turnover is a property of each ADJACENT PAIR. `s3_4chunk` overlaps 99% at
+  FY17 and 77% at FY24, and a global count cannot tell them apart.
+
+### 18A.2 Measured overlap today
+
+| scenario | boundary | funds common | weight common | turnover |
+|---|---:|---:|---:|---:|
+| `s1_2chunk` | 16 | 47% | **59%** | 41% |
+| `s2_3chunk` | 11 | 50% | **59%** | 41% |
+| `s2_3chunk` | 21 | 81% | 85% | 15% |
+| `s3_4chunk` | 9 | 65% | 79% | 21% |
+| `s3_4chunk` | 17 | 100% | 99% | 1% |
+| `s3_4chunk` | 24 | 65% | 77% | 23% |
+| `hist_8yr` | 16 | 77% | 82% | 18% |
+
+At a 0.60 threshold five of seven boundaries already comply and the two
+failures miss by a single point, so it would reject almost nothing. The
+interesting range is 0.65 to 0.75.
+
+### 18A.3 What to build
+
+A hard feasibility filter on adjacent-pair WEIGHT overlap, applied inside
+`find_best_commonality_combination` before scoring: reject any combination
+where `sum(min(w_prev, w_next)) < threshold` for any consecutive pair. Keep
+the existing distribution penalty as the tiebreaker among survivors -- it is
+doing useful work on diversity, just not on turnover. Threshold
+configurable.
+
+### 18A.4 Sweep it; do not pick a number
+
+Run the allocator at 0.60 / 0.65 / 0.70 / 0.75 and record, per threshold:
+achieved overlap per adjacent pair, portfolio return, RMS std_dev, max_dd, and
+the resulting Phase 07 residual. Expect a plateau, not a point, exactly as
+§18 expects of the ration constant.
+
+**Monotonicity is the guard.** A tighter overlap threshold can only reduce
+turnover -- the feasible set shrinks. If measured turnover does not fall
+monotonically as the threshold rises, that is a bug signal, the same shape as
+the folio monotonicity guard in Part I §10.2.
+
+### 18A.5 Sequencing — after 08, not inside it
+
+**Do this after Phase 08, and re-measure before committing to it.**
+
+- It is a different mechanism in a different module. 08 changes the engine's
+  realisation behaviour; this changes the allocator's MILP combination
+  scorer. No shared code, no shared tests.
+- Both regenerate all ten snapshots, for unrelated reasons. Landing them
+  together puts two sets of moving numbers in one diff (§7.17), which is the
+  mechanism that hid the double debit.
+- 08 is on the reconciliation critical path and this is not. Panel (b) is one
+  chunk with no boundary at all and still reaches zero tax, so the `a2` gap is
+  entirely the missing harvest.
+- **08 may make it unnecessary.** Annual harvesting refreshes cost basis every
+  year, so a boundary's turnover would carry far less unrealised gain by the
+  time it arrives. `s3_4chunk`'s residual could shrink substantially from 08
+  alone. Regenerating every fixture before measuring that would be choosing a
+  fix before knowing the size of the problem — §20.1 rule 1.
+
+The fixtures are not conformant at any threshold above 0.59, so this phase
+carries a fixture regeneration and must not be tangled with another commit
+that moves snapshots.
+
+---
+
 ## 19. Independent of the above
 
 None of these block or help Phases 07–10. Do them when convenient.
