@@ -901,9 +901,9 @@ class Engine:
         # gain that plan budgets for the year and carries the remainder.
         self.transition_plan = transition_plan
         # Written by `_transition_slice`, read by nothing on the live path, so
-        # no snapshot can move. purse -> fy -> what that slice did and what
-        # closing the remaining distance would still cost.
-        self.transition_ledger: Dict[str, Dict[int, dict]] = {}
+        # no snapshot can move. purse -> boundary FY -> window year -> what
+        # that slice did and what closing the remaining distance would cost.
+        self.transition_ledger: Dict[str, Dict[int, Dict[int, dict]]] = {}
 
     def _annual_return(self, fy: int) -> float:
         """Blended portfolio return (used as fallback)."""
@@ -1251,7 +1251,8 @@ class Engine:
         return 0.0
 
     def _transition_slice(self, fy: int, m: int, purse: str, buckets, navs,
-                          funds_map, acc, target_fy: Optional[int] = None) -> dict:
+                          funds_map, acc, target_fy: Optional[int] = None,
+                          budget: Optional[float] = None) -> dict:
         """Move ONE instalment of a chunk transition, capped by the gain budget.
 
         The hard cut this replaces moves the whole turnover in a single FY, and
@@ -1273,7 +1274,11 @@ class Engine:
         plan = self.transition_plan
         if plan is None:
             return booked
-        budget = plan.budget(purse, fy)
+        # The budget is passed in per WINDOW. `TransitionPlan.budget` sums
+        # across every window touching the year, so using it here would let
+        # one boundary spend another's instalment wherever windows overlap --
+        # which `s2_3chunk` and `s3_4chunk` both produce.
+        budget = plan.budget(purse, fy) if budget is None else budget
         if budget <= 0.0:
             return booked
 
@@ -1325,6 +1330,24 @@ class Engine:
             return booked
         sells, buys = rebalance_moves(values, weights, amount)
 
+        # `affordable` splits the budget across funds pro rata to excess and
+        # then caps each at that fund's excess, while `rebalance_moves`
+        # distributes the slice pro rata to excess without that cap. The two
+        # splits differ slightly, so the realised gain can drift above budget
+        # -- measured at 0.006 on a budget of 4.00, about 0.14%.
+        #
+        # Small, but the whole point of a budget is that the year pays no tax,
+        # and a cap that is only approximately a cap is one the caller cannot
+        # reason about. `gain_within_cash` prices the proposed sells exactly,
+        # so one proportional correction removes almost all of it.
+        for _ in range(3):
+            realised = sum(gain_within_cash(buckets[n], navs.get(n, 1.0), v)
+                           for n, v in sells.items() if n in buckets)
+            if realised <= budget + 1e-9 or realised <= 1e-12:
+                break
+            amount *= budget / realised
+            sells, buys = rebalance_moves(values, weights, amount)
+
         for n, v in sells.items():
             if n not in buckets or v <= 0.0:
                 continue
@@ -1363,7 +1386,12 @@ class Engine:
                 remaining_gain += gain_within_cash(
                     buckets[n], navs.get(n, 1.0), over)
 
-        self.transition_ledger.setdefault(purse, {})[fy] = dict(
+        # Keyed by BOUNDARY then year. Keying by year alone would let two
+        # overlapping windows overwrite each other's record in a shared year,
+        # and summing one boundary's window is exactly what the fixed point
+        # needs to read.
+        self.transition_ledger.setdefault(purse, {}).setdefault(
+            target_fy, {})[fy] = dict(
             target_fy=target_fy,
             outstanding_before=outstanding,
             moved=amount,
@@ -1634,16 +1662,17 @@ class Engine:
             # constraint is breached and the report still says success.
             # A boundary the plan cannot fund leaves a residual, and a
             # residual is reported (METHODOLOGY §15.2), never quietly paid.
-            _win = None
+            _wins = []
             if self.transition_plan is not None and fy not in rebalanced_set:
-                _win = next((w for w in self.transition_plan.windows
-                             if w.lo <= fy <= w.hi), None)
-                if _win is not None or fy in rebalance_years:
+                _wins = [w for w in self.transition_plan.windows
+                         if w.lo <= fy <= w.hi]
+                if _wins or fy in rebalance_years:
                     rebalanced_set.add(fy)
-            if _win is not None:
+            for _w in _wins:
                 _slice_g = self._transition_slice(
                     fy, m, "personal", p_fund_buckets, p_fund_navs,
-                    all_funds_map, acc_get(p_acc, fy), target_fy=_win.fy)
+                    all_funds_map, acc_get(p_acc, fy), target_fy=_w.fy,
+                    budget=_w.instalments.get("personal", {}).get(fy, 0.0))
                 if any(_slice_g.values()):
                     _rg = rebal_gains_by_fy.setdefault(
                         fy, {"d": 0.0, "e": 0.0, "o": 0.0})
@@ -2291,16 +2320,17 @@ class Engine:
             # only the buckets differ. The HUF's own tax bands make its budget
             # a separate line in the plan, which is why headroom is not
             # fungible between the two.
-            _win_h = None
+            _wins_h = []
             if self.transition_plan is not None and fy not in h_rebalanced_set:
-                _win_h = next((w for w in self.transition_plan.windows
-                               if w.lo <= fy <= w.hi), None)
-                if _win_h is not None or fy in rebalance_years:
+                _wins_h = [w for w in self.transition_plan.windows
+                           if w.lo <= fy <= w.hi]
+                if _wins_h or fy in rebalance_years:
                     h_rebalanced_set.add(fy)
-            if _win_h is not None:
+            for _w_h in _wins_h:
                 _slice_h = self._transition_slice(
                     fy, m, "huf", h_fund_buckets, p_fund_navs,
-                    all_funds_map, acc_get(h_acc, fy), target_fy=_win_h.fy)
+                    all_funds_map, acc_get(h_acc, fy), target_fy=_w_h.fy,
+                    budget=_w_h.instalments.get("huf", {}).get(fy, 0.0))
                 if any(_slice_h.values()):
                     _rgh = h_rebal_gains_by_fy.setdefault(
                         fy, {"d": 0.0, "e": 0.0, "o": 0.0})

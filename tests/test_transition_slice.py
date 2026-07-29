@@ -203,10 +203,11 @@ def test_a_pre_boundary_window_actually_pre_transitions():
 
 # ─── the exact requirement measurement (07i-2c) ──────────────────────────────
 
-def _ledger(plan):
+def _ledger(plan, boundary: int = BOUNDARY_FY):
+    """The personal slice records for one boundary: {window year: record}."""
     eng = Engine(_state(), transition_plan=plan)
     eng.run()
-    return eng.transition_ledger.get("personal", {})
+    return eng.transition_ledger.get("personal", {}).get(boundary, {})
 
 
 def test_gain_within_cash_is_zero_for_a_fresh_lot():
@@ -384,3 +385,59 @@ def test_the_ledger_records_both_purses():
     eng.run()
     assert set(eng.transition_ledger) == {"personal", "huf"}, (
         f"ledger covers {sorted(eng.transition_ledger)} only")
+    assert set(eng.transition_ledger["personal"]) == {BOUNDARY_FY}, (
+        "ledger is not keyed by boundary")
+
+
+# ─── overlapping windows (07i-2e) ────────────────────────────────────────────
+
+def _two_window_plan(budget_a: float, budget_b: float) -> TransitionPlan:
+    """Two boundaries whose windows share years FY14-18.
+
+    `s1_2chunk` has a single real boundary, so the second window names FY22 as
+    a target it will never fully reach. That is enough to prove the engine
+    keeps two windows' budgets apart, which is the property under test.
+    """
+    win_a = Window(fy=BOUNDARY_FY, m=6, lo=10, hi=18, band=(1, 30),
+                   instalments={"personal": {y: budget_a for y in range(10, 19)},
+                                "huf": {y: budget_a for y in range(10, 19)}},
+                   residual={"personal": 0.0, "huf": 0.0}, clamped=False)
+    win_b = Window(fy=22, m=4, lo=14, hi=26, band=(1, 30),
+                   instalments={"personal": {y: budget_b for y in range(14, 27)},
+                                "huf": {y: budget_b for y in range(14, 27)}},
+                   residual={"personal": 0.0, "huf": 0.0}, clamped=False)
+    return TransitionPlan((win_a, win_b))
+
+
+def test_overlapping_windows_are_recorded_separately():
+    eng = Engine(_state(), transition_plan=_two_window_plan(3.0, 3.0))
+    eng.run()
+    led = eng.transition_ledger["personal"]
+    assert set(led) == {BOUNDARY_FY, 22}, (
+        f"ledger keyed {sorted(led)} — overlapping windows collided")
+    shared = set(led[BOUNDARY_FY]) & set(led[22])
+    assert shared, "the fixture's windows do not actually overlap"
+
+
+def test_each_window_respects_its_own_instalment():
+    """`TransitionPlan.budget` sums across windows; a slice must not.
+
+    Before the budget was passed per window, the first window covering a year
+    was served with the SUM of every window's instalment for it, so one
+    boundary could spend another's allowance.
+
+    Independence cannot be tested directly -- both windows act on the same
+    portfolio, so one's moves genuinely change what the other has left to do.
+    What IS checkable is that no window books more gain in a year than its own
+    instalment allows, which is precisely the property that summing broke.
+    """
+    plan = _two_window_plan(3.0, 12.0)
+    eng = Engine(_state(), transition_plan=plan)
+    eng.run()
+    by_boundary = {w.fy: w for w in plan.windows}
+    for boundary, rows in eng.transition_ledger["personal"].items():
+        allowed = by_boundary[boundary].instalments["personal"]
+        for fy, rec in rows.items():
+            assert rec["gain"] <= allowed.get(fy, 0.0) + 1e-6, (
+                f"boundary FY{boundary} booked {rec['gain']:.4f} in FY{fy} "
+                f"against its own instalment of {allowed.get(fy, 0.0):.4f}")
