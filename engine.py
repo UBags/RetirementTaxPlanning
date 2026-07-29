@@ -1187,7 +1187,7 @@ class Engine:
         return 0.0
 
     def _transition_slice(self, fy: int, m: int, purse: str, buckets, navs,
-                          funds_map, acc) -> dict:
+                          funds_map, acc, target_fy: Optional[int] = None) -> dict:
         """Move ONE instalment of a chunk transition, capped by the gain budget.
 
         The hard cut this replaces moves the whole turnover in a single FY, and
@@ -1214,14 +1214,22 @@ class Engine:
             return booked
 
         state = self.state
-        new_active = [f for f in state.get_funds_for_year(fy) if f.allocation > 0]
+        # The target is the allocation the window is transitioning INTO, which
+        # is the boundary year's chunk -- NOT `get_funds_for_year(fy)`. In a
+        # window year before the boundary those differ, and reading the
+        # calendar year's chunk would aim the slice at the allocation the
+        # portfolio already holds and move nothing.
+        target_fy = fy if target_fy is None else target_fy
+        new_active = [f for f in state.get_funds_for_year(target_fy)
+                      if f.allocation > 0]
         if not new_active:
             return booked
-        old_funds = state.get_funds_for_year(fy - 1) if fy > 1 else []
-        names = ({f.name for f in new_active}
-                 | {f.name for f in old_funds if f.allocation > 0})
-        values = {n: buckets[n].current_value(navs.get(n, 1.0))
-                  for n in names if n in buckets}
+        # Everything currently held, not just the two chunks either side: a
+        # window opening several years early can still be carrying a fund from
+        # an earlier chunk that neither list mentions.
+        values = {n: bk.current_value(navs.get(n, 1.0))
+                  for n, bk in buckets.items()}
+        values = {n: v for n, v in values.items() if v > 0.0}
         if not values:
             return booked
 
@@ -1520,15 +1528,32 @@ class Engine:
             # or vice versa). Gains from the sell side are accumulated in the
             # PREVIOUS FY's tax accumulators (rebalancing happens at FY start).
             #
-            # Phase 07. Runs first and marks the FY done, so the hard-cut
-            # block below is skipped. With no plan this cannot fire and
-            # that block is reached exactly as before.
-            if (fy in rebalance_years and fy not in rebalanced_set
-                    and self.transition_plan is not None):
-                rebalanced_set.add(fy)
+            # Phase 07. Fires in EVERY year of a transition window, not only
+            # at the boundary -- that is the whole point: the turnover is
+            # spread across years that each have tax-free headroom to spend,
+            # instead of landing in one. Marking the FY means the hard-cut
+            # block below is skipped, including at the boundary itself. With
+            # no plan none of this can fire and that block is reached exactly
+            # as before.
+            #
+            # A plan is AUTHORITATIVE. Where one exists the hard cut never
+            # fires -- not even at a boundary no window happens to cover.
+            # Letting it through would silently complete a transition the plan
+            # deliberately did not budget for, which is the same failure as a
+            # scheduler widening its own window to buy a nicer tax figure: the
+            # constraint is breached and the report still says success.
+            # A boundary the plan cannot fund leaves a residual, and a
+            # residual is reported (METHODOLOGY §15.2), never quietly paid.
+            _win = None
+            if self.transition_plan is not None and fy not in rebalanced_set:
+                _win = next((w for w in self.transition_plan.windows
+                             if w.lo <= fy <= w.hi), None)
+                if _win is not None or fy in rebalance_years:
+                    rebalanced_set.add(fy)
+            if _win is not None:
                 _slice_g = self._transition_slice(
                     fy, m, "personal", p_fund_buckets, p_fund_navs,
-                    all_funds_map, acc_get(p_acc, fy))
+                    all_funds_map, acc_get(p_acc, fy), target_fy=_win.fy)
                 if any(_slice_g.values()):
                     _rg = rebal_gains_by_fy.setdefault(
                         fy, {"d": 0.0, "e": 0.0, "o": 0.0})
