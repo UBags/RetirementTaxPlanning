@@ -782,57 +782,77 @@ success while over-committing, which is the B1d-ii shape.
 6. **Carry the balance forward.** Instalments track capacity, not a schedule.
     In the reference run they went 4.15, 10.26, 6.96, 5.44, 2.41, 1.20.
 
-### 15.3 Predicted diff — write this down before running
+### 15.3 What was predicted, and what happened. **SHIPPED, HEAD `3f2fd20`.**
 
-**Amended after measurement — patchers 07a–07e, HEAD `725bb46`.** The original
-prediction assumed windows could open anywhere. They cannot. §15.2's policy is
-now fixed: windows are centred on N per `N ± (M ± m)` and hard-capped so a
-window never crosses a neighbouring boundary. Each chunk's portfolio is the
-minimum-risk portfolio achieving THAT chunk's target return, so it only does
-its job while actually held during that chunk; a window running past a
-neighbouring boundary is a mandate breach, not a tax optimum. What follows is
-the measured consequence.
+Phase 07 is live. `project_plan` settles a transition plan before projecting
+unless one is supplied or `auto_transition=False`.
 
-| scenario | tax now | after 07 | boundary | M | window |
-|---|---:|---:|---|---:|---|
-| `s0_1chunk` | 0.00 | 0.00 | — | — | one chunk, nothing to schedule |
-| `s1_2chunk` | 74.78 | ~0 | FY16 | 9 | FY7–25 |
-| `s2_3chunk` | 51.61 | ~0 | FY11 | 5 | FY6–16 |
-| | | | FY21 | 4 | FY17–25 |
-| `s3_4chunk` | 106.76 | **~25.5** | FY9 | 2 | FY7–11 |
-| | | | FY17 | 0 | FY17 |
-| | | | FY24 | 7, clamped | FY17–30 |
-| `hist_8yr` | 40.90 | ~0 | FY16 | 6 | FY10–22 |
+| scenario | tax before | tax after | corpus before | corpus after | windows |
+|---|---:|---:|---:|---:|---|
+| `s0_1chunk` | 0.00 | 0.00 | 1708.6 | 1708.6 | none |
+| `s1_2chunk` | 74.78 | **0.10** | 1211.7 | **1682.0** | FY16 M7 |
+| `s2_3chunk` | 51.61 | **0.00** | 1304.0 | **1684.3** | FY11 M5, FY21 M5 |
+| `s3_4chunk` | 106.76 | **0.11** | 1339.2 | **1795.9** | FY9 M2, FY17 M1, FY24 M7 |
+| `hist_8yr` | 40.90 | **0.00** | 1760.5 | **2043.2** | FY16 M5 |
 
-Four corrections to the original prediction:
+**274.05 of lifetime tax across the corpus becomes 0.21.**
+`rebalance_tax_paid` goes to zero everywhere. The corpus effect exceeds the
+tax saving -- `s1_2chunk` gains 470 on a 74.68 saving -- because tax not paid
+compounds for the remaining horizon. `s0_1chunk` does not move at all: one
+chunk, no boundary, no plan. That was the control and it held.
 
-1. **`s3_4chunk` FY24 does NOT reach zero.** M clamps at 7 against its band of
-   FY17–30, funding 127.2 of the 237.2 it must realise and leaving **110.0
-   unfunded** — 79.4 personal, 30.6 HUF. Priced, that residual costs 30.83
-   dumped in one year and **25.51 spread across the band**. Treating
-   "FY24 → ~0" as an acceptance test would fail a correct implementation.
-2. **FY17 does open a window, at M = 0.** The original said no window should
-   open there. It books 11.4 of gain on 1.1% turnover and absorbs all of it
-   within its own year. The correct pin is "no window WIDER than M = 0", and
-   the general rule is not "turnover ≈ 0" but **"year N covers its own gain"**,
-   which needs no threshold.
-3. **Headroom is per purse and is not fungible.** The personal and HUF
-   rebalances are separate operations — `engine.py:1435` and `2058` — each
-   bounded by its own entity's bands. Pooling them understates the window:
-   `hist_8yr` FY16 needs M = 6, not the M = 5 a pooled calculation reports.
-4. **The residual is spread, never dumped.** Part I §8: once tax is
-   unavoidable it is still a choice where to pay it. Almost all of the 5.3
-   saving is the HUF — 5.89 → 1.59, a narrow nil band rewarding thin annual
-   slices — while personal moves only 24.94 → 23.92.
+#### The prediction was wrong twice, in the same direction
 
-Unchanged from the original: total corpus rises materially in `s1`, `s2`,
-`s3` and `hist_8yr`; `s0_1chunk` does not move; all ten snapshots move.
+The first amendment (07a-07e) said `s3_4chunk` FY24 would retain **~25.5**. It
+retains **0.11**. It also gave M = 9 / 5 / 4 / 0 / 7 / 6 where the settled
+plan gives 7 / 5 / 5 / 2 / 1 / 7 / 5.
 
-**Every figure here is a first-order screen on TODAY's corpus path, not a
-prediction of the post-fix run.** Spreading a transition changes the
-withdrawals, which changes the spare profile. The FY24–26 zeros in the spare
-column are the current hard cut's own damage, and some of that will reappear
-as capacity once the cut is gone.
+Both errors came from the same place: those figures were screens taken on the
+HARD-CUT corpus path, and the requirement measured there is inflated by the
+tax-covering sell loop and by selling late at high gain fractions. The
+residual gain the driver reports (86.4 on `s3_4chunk`) also produces far less
+tax than a static screen suggests, because spreading the transition hands back
+capacity the screen could not see.
+
+**A screen measured on the behaviour being replaced is not a prediction of the
+replacement.** Both amendments to this section were needed because that was
+treated as though it were.
+
+#### What the fixed point cost to get right
+
+Four defects, none of which the golden suite could have caught on its own:
+
+1. **Overlapping windows shared a budget.** The call sites took the first
+   window covering a year while `TransitionPlan.budget` summed across all of
+   them, so one boundary could spend another's instalment.
+2. **The gain cap was approximate.** Realised gain drifted 0.14% above budget
+   because `affordable` and `rebalance_moves` split the slice differently.
+3. **`s3_4chunk` never settled.** FY17's need landed almost exactly on its own
+   year's capacity, so it alternated M=0 and M=1 to the cap. Under-relaxation
+   damps a measurement; it cannot damp a threshold. Hysteresis -- floor M at
+   the widest width the informed passes reached -- settles it in four passes.
+4. **The projection depended on `PYTHONHASHSEED`.** Two causes. Unsorted
+   `set` walks in `transition_plan`, and beneath them ULP-level noise in the
+   engine's gain ledger that the fixed point AMPLIFIED: spare capacity agreed
+   across seeds to twelve decimals in all sixty year-purse cells and still
+   differed in the last bits, which moved an instalment into a different year
+   and shifted the projection by 1e-9 -- exactly the snapshot tolerance. Sets
+   are now sorted and the plan's inputs quantised to a paisa, because a
+   decision must not turn on the sixteenth significant figure.
+
+The fourth is the one worth carrying forward. Noise that had been harmless for
+the life of the project became load-bearing the moment something started
+making decisions from it, and it surfaced as snapshots that failed immediately
+after being regenerated, printing differences that read as identical:
+`243.322665 -> 243.322665`. `test_projection_is_identical_across_hash_seeds`
+pins it under four fixed seeds in separate interpreters.
+
+#### What Phase 07 does NOT do
+
+It does not close the gap to the standalone model. Configuration `a2` is still
+22.11 against 0.29, and panel (b) is a single chunk with no boundary at all --
+so that gap is the missing debt harvest, which is Phase 08. Phase 07 removes
+boundary tax; it does not create basis.
 
 **Falsifier: if any scenario's lifetime tax rises, it does not ship.**
 
