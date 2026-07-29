@@ -902,6 +902,114 @@ worth anything.
 
 ---
 
+## 16A. What "good enough" means, measured against fixed deposits
+
+Absolute rupee thresholds were the wrong yardstick and produced the wrong
+verdicts. `s3_4chunk` at 0.90 of lifetime tax was called a failure against a
+0.5 cut-off, when the honest question is what the same corpus would have cost
+in the alternative anyone would actually have chosen.
+
+### 16A.1 The benchmark
+
+`YearSummary.fd_tax_benchmark` already computes it: the corpus held at the
+per-year FD rate, taxed at slab alongside assessable other income. Summed over
+the plan it is **23.04** on the `main` fixtures and **30.06** on `hist_8yr`.
+
+**A lifetime tax reduction of 95% or more against the FD benchmark is
+acceptable.** The effort continues below that, but the phase ships.
+
+| scenario | FD benchmark | lifetime tax | reduction |
+|---|---:|---:|---:|
+| `s0_1chunk` | 23.04 | 0.00 | 100.00% |
+| `s1_2chunk` | 23.04 | 0.00 | 100.00% |
+| `s2_3chunk` | 23.04 | 0.02 | 99.91% |
+| `s3_4chunk` | 23.04 | 0.90 | **96.09%** |
+| `hist_8yr` | 30.06 | 0.01 | 99.97% |
+
+Two properties of the denominator, both conservative. It uses a STATIC corpus,
+so it earns no compounding an actual FD would. And it is personal-only -- the
+HUF pays nothing in it. Both understate the real FD burden, so every
+percentage above is a floor rather than a flattering estimate.
+
+### 16A.2 Corpus is the ornament, tax is the target
+
+End corpus nets everything and would be the right objective under certainty.
+There is none, so the operative objective is the immediate and certain one:
+minimise tax outflow, and take the corpus that follows. They agree closely
+enough in practice that optimising the first gets near the second.
+
+**Stop rules.** Below 95% of the FD benchmark, keep going. Above it, stop when
+successive iterations buy less than 2 to 3 of end corpus -- past that there is
+no more blood in the stone, and further tuning is fitting to five synthetic
+fixtures rather than improving the mechanism (§20.1 rule 2).
+
+---
+
+## 16B. Why the harvest needs its own folio
+
+### 16B.1 The FIFO problem
+
+Harvesting by re-basing units inside the SAME folio is not physically
+realisable. A real sell-and-rebuy issues new units with a new purchase date,
+which go to the BACK of the FIFO queue, leaving the untouched low-basis units
+to be sold first. An implementation that re-bases in place leaves the
+harvested high-basis units at the front, so they are sold first -- which is
+favourable, and fictional.
+
+Measured, both ways, with the harvest otherwise identical:
+
+| scenario | re-based in place | re-based at back of queue |
+|---|---:|---:|
+| `s1_2chunk` | 0.00 | 0.01 |
+| `s2_3chunk` | 0.02 | 0.02 |
+| `s3_4chunk` | **0.90** | **2.17** |
+| `hist_8yr` | 0.01 | 0.00 |
+
+In-place flatters `s3_4chunk` by 1.27. Against the FD benchmark the realisable
+single-folio figure is **90.58%**, which is the only number in the corpus that
+fails §16A.1 -- and it fails on the one scenario folios exist to help.
+
+Neither variant is what the plan wants. One is unreal; the other is the
+counterproductive case. **The harvest must buy into a NEW FOLIO**, where the
+question does not arise: folios are selected by gain fraction, not by a single
+FIFO queue, so harvested units are chosen for later sale when that is cheapest
+rather than by queue position.
+
+This reverses the reason §17 gives for its own sequencing. Folios are not
+waiting on the water-fill for basis to place; **the water-fill is waiting on
+folios to be physically realisable at all.** Phase 08 and Phase 09 land
+together.
+
+### 16B.2 How many folios
+
+A new folio every harvest year is the theoretical optimum: every sale draws
+the highest available cost basis, so gain and therefore tax are minimised. It
+is also thirty folios in one fund, which is not a portfolio anyone would
+recognise and invites questions the tax saving does not justify answering.
+
+So the count is a constrained optimum, not a maximum. `folio_max_cohorts` is
+the lever and currently sits at 5. **Sweep it** -- 1, 2, 3, 5, 8, 10, one per
+year -- and record lifetime tax and end corpus per value against the FD
+benchmark. Expect a knee: most of the benefit in the first few folios, then a
+plateau. Take the smallest count on the plateau, not the largest count
+available.
+
+### 16B.3 The monotonicity invariant
+
+**More folios must never increase lifetime tax.** A folio is an additional
+option for the seller: opening one can only widen the choice of which units to
+realise, never narrow it. If measured tax rises as `folio_max_cohorts` rises,
+the folio machinery is not what is wrong -- **the withdrawal ordering or the
+FIFO lot selection is**, and it was wrong before the folios were opened.
+
+This belongs as a test that sweeps the threshold across all five fixtures and
+asserts lifetime tax is non-increasing, written BEFORE the folio work so it is
+a live check during rather than a verdict after. It is the same shape as the
+folio monotonicity guard in Part I §10.2, and the same shape as the argument
+that a tighter overlap constraint can only reduce turnover (§18A.4).
+
+---
+
 ## 17. Phase 09 — raise `folio_cohort_threshold`. **LIVE.**
 
 One-line config change; the entire diff is snapshot movement.
