@@ -259,7 +259,7 @@ def solve_schedule(
                         converged=converged)
 
 
-def project_plan(state, **engine_kwargs):
+def project_plan(state, auto_transition: bool = True, **engine_kwargs):
     """Solve the schedule, then project the plan that delivers it.
 
     THE Phase B entry point. Returns the engine's usual four sequences plus
@@ -278,6 +278,20 @@ def project_plan(state, **engine_kwargs):
 
     from engine import Engine
     from pro_rated_utils import months_in_fy
+
+    # Phase 07. A chunk boundary used to move the whole portfolio in one FY,
+    # and on the golden corpus that single act was very nearly the only source
+    # of lifetime tax. Unless a plan is supplied or auto_transition is off,
+    # settle one first and project against it.
+    #
+    # `plan_transitions` calls back into this function, so the inner calls
+    # must have auto_transition off or the recursion never bottoms out. The
+    # plan is cached on (identity, content fingerprint), so the five golden
+    # scenarios each compute theirs once rather than once per caller.
+    if auto_transition and "transition_plan" not in engine_kwargs:
+        from transition_driver import plan_transitions
+        if state.chunk_boundary_years():
+            engine_kwargs["transition_plan"] = plan_transitions(state).plan
 
     years = list(state.fy_range())
     targets = prorated_targets(

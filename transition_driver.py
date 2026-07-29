@@ -37,9 +37,12 @@ is deliberate and bounded rather than incidental.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import sys
 from typing import Dict, Optional
 
+from configuration import config
 from engine import Engine, free_gain_capacity
 from models import AppState
 from net_income_plan import project_plan
@@ -55,7 +58,45 @@ from transition_plan import (
     widest_seen,
 )
 
-__all__ = ["measure", "plan_transitions"]
+__all__ = ["measure", "plan_transitions", "clear_plan_cache"]
+
+# Settled plans, keyed by (identity, content fingerprint).
+_PLAN_CACHE: Dict[tuple, Convergence] = {}
+
+
+def _cache_key(state: AppState, margin: float, damping: float,
+               max_iterations: int) -> tuple:
+    """Namespace by user; guarantee correctness by content.
+
+    `user_name` does not exist on `AppState` yet, so this reads it defensively
+    and will start namespacing the moment it does. Until then every state
+    shares the identity `None`, which is exactly why the identity cannot be
+    the whole key: the five golden fixtures carry no identity at all, and
+    keying on it alone would hand `s3_4chunk`'s plan to `s0_1chunk`.
+
+    The fingerprint matters beyond tests. This tool is re-run monthly against
+    a portfolio that has moved -- new NAVs, a changed requirement, an edited
+    chunk. A cache keyed on the user alone would return January's plan in
+    February and report it as settled. The gates go in too: `huf_ration_k` and
+    `folio_cohort_threshold` change the run, so they change the plan.
+    """
+    ident = (getattr(state, "user_name", None)
+             or getattr(state, "user_id", None))
+    payload = json.dumps(state.to_dict(), sort_keys=True, default=str)
+    gates = (config.get("huf_ration_k", 0.0),
+             config.get("folio_cohort_threshold", 0.0))
+    # The search parameters belong in the key too. They change the answer, so
+    # a key without them hands a damped plan back to an undamped caller --
+    # caught by `test_undamped_iteration_does_not_settle` the moment the cache
+    # landed.
+    return (ident,
+            hashlib.sha256((payload + repr(gates)).encode("utf-8")).hexdigest()[:16],
+            round(margin, 9), round(damping, 9), int(max_iterations))
+
+
+def clear_plan_cache() -> None:
+    """Drop every cached plan. For tests and for an explicit recompute."""
+    _PLAN_CACHE.clear()
 
 _LEDGER_KEY = {"personal": "rebalance_personal", "huf": "rebalance_huf"}
 _ENTITY = {"personal": "individual", "huf": "huf"}
@@ -103,7 +144,9 @@ def _requirement(eng: Engine, boundary: int, purse: str,
 
 def measure(state: AppState, plan: Optional[TransitionPlan]) -> Measurement:
     """Project under `plan` and read back what a planner needs."""
-    *_rest, solution = project_plan(state, transition_plan=plan)
+    # auto_transition off: this IS the thing that builds the plan.
+    *_rest, solution = project_plan(state, auto_transition=False,
+                                    transition_plan=plan)
     eng = Engine(state, gross_schedule=solution.gross, transition_plan=plan)
     eng.run()
 
@@ -132,7 +175,8 @@ def _blend(old: Measurement, new: Measurement, alpha: float) -> Measurement:
 
 def plan_transitions(state: AppState, margin: float = 1.2,
                      max_iterations: int = 12,
-                     damping: float = 0.5) -> Convergence:
+                     damping: float = 0.5,
+                     use_cache: bool = True) -> Convergence:
     """The settled transition plan for `state`, and how it was reached.
 
     UNDER-RELAXATION, AND WHY IT IS NEEDED
@@ -154,6 +198,11 @@ def plan_transitions(state: AppState, margin: float = 1.2,
     """
     if not 0.0 < damping <= 1.0:
         raise ValueError("damping must be in (0, 1]")
+
+    key = (_cache_key(state, margin, damping, max_iterations)
+           if use_cache else None)
+    if key is not None and key in _PLAN_CACHE:
+        return _PLAN_CACHE[key]
     prev: Dict[str, Optional[Measurement]] = {"m": None}
     seen: list = []
 
@@ -169,10 +218,15 @@ def plan_transitions(state: AppState, margin: float = 1.2,
         prev["m"] = got
         return got
 
+    def _remember(res: Convergence) -> Convergence:
+        if key is not None:
+            _PLAN_CACHE[key] = res
+        return res
+
     result = converge(project, max_iterations=max_iterations,
                       margin=margin, compare=plans_same_shape)
     if result.converged or prev["m"] is None:
-        return result
+        return _remember(result)
 
     # A boundary whose need lands almost exactly on one year's capacity
     # chatters between two widths forever -- `s3_4chunk` FY17 alternated M=0
@@ -190,11 +244,11 @@ def plan_transitions(state: AppState, margin: float = 1.2,
     floors = widest_seen(informed + [result.plan])
     settled = build_plan(prev["m"].boundaries, prev["m"].spare,
                          prev["m"].horizon, margin, min_m=floors)
-    return Convergence(
+    return _remember(Convergence(
         plan=settled, iterations=result.iterations, converged=False,
         oscillated=result.oscillated,
         residuals=result.residuals + (settled.residual_total(),),
-        chosen=len(result.residuals))
+        chosen=len(result.residuals)))
 
 
 def main(argv=None) -> None:

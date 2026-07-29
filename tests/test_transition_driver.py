@@ -27,7 +27,12 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent / "golden"))
 from golden_projects import PROJECTS  # noqa: E402
 
 from models import AppState  # noqa: E402
-from transition_driver import _blend, measure, plan_transitions  # noqa: E402
+from transition_driver import (  # noqa: E402
+    _blend,
+    clear_plan_cache,
+    measure,
+    plan_transitions,
+)
 from transition_plan import PURSES, Boundary, Measurement  # noqa: E402
 
 
@@ -155,3 +160,63 @@ def test_damping_must_be_a_fraction():
     for bad in (0.0, -0.5, 1.5):
         with pytest.raises(ValueError):
             plan_transitions(_state(0), damping=bad)
+
+
+# ─── the plan cache (07i-2g) ─────────────────────────────────────────────────
+
+def test_cache_returns_the_same_plan_for_the_same_state():
+    clear_plan_cache()
+    a = plan_transitions(_state(1))
+    b = plan_transitions(_state(1))
+    assert a is b, "a second call recomputed instead of hitting the cache"
+
+
+def test_cache_distinguishes_different_states():
+    """The failure this exists to prevent.
+
+    The golden fixtures carry no identity at all, so a cache keyed on the user
+    alone would collapse all five onto one entry and hand `s3_4chunk`'s plan
+    to `s0_1chunk`.
+    """
+    clear_plan_cache()
+    one = plan_transitions(_state(0))
+    two = plan_transitions(_state(1))
+    assert one is not two
+    assert one.plan.windows == ()
+    assert len(two.plan.windows) == 1
+
+
+def test_cache_notices_a_changed_requirement():
+    """Monthly re-evaluation is the point: the inputs move every month.
+
+    Keyed on identity alone this returns January's plan in February and
+    reports it settled.
+    """
+    clear_plan_cache()
+    before = plan_transitions(_state(1))
+    edited = _state(1)
+    for fy in list(edited.annual_requirements):
+        edited.annual_requirements[fy] *= 1.4
+    after = plan_transitions(edited)
+    assert after is not before, "an edited requirement reused the old plan"
+
+
+def test_cache_notices_changed_search_parameters():
+    clear_plan_cache()
+    a = plan_transitions(_state(1))
+    b = plan_transitions(_state(1), damping=1.0, max_iterations=6)
+    assert a is not b, "different search parameters shared a cache entry"
+
+
+def test_use_cache_false_always_recomputes():
+    clear_plan_cache()
+    a = plan_transitions(_state(1), use_cache=False)
+    b = plan_transitions(_state(1), use_cache=False)
+    assert a is not b
+
+
+def test_clearing_the_cache_forces_a_recompute():
+    clear_plan_cache()
+    a = plan_transitions(_state(1))
+    clear_plan_cache()
+    assert plan_transitions(_state(1)) is not a
