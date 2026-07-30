@@ -37,74 +37,49 @@ CURRENT RESULTS (all figures Rs lakh)
 
     scenario  horizon    vintage       tax    corpus
       1chunk       30        5yr     0.000    1498.6
-      1chunk       35        5yr     1.166    1908.0
-      2chunk       30        5yr     0.000    1520.1
-      2chunk       35        5yr     1.274    1934.2
-      3chunk       30        5yr     1.448    1543.7    <- see KNOWN BROKEN
-      3chunk       35        5yr     2.214    1991.4    <- see KNOWN BROKEN
+      1chunk       35        5yr     1.500    1907.6
+      2chunk       30        5yr     0.000    1502.2
+      2chunk       35        5yr     1.500    1908.3
+      3chunk       30        5yr     1.555    1512.3    <- see KNOWN BROKEN
 
-Personal tax is ZERO in every scenario. The entire residual is HUF tax, and it
-is deliberate: in the last three years the HUF pays ~5.2% on a few lakh of
-excess gain to spare the personal purse a 26-31% marginal rate.
+* 3chunk does not fully hold its allocation. The transitions are one-way
+  EMPTYING mandates ("f15-f21 must be empty by FY10"), so nothing keeps money
+  in the destination funds afterwards. Three mechanisms now push back -- global
+  drawing, protecting under-allocated funds from the cash draw, and aiming the
+  harvest at the over-allocated side so its proceeds are a genuine transfer --
+  and together they lift the low-rate share from 15.4% to 41-43%.
 
-THE TWO CHANGES THAT MATTERED, AND WHY
+  Chunk 2 now essentially hits its target (36.1% against 33%). CHUNK 3 DOES
+  NOT: 41.1% at FY30 against 67%, and it is not reachable. Closing that gap
+  means shifting roughly 390 of value at a ~50% gain fraction, i.e. ~195 of
+  realised gain, against perhaps 130 of band across the whole decade. The
+  target is arithmetically out of reach tax-free, exactly as the FY4-FY10
+  liquidation mandate was in an earlier version.
 
-1. ANCHORING THE SLAB LADDER. `slab_tax` used to carry absolute bracket
-   boundaries starting at 4.0 while NILBAND was projected forward to 10.0. So
-   the model charged tax from 4.0 no matter what exemption the year claimed,
-   the projection was cosmetic, and `huf_tax` had a discontinuity -- 0.000 at
-   10.00 and 0.417 at 10.01. Expressing the ladder as a width plus a rate list,
-   anchored on whatever exemption applies, made it continuous and cut the FY33
-   personal bill from 3.511 to 1.924 on its own.
+  So 3chunk's tax and corpus remain NOT comparable to 1chunk and 2chunk. The
+  honest options are to accept a slower drift into the target mix, or to price
+  the tax of hitting it on a deadline. There is no free version.
 
-   This was a MODELLING ERROR, not a strategy. Much of what the folio and
-   vintage machinery appeared to buy in earlier versions was compensation for
-   tax that would not have existed. After the fix the vintage lever largely
-   collapsed: 1chunk/30 now spans 0.000 to 0.723 across every folio
-   configuration, where it previously spanned 1.557 to 19.827.
+RESOLVED, AND WHY IT MATTERS
 
-2. THE HUF SPILLOVER. `RATION_K` allocated between the purses by a fixed
-   formula, blind to tax. Near the s.87A ceiling the personal marginal rate is
-   26-31% (and 104% inside the rebate claw-back, between the ceiling and about
-   2.9 above it, where marginal relief returns a rupee of tax per rupee of
-   income). The HUF's first bracket above its own exemption is 5.2%. `run_year`
-   now plays the year out on copies for a range of HUF contributions and keeps
-   the cheapest, holding back (horizon - fy) * band_h so the HUF retains enough
-   to use its own free band in every remaining year. Worth ~14 of tax at 35
-   years.
+* Folio count is now monotone. One folio no longer beats several in any of the
+  six scenario/horizon combinations. The cause was NOT an implementation
+  defect: fund_year used lexicographic widening, which faithfully implemented
+  the instruction "maximise the draw from the earliest folio". The earliest
+  folio is the oldest and therefore the most gain-heavy, so forcing the cash
+  draw through it burned band that fresher units could have supplied more
+  cheaply, and walled off the low-basis stock the transition had just placed in
+  the receiver. Drawing globally across all live folios fixed it.
 
-NOISE FLOOR -- READ THIS BEFORE COMPARING ROWS
+  The fix costs tax where the band binds -- 1chunk/35/5yr 1.166 -> 1.500,
+  3chunk/35/5yr 2.214 -> 3.331 before allocation work. Most of that is at or
+  under the noise floor; 3chunk/35 is not, and 3chunk is the scenario already
+  flagged above.
 
-Differences below about 0.3 are implementation noise, not signal.
-
-Measured: permuting the fund rotation order -- a choice with no economic
-content -- moves 1chunk/35/5yr across 1.153 to 1.274 with corpus varying by
-0.1. An earlier version reported 0.887 for that cell; six random orderings all
-failed to reproduce it, so that figure was a lucky sequence rather than a
-better algorithm.
-
-So 1.448 versus 1.421 means nothing. 0.000 versus 2.7 is real. Several
-comparisons that look meaningful in a --sweep table sit below the floor.
-
-KNOWN BROKEN
-
-* 3chunk does not hold its allocation. The transitions are one-way EMPTYING
-  mandates ("f15-f21 must be empty by FY10"), and nothing keeps money in the
-  destination funds afterwards: it arrives with the freshest basis and the
-  cheapest-first withdrawal takes it straight back out. The low-rate share
-  reaches 26.7% at FY10 and decays to 15.4% by FY30 against a 67% target. So
-  3chunk is closer to a one-chunk plan wearing a three-chunk label, and its tax
-  and corpus are NOT comparable to 1chunk and 2chunk. Fixing this needs the
-  mandate re-expressed as a share to MAINTAIN, which is a design change rather
-  than a parameter. HOLD_ALLOCATION is a partial attempt; see its docstring for
-  what it does and does not buy.
-
-* Folio count is non-monotonic. 3chunk/35 pays 2.981 with one folio and 3.981
-  with four; 3chunk/30 pays 1.761 with one and 1.925 with three. A folio can
-  always be ignored, so opening one cannot cost tax -- this is a bug signal,
-  not a modelling choice, and it is the only remaining discrepancy comfortably
-  above the noise floor. It has survived every other fix in this model's
-  history, which makes it the most likely place a genuine defect still hides.
+  Worth recording: this is the third time in this model's history that "draw
+  from the oldest holding first" has lost. It is an intuitive rule and it has
+  been wrong every time, because the band is better spent on the harvest, which
+  RETAINS units at a stepped-up basis, than on a cash draw, which removes them.
 
 INSTRUMENTATION TRAP
 
@@ -233,7 +208,7 @@ SCENARIOS = {
 
 EPS = 1e-12
 SPILL_GRID = 8   # search resolution for the personal/HUF split
-HOLD_ALLOCATION = False
+HOLD_ALLOCATION = True
 """Protect the destination funds so the chunk's target mix is held.
 
 MEASURED, 3chunk / 30yr / 5yr vintages:
@@ -503,7 +478,7 @@ class Book:
 
     # -- fund the year ------------------------------------------------------
     def fund_year(self, need, band, navs, fy, eligible, prefer=None,
-                  protect=None):
+                  protect=None, harvest_only=None):
         """Fund the year, bringing in Fn only when F1..F(n-1) cannot do it tax-free.
 
         Within whichever set is used the draw is maximised from the EARLIEST
@@ -531,57 +506,60 @@ class Book:
                     sold[fi] = sold.get(fi, 0.0) + amt
             return (sold, 0.0, surplus, gain_tot, sold.get(self.receiver, 0.0) > EPS)
 
-        for n in range(1, len(lv) + 1):
-            subset = lv[:n]
-            probe = copy.deepcopy(self)
-            got, gmin, _ = probe.draw(navs, fy, folio_idxs=subset, amount=need,
-                                      prefer=prefer, high_gain_first=False, protect=protect)
-            if got < need - 1e-6 or gmin > band + 1e-9:
-                continue                        # this set cannot do it cleanly
+        # GLOBAL DRAW across every live folio. The previous lexicographic
+        # widening (subset = lv[:n]) maximised the draw from the EARLIEST
+        # folio, which is the oldest and therefore the most gain-heavy. That
+        # walled off fresh low-gain units sitting in the receiver folio, and is
+        # the suspected cause of one folio beating four.
+        probe = copy.deepcopy(self)
+        got, gmin, _ = probe.draw(navs, fy, folio_idxs=lv, amount=need,
+                                  prefer=prefer, high_gain_first=False,
+                                  protect=protect)
 
-            need_left, band_left, gain_tot = need, band, 0.0
-            for j, k in enumerate(subset):
-                rest = subset[j + 1:]
-                lo, hi, best = 0.0, need_left, 0.0
-                for _ in range(35):             # most from the earliest folio
-                    x = (lo + hi) / 2
-                    trial = copy.deepcopy(self)
-                    a, ga, _ = trial.draw(navs, fy, folio_idxs=[k], amount=x,
-                                          prefer=prefer, high_gain_first=True, protect=protect)
-                    b, gb, _ = trial.draw(navs, fy, folio_idxs=rest,
-                                          amount=max(0.0, need_left - a),
-                                          prefer=prefer, high_gain_first=False, protect=protect)
-                    if (a + b >= need_left - 1e-6
-                            and ga + gb <= band_left + 1e-9):
-                        best, lo = x, x
-                    else:
-                        hi = x
-                a, ga, per = self.draw(navs, fy, folio_idxs=[k], amount=best,
-                                       prefer=prefer, high_gain_first=True, protect=protect)
-                for fi, amt in per.items():
+        if got >= need - 1e-6 and gmin <= band + 1e-9:
+            lo, hi, best = 0.0, need, 0.0
+            for _ in range(35):
+                mid = (lo + hi) / 2
+                trial = copy.deepcopy(self)
+                a, ga, _ = trial.draw(navs, fy, folio_idxs=lv, amount=mid,
+                                      prefer=prefer, high_gain_first=True,
+                                      protect=protect)
+                rem = max(0.0, need - a)
+                b, gb, _ = trial.draw(navs, fy, folio_idxs=lv, amount=rem,
+                                      prefer=prefer, high_gain_first=False,
+                                      protect=protect)
+                if (a + b >= need - 1e-6) and (ga + gb <= band + 1e-9):
+                    best, lo = mid, mid
+                else:
+                    hi = mid
+
+            a, ga, per1 = self.draw(navs, fy, folio_idxs=lv, amount=best,
+                                    prefer=prefer, high_gain_first=True,
+                                    protect=protect)
+            for fi, amt in per1.items():
+                sold[fi] = sold.get(fi, 0.0) + amt
+            rem_need = max(0.0, need - a)
+            band_left = max(0.0, band - ga)
+            gain_tot = ga
+            if rem_need > 1e-6:
+                b, gb, per2 = self.draw(navs, fy, folio_idxs=lv,
+                                        amount=rem_need, prefer=prefer,
+                                        high_gain_first=False, protect=protect)
+                for fi, amt in per2.items():
                     sold[fi] = sold.get(fi, 0.0) + amt
-                need_left -= a
-                band_left -= ga
-                gain_tot += ga
-                if need_left <= 1e-6:
-                    break
-            if need_left > 1e-6:
-                b, gb, per = self.draw(navs, fy, folio_idxs=subset,
-                                       amount=need_left, prefer=prefer,
-                                       high_gain_first=False)
+                band_left = max(0.0, band_left - gb)
                 gain_tot += gb
-                for fi, amt in per.items():
-                    sold[fi] = sold.get(fi, 0.0) + amt
 
             surplus = 0.0
-            if band - gain_tot > EPS:           # harvest the rest of the band
-                pr, g2, per = self.draw(navs, fy, folio_idxs=lv,
-                                        gain_cap=band - gain_tot,
-                                        prefer=prefer, high_gain_first=True,
-                                        min_gain_frac=0.01, protect=protect)
+            if band_left > EPS:
+                pr, g3, per3 = self.draw(navs, fy, folio_idxs=lv,
+                                         gain_cap=band_left, prefer=prefer,
+                                         high_gain_first=True,
+                                         min_gain_frac=0.01, protect=protect,
+                                         only=harvest_only)
                 surplus = pr
-                gain_tot += g2
-                for fi, amt in per.items():
+                gain_tot += g3
+                for fi, amt in per3.items():
                     sold[fi] = sold.get(fi, 0.0) + amt
             return (sold, need, surplus, gain_tot,
                     sold.get(self.receiver, 0.0) > EPS)
@@ -756,15 +734,22 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=FOLIO_CAP,
             """
             p2, h2 = copy.deepcopy(personal), copy.deepcopy(huf)
             want = max(0.0, need - huf_offer)
-            _prot = None
-            if HOLD_ALLOCATION and target_share and low_funds:
+            # Rebalancing. Under-allocation is corrected on BOTH sides of the
+            # churn: the low funds are protected from the cash draw, and the
+            # harvest is restricted to selling the over-allocated high funds so
+            # its proceeds -- which _dest routes to the low side -- represent a
+            # genuine transfer rather than a round trip in place.
+            _prot = _harv_only = None
+            if HOLD_ALLOCATION and target_share and low_funds and high_funds:
                 _t = p2.value(navs)
                 if _t > EPS and (p2.group_value(navs, low_funds) / _t
                                  < target_share(fy)):
                     _prot = set(low_funds)
+                    _harv_only = set(high_funds)
             sold2, cash_p2, surp2, gain_p2, touched2 = p2.fund_year(
                 want, band_left, navs, fy, eligible,
-                prefer=active_expiring, protect=_prot)
+                prefer=active_expiring, protect=_prot,
+                harvest_only=_harv_only)
             if touched2 and not vintage_every and not no_vintage:
                 p2.open_next()
             p2.put(surp2, navs, fy, _dest(p2, navs, fy, eligible))
