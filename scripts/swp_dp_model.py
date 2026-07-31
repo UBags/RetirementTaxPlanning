@@ -60,6 +60,122 @@ CURRENT RESULTS (all figures Rs lakh)
   honest options are to accept a slower drift into the target mix, or to price
   the tax of hitting it on a deadline. There is no free version.
 
+SURPLUS ROUTING -- TWO CONSTRAINTS, GUARDING DIFFERENT THINGS
+
+Harvest surplus is routed by two rules that both bind:
+
+  DEBT_FLOOR_X   liquidity. Surplus first rebuilds the combined debt corpus to
+                 25 years of net need. Only what is left over may go to equity.
+  EQUITY_MAX_SHARE  allocation. Equity is additionally capped at 10% of the
+                 purse on deployment.
+
+The floor alone is NOT sufficient, and the measurement is worth keeping:
+
+    floor      tax    corpus   equity  eq share  debt cover
+      25X   63.415    2344.5   1304.4    55.6%      31.2X
+      30X    1.380    2060.5    380.7    18.5%      50.4X
+      35X    1.239    1909.7      0.1     0.0%      57.3X
+    both     0.486    2145.0    539.9    25.2%
+
+At a 25X floor almost everything is spare -- the plan naturally runs at 57.3X
+cover -- so equity balloons to 55.6% and tax reaches 63.4. ALL of that 63.4 is
+SLAB tax on a starved debt book; equity tax is 0.000 throughout.
+
+The reason is the point of the whole sleeve, inverted: s.112A caps the tax-free
+equity drawdown at the ANNUAL EXEMPTION regardless of sleeve size. At FY35 a
+1304 sleeve draws 2.22 of cash -- exactly what a 200 sleeve would draw. Every
+rupee of equity past that adds ZERO tax-free capacity while displacing debt,
+whose capacity scales with the slab band and the harvest. So equity must be
+sized by what its exemption can absorb, not by what happens to be spare.
+
+A GOTCHA WORTH REMEMBERING: every rupee of surplus must land somewhere. Two
+successive versions of the routing silently DISCARDED the above-floor remainder
+when equity declined it, which vanished 685 of corpus and produced a completely
+convincing false conclusion. The control that catches it is cheap: with
+EQUITY_ENABLED = False the routing must reproduce the no-equity run EXACTLY.
+Run it after any change here.
+
+THE EQUITY SLEEVE (s.112A)
+
+MEASURED CONFIGURATION SWEEP -- do not re-tune without a reason. Bucket share
+(6 values from 5% to 0.25%), cap basis (market vs cost), one-bucket-per-year,
+20 vs 40 buckets, and an annual deployment throttle (6 values) were all tested.
+NONE moves the 35-year answer beyond the ~0.3 noise floor, and the simplest
+configuration wins. The sleeve's internal structure is inert here because the
+surplus that would feed fresh cohorts is concentrated in FY5-FY8; by FY27 the
+annual surplus is under 1. Sequential filling cannot separate vintages that
+were never created, and a throttle can only redistribute money that is not
+there. This is the same constraint that made a late vintage cadence inert on
+the debt side.
+
+Capping on cumulative COST rather than market value keeps the door open and
+admits far more equity (929 against 569, corpus +102) but costs 3.0 of tax,
+because surplus routed to equity starves the debt purse. Market-value capping
+is the better trade.
+
+A separate folio F_EQ per purse, N_EQ_FUNDS buckets, funded from harvest
+surplus only -- never by selling debt to buy equity. No lot is sold before it
+qualifies as long term. Equity LTCG is a SEPARATE tax head: a flat rate above
+its own annual exemption, and not eligible for the s.87A rebate, so it neither
+consumes the slab band nor is sheltered by it.
+
+    1chunk 35yr 5yr:   no sleeve  tax 1.500  corpus 1907.6
+                       with       tax 0.486  corpus 2161.8   (+254, +13%)
+
+THE TRIGGER IS JOINT, AND THAT IS WHERE THE VALUE IS. Personal + HUF corpus
+must exceed EQUITY_TRIGGER_X years of the post-tax amount the two purses
+jointly fund by redemption. An earlier per-purse version never opened the HUF
+sleeve at all (it held ~290 against 25 x its ~12 draw), so only one s.112A
+exemption was ever in play. Moving to the joint test was worth 1.239 -> 0.655.
+
+SEQUENTIAL BUCKET FILLING IS INERT HERE, and the reason is worth recording.
+Buckets are filled one at a time to EQ_BUCKET_SHARE of the excess over the
+trigger, the pointer carrying across years and a filled bucket never topped up
+until the cycle wraps. The intent was vintage separation inside the sleeve, so
+a draw could take a one- or two-year-old bucket at a ~16% gain fraction instead
+of the sleeve average at ~72%.
+
+Measured, it is worth 0.169 -- below the noise floor:
+
+    joint trigger + equal spread   tax 0.655   corpus 2162.5
+    joint trigger + sequential     tax 0.486   corpus 2161.8
+
+It fails for the same reason the accelerated late vintage cadence failed on the
+debt side: THE SLEEVE STOPS BEING FED AT FY8. All deployment happens in FY5-FY8
+and never resumes, so every bucket is filled inside a four-year window and all
+of them are 24+ years old by FY32. Observed gain fractions on equity draws run
+78-91%, not the 16% the design intended. The machinery is correct; there is
+simply nothing for it to separate. It would start to matter if the sleeve were
+topped up through the horizon.
+
+THE 10% CAP IS A DEPLOYMENT CAP, NOT A HOLDING. EQUITY_MAX_SHARE limits what is
+paid IN; nothing trims back. Equity compounds at 9% against debt's 7% for three
+decades, so a 10% deployment cap produces a 26.3% holding by FY35. Raising it
+trades tax for corpus, and 10% is already close to the tax optimum:
+
+    cap    tax    corpus   end share
+    10%  0.486   2161.8       26.3%
+    15%  0.810   2241.1       35.0%
+    20%  1.077   2283.3       39.4%
+    30%  2.889   2360.2       48.2%
+
+Tax rises with the cap because money in equity is money the debt purse cannot
+use to manage its band, while the s.112A exemption stays fixed regardless of
+sleeve size. Whether a 26% equity holding at age 90 is acceptable is a risk
+question this model cannot answer -- see below.
+
+IT MAKES 3chunk WORSE (1.555 -> 2.610 at 30 years). Surplus diverted into
+equity is surplus the debt purse no longer has for its transitions. Corpus
+still rises, so this is a genuine trade rather than a defect.
+
+SIGMA IS NOT MODELLED. EQUITY_SIGMA is carried as a documented constant and
+used nowhere. This model is deterministic; a 12.5% standard deviation cannot do
+anything here except create false precision. Using it properly needs a Monte
+Carlo wrapper that re-runs the horizon over sampled return paths and reports a
+distribution of tax and corpus -- at which point the interesting question stops
+being "what is the tax" and becomes "what is the probability the plan fails".
+That is a different model, not a flag.
+
 RESOLVED, AND WHY IT MATTERS
 
 * Folio count is now monotone. One folio no longer beats several in any of the
@@ -158,6 +274,45 @@ TOP_RATE = 0.30
 CESS = 1.04                 # health and education cess
 EXIT_LOAD = 0.01            # charged on units sold in their year of purchase
 
+# ---- the equity sleeve (s.112A) --------------------------------------------
+# Equity LTCG is a SEPARATE tax head: a flat rate above its own annual
+# exemption, and NOT eligible for the s.87A rebate. So it neither consumes the
+# slab band nor is sheltered by it -- the exemption is additive capacity on top
+# of everything else, once per assessee.
+EQUITY_ENABLED = True
+EQUITY_RETURN = 0.090       # deterministic CAGR
+EQUITY_SIGMA = 0.125        # NOT USED -- deterministic model. See docstring.
+N_EQ_FUNDS = 20             # eq_f1 .. eq_f20, filled SEQUENTIALLY not equally
+EQ_BUCKET_SHARE = 0.05      # each bucket is filled to this share of the excess
+                            # over the floor. 20 x 5% = the whole excess.
+DEBT_FLOOR_X = 25.0         # The combined DEBT corpus must not be allowed to
+                            # fall below this many years of net cash need.
+                            # Surplus rebuilds debt to the floor FIRST; only
+                            # what is left over goes to equity. This replaces
+                            # an arbitrary 10% equity cap -- the floor is the
+                            # real constraint, and equity is funded from
+                            # genuinely spare capacity rather than a quota.
+                            # The same mark is the TRIGGER (above it there is
+                            # spare capacity, below it there is none) and the
+                            # base against which each equity bucket is sized.
+EQUITY_MAX_SHARE = 0.10     # ...and equity is ALSO capped as a share of the
+                            # purse. Both bind, and they guard different things.
+                            # The floor protects LIQUIDITY: never hold less
+                            # debt than the liability needs. The share cap
+                            # protects ALLOCATION: s.112A caps the tax-free
+                            # equity drawdown at the exemption regardless of
+                            # sleeve size, so equity past a point adds no
+                            # capacity while displacing debt that has some.
+                            # MEASURED at 35yr: floor alone at 25X gives 55.6%
+                            # equity and tax 63.4, of which 63.4 is SLAB tax on
+                            # a starved debt book while the 1304 sleeve draws
+                            # just 2.22/yr. Both constraints together: 0.486.
+EQUITY_MIN_HOLD = 1         # years before a lot qualifies as LTCG (s.2(42A))
+
+# per 5-year block, so both can be re-projected like the slab ladders
+EQ_EXEMPT_BLOCKS = [1.25, 1.25, 1.50, 1.50, 1.75, 1.75, 2.00]   # s.112A exemption
+EQ_RATE_BLOCKS = [0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125]  # s.112A rate
+
 # ---- the HUF draw ----------------------------------------------------------
 RATION_K = 1.195            # HUF offer = K * huf_value / years_remaining,
                             # capped at the HUF's own tax-free capacity
@@ -208,6 +363,7 @@ SCENARIOS = {
 
 EPS = 1e-12
 SPILL_GRID = 8   # search resolution for the personal/HUF split
+EQ_GRID = 4      # search resolution for the equity draw
 HOLD_ALLOCATION = True
 """Protect the destination funds so the chunk's target mix is held.
 
@@ -247,6 +403,8 @@ def build_ladders(horizon):
         nilband=spread(NILBAND_BLOCKS),
         other_income=oi,
         taxable_other=[x * TAXABLE_SHARE for x in oi],
+        eq_exempt=spread(EQ_EXEMPT_BLOCKS),
+        eq_rate=spread(EQ_RATE_BLOCKS),
     )
 
 
@@ -286,6 +444,16 @@ def personal_tax(total_income, exempt_ceiling, basic_exemption=BRACKET_WIDTH):
                total_income - exempt_ceiling) * CESS
 
 
+def equity_tax(gain, exemption, rate):
+    """s.112A long-term capital gain on listed equity.
+
+    A flat rate above an annual exemption, per assessee. Critically it is NOT
+    eligible for the s.87A rebate, so it sits outside the slab computation
+    entirely: it neither consumes the debt band nor is wiped out by the rebate.
+    """
+    return max(0.0, gain - exemption) * rate * CESS
+
+
 def huf_tax(gain, nil_band):
     """HUFs get the basic exemption but NOT the s.87A rebate.
 
@@ -321,11 +489,14 @@ class Fund:
                 return (nav - basis) / nav
         return float("inf")
 
-    def sell(self, nav, fy, amount=None, gain_cap=None):
+    def sell(self, nav, fy, amount=None, gain_cap=None, max_buy_fy=None):
         """FIFO. Returns (gross proceeds, gain realised, exit load)."""
         gross = gain = load = 0.0
         for lot in self.lots:
             if lot[0] <= EPS:
+                continue
+            # a lot bought after max_buy_fy has not yet qualified as long term
+            if max_buy_fy is not None and lot[2] > max_buy_fy:
                 continue
             if amount is not None and amount - gross <= EPS:
                 break
@@ -389,6 +560,92 @@ class Folio:
         # Every shipped scenario happens to have n = 21, so this is insurance
         # against the next change to N_FUNDS or the exit groups, not a live bug.
         self.ptr = (self.ptr + TRIPLE) % n
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Equity sleeve -- one folio, N equal funds, its own tax head
+# ═══════════════════════════════════════════════════════════════════════════
+
+class Sleeve:
+    """The equity folio F_EQ. Buckets are filled SEQUENTIALLY, not equally.
+
+    Equal allocation across every fund gives every fund the same vintage mix,
+    so every FIFO front lot is as old as the sleeve itself and the gain
+    fraction is ~72% by the time the exemption is needed. Filling one bucket at
+    a time makes each bucket a distinct vintage: the most recently filled one
+    is a year or two old with a gain fraction near 16%, so the SAME s.112A
+    exemption frees roughly four times the cash.
+
+    A bucket is filled to EQ_BUCKET_SHARE of the current excess over the
+    trigger, then the pointer advances. A filled bucket is NOT topped up when
+    the excess grows -- it stays as it is until the cycle reaches eq_f20 and
+    wraps back to eq_f1.
+    """
+
+    def __init__(self, n=N_EQ_FUNDS):
+        self.funds = [Fund() for _ in range(n)]
+        self.ptr = 0            # bucket currently being filled
+        self.in_current = 0.0   # deployed into that bucket this cycle
+
+    def value(self, nav):
+        return sum(f.value(nav) for f in self.funds)
+
+    def buckets_used(self):
+        """How many of the N buckets currently hold anything."""
+        return sum(1 for f in self.funds if f.units() > EPS)
+
+    def cost(self):
+        """Cost basis of everything still held."""
+        return sum(u * b for f in self.funds for u, b, _y in f.lots)
+
+    def invest(self, amount, nav, fy, bucket_target=None):
+        """Deploy `amount`, filling buckets in order from the current pointer."""
+        if amount <= EPS:
+            return
+        n = len(self.funds)
+        if bucket_target is None or bucket_target <= EPS:
+            bucket_target = amount / n      # degenerate: spread it
+        left = amount
+        for _ in range(2 * n + 1):          # bounded: at most one full cycle
+            if left <= EPS:
+                break
+            room = max(0.0, bucket_target - self.in_current)
+            if room <= EPS:
+                self.ptr = (self.ptr + 1) % n
+                self.in_current = 0.0
+                continue
+            put = min(left, room)
+            self.funds[self.ptr].invest(put, nav, fy)
+            self.in_current += put
+            left -= put
+            if self.in_current >= bucket_target - EPS:
+                self.ptr = (self.ptr + 1) % n
+                self.in_current = 0.0
+
+    def sell(self, nav, fy, amount=None, gain_cap=None):
+        """Cheapest bucket first -- i.e. the most recently filled vintage.
+
+        LTCG-qualified lots only.
+        """
+        cutoff = fy - EQUITY_MIN_HOLD
+        order = sorted(self.funds, key=lambda f: f.front_frac(nav))
+        gross = gain = 0.0
+        for f in order:
+            if amount is not None and amount - gross <= EPS:
+                break
+            if gain_cap is not None and gain_cap - gain <= EPS:
+                break
+            a = None if amount is None else amount - gross
+            c = None if gain_cap is None else gain_cap - gain
+            g, gn, _ld = f.sell(nav, fy, amount=a, gain_cap=c, max_buy_fy=cutoff)
+            gross += g
+            gain += gn
+        return gross, gain
+
+    def capacity(self, nav, fy, gain_cap):
+        """Cash raisable while keeping realised gain within `gain_cap`."""
+        probe = copy.deepcopy(self)
+        return probe.sell(nav, fy, gain_cap=gain_cap)[0]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -636,6 +893,8 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=FOLIO_CAP,
 
     personal = Book(cap, nf)
     huf = Book(cap, nf)
+    eq_p, eq_h = Sleeve(), Sleeve()
+    nav_eq = 1.0
     navs = [1.0] * nf
     nav_h = 1.0
 
@@ -646,7 +905,7 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=FOLIO_CAP,
     wins = [dict(start=s, end=e, out=out, into=into, armed=False, still=0.0)
             for s, e, out, into in spec["transitions"]]
 
-    tax_p_tot = tax_h_tot = 0.0
+    tax_p_tot = tax_h_tot = tax_eq_tot = 0.0
     rows = []
 
     for fy in range(1, horizon + 1):
@@ -658,6 +917,9 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=FOLIO_CAP,
         elif fy > HUF_YEAR:
             nav_h *= (1.0 + HUF_RETURN)
         hnavs = [nav_h] * nf
+        if EQUITY_ENABLED:
+            nav_eq *= (1.0 + EQUITY_RETURN)
+        eq_exempt, eq_rate = lad["eq_exempt"][i], lad["eq_rate"][i]
 
         need = lad["requirement"][i] - lad["other_income"][i]
         band_p = lad["exempt"][i] - lad["taxable_other"][i]
@@ -726,14 +988,55 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=FOLIO_CAP,
             cur = book.group_value(nvs, low_funds) / tot
             return low_funds if cur < target_share(year) else high_funds
 
-        def run_year(huf_offer):
-            """Play the year out on copies for a given HUF contribution.
+        # The 25X mark does three jobs: it is the DEBT FLOOR that surplus must
+        # rebuild before anything else, the TRIGGER above which spare capacity
+        # exists at all, and the base against which each equity bucket is
+        # sized. `need` is the post-tax amount the two purses jointly fund by
+        # redemption -- exactly the quantity the floor should be measured in.
+        joint_debt = personal.value(navs) + huf.value(hnavs)
+        joint_eq = eq_p.value(nav_eq) + eq_h.value(nav_eq)
+        eq_excess = max(0.0, joint_debt + joint_eq - DEBT_FLOOR_X * need)
+        bucket_target = EQ_BUCKET_SHARE * eq_excess
+
+        eligible = [k for k in base_eligible]
+        toi, exempt_c = lad["taxable_other"][i], lad["exempt"][i]
+
+        def _dest(book, nvs, year, default):
+            """Steer new money to whichever side is short of its target."""
+            if not target_share or not low_funds or not high_funds:
+                return default
+            tot = book.value(nvs)
+            if tot <= EPS:
+                return default
+            cur = book.group_value(nvs, low_funds) / tot
+            return low_funds if cur < target_share(year) else high_funds
+
+        def run_year(huf_offer, eq_use=0.0):
+            """Play the year out on copies, for a given HUF and equity draw.
+
+            `eq_use` is cash taken from the equity sleeves. Equity is a LAST
+            RESORT, not a habit: it compounds at 9% against debt's 7%, so
+            spending it costs corpus. The caller engages it only when the
+            debt-only answer would pay tax.
 
             Returns everything needed to commit the winner, so the chosen split
             is executed exactly once rather than replayed.
             """
             p2, h2 = copy.deepcopy(personal), copy.deepcopy(huf)
-            want = max(0.0, need - huf_offer)
+            e2p, e2h = copy.deepcopy(eq_p), copy.deepcopy(eq_h)
+            eq_cash = eq_gain_p = eq_gain_h = 0.0
+            if eq_use > EPS:
+                g, gn = e2p.sell(nav_eq, fy, amount=eq_use,
+                                 gain_cap=eq_exempt)
+                eq_cash += g
+                eq_gain_p += gn
+                if eq_use - eq_cash > EPS:
+                    g, gn = e2h.sell(nav_eq, fy, amount=eq_use - eq_cash,
+                                     gain_cap=eq_exempt)
+                    eq_cash += g
+                    eq_gain_h += gn
+            need_left = max(0.0, need - eq_cash)
+            want = max(0.0, need_left - huf_offer)
             # Rebalancing. Under-allocation is corrected on BOTH sides of the
             # churn: the low funds are protected from the cash draw, and the
             # harvest is restricted to selling the over-allocated high funds so
@@ -752,15 +1055,59 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=FOLIO_CAP,
                 harvest_only=_harv_only)
             if touched2 and not vintage_every and not no_vintage:
                 p2.open_next()
-            p2.put(surp2, navs, fy, _dest(p2, navs, fy, eligible))
-
-            cash_h2 = gain_h2 = 0.0
-            if h2.value(hnavs) > EPS:
+            # Both purses draw FIRST, so the floor test sees the year's
+            # actual post-withdrawal position rather than a stale one.
+            cash_h2 = gain_h2 = surph2 = 0.0
+            huf_live = h2.value(hnavs) > EPS
+            if huf_live:
                 _s2, cash_h2, surph2, gain_h2, th2 = h2.fund_year(
-                    max(0.0, need - cash_p2), band_h, hnavs, fy, eligible)
+                    max(0.0, need_left - cash_p2), band_h, hnavs, fy, eligible)
                 if th2 and not vintage_every and not no_vintage:
                     h2.open_next()
-                h2.put(surph2, hnavs, fy, eligible)
+
+            # ---- surplus routing: rebuild the debt floor, then equity ------
+            # Only the part of the surplus needed to restore the combined debt
+            # corpus to DEBT_FLOOR_X years of net need goes back into debt.
+            # Whatever remains is spare, and spare capacity is what equity is
+            # for.
+            short = max(0.0, DEBT_FLOOR_X * need
+                        - (p2.value(navs) + h2.value(hnavs)))
+
+            # EVERY rupee of surplus must land somewhere. If equity is off,
+            # or the sleeve declines it, the remainder returns to debt --
+            # otherwise the harvest becomes a liquidation and the money simply
+            # disappears from the plan.
+            to_debt_p = min(surp2, short)
+            short -= to_debt_p
+            to_eq_p = surp2 - to_debt_p
+            if EQUITY_ENABLED:
+                room = max(0.0, EQUITY_MAX_SHARE
+                           * (p2.value(navs) + e2p.value(nav_eq))
+                           - e2p.value(nav_eq))
+                to_eq_p = min(to_eq_p, room)
+            else:
+                to_eq_p = 0.0
+            if to_eq_p > EPS:
+                e2p.invest(to_eq_p, nav_eq, fy, bucket_target)
+            # anything equity declines returns to debt -- never discarded
+            to_debt_p = surp2 - to_eq_p
+            p2.put(to_debt_p, navs, fy, _dest(p2, navs, fy, eligible))
+
+            if huf_live:
+                to_debt_h = min(surph2, short)
+                short -= to_debt_h
+                to_eq_h = surph2 - to_debt_h
+                if EQUITY_ENABLED:
+                    room_h = max(0.0, EQUITY_MAX_SHARE
+                                 * (h2.value(hnavs) + e2h.value(nav_eq))
+                                 - e2h.value(nav_eq))
+                    to_eq_h = min(to_eq_h, room_h)
+                else:
+                    to_eq_h = 0.0
+                if to_eq_h > EPS:
+                    e2h.invest(to_eq_h, nav_eq, fy, bucket_target)
+                to_debt_h = surph2 - to_eq_h
+                h2.put(to_debt_h, hnavs, fy, eligible)
 
             gpt = gain_p2 + gain_turn
             txp0 = personal_tax(toi + gpt, exempt_c, band_h)
@@ -772,12 +1119,17 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=FOLIO_CAP,
                                     nil_band=band_h)
             txp = personal_tax(toi + gpt + egp, exempt_c, band_h)
             txh = huf_tax(gain_h2 + egh, band_h)
-            return dict(tax=txp + txh, p=p2, h=h2, sold=sold2, cash_p=cash_p2,
-                        cash_h=cash_h2, surplus=surp2, gain_p=gpt + egp,
-                        gain_h=gain_h2 + egh, txp=txp, txh=txh)
+            txe = (equity_tax(eq_gain_p, eq_exempt, eq_rate)
+                   + equity_tax(eq_gain_h, eq_exempt, eq_rate))
+            return dict(tax=txp + txh + txe, p=p2, h=h2, ep=e2p, eh=e2h,
+                        sold=sold2, cash_p=cash_p2 + eq_cash, cash_h=cash_h2,
+                        surplus=surp2, gain_p=gpt + egp, gain_h=gain_h2 + egh,
+                        txp=txp, txh=txh, txe=txe, eq_cash=eq_cash,
+                        eq_gain=eq_gain_p + eq_gain_h)
 
         # The ration-implied split first. It is free and usually optimal.
         best = run_year(offer)
+        best_offer = offer
 
         # If it costs tax, the marginal rupee may be far cheaper in the HUF:
         # the personal side is in the slab regime (26-31%) or the s.87A
@@ -792,9 +1144,28 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=FOLIO_CAP,
                     x = offer + (spill_max - offer) * j / SPILL_GRID
                     alt = run_year(x)
                     if alt["tax"] < best["tax"] - 1e-9:
+                        best, best_offer = alt, x
+
+        # Equity is engaged ONLY when the debt answer still costs tax. The
+        # s.112A exemption is a separate head worth eq_exempt PER PURSE per
+        # year, so a modest equity draw can erase a slab bill outright. But
+        # every rupee moved out of a 9% sleeve to spare a 7% one costs corpus,
+        # so it is never spent for its own sake.
+        if best["tax"] > EPS and EQUITY_ENABLED:
+            eq_free = (eq_p.capacity(nav_eq, fy, eq_exempt)
+                       + eq_h.capacity(nav_eq, fy, eq_exempt))
+            if eq_free > EPS:
+                for j in range(1, EQ_GRID + 1):
+                    use = min(need, eq_free) * j / EQ_GRID
+                    # against the BEST HUF split found, not the original ration
+                    # -- comparing equity variants to a worse baseline is how
+                    # this silently did nothing in the years that paid tax.
+                    alt = run_year(best_offer, eq_use=use)
+                    if alt["tax"] < best["tax"] - 1e-9:
                         best = alt
 
         personal, huf = best["p"], best["h"]
+        eq_p, eq_h = best["ep"], best["eh"]
         sold_p, cash_p, surplus = best["sold"], best["cash_p"], best["surplus"]
         cash_h = best["cash_h"]
         gain_p_total, gain_h = best["gain_p"], best["gain_h"]
@@ -804,8 +1175,17 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=FOLIO_CAP,
         tax_p_tot += tax_p_final
         tax_h_tot += tax_h_final
 
-        val_p = personal.value(navs)
-        val_h = huf.value(hnavs)
+        # Reported as four separate buckets: debt and equity, personal and HUF.
+        p_debt = personal.value(navs)
+        huf_debt = huf.value(hnavs)
+        p_eq = eq_p.value(nav_eq)
+        huf_eq = eq_h.value(nav_eq)
+        val_eq = p_eq + huf_eq
+        # F_EQ is ONE folio per purse holding N_EQ_FUNDS buckets, so the folio
+        # count is 0 or 1; `buckets` is the informative number alongside it.
+        p_eq_folios = 1 if p_eq > EPS else 0
+        huf_eq_folios = 1 if huf_eq > EPS else 0
+        tax_eq_tot += best.get("txe", 0.0)
 
         rows.append(dict(
             fy=fy,
@@ -821,9 +1201,21 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=FOLIO_CAP,
             surplus=surplus,
             gain_personal=gain_p_total + tax_p_extra_gain,
             gain_huf=gain_h + tax_h_extra_gain,
-            folios_open=len(personal.folios),
-            value_personal=val_p,
-            value_huf=val_h,
+            p_debt=p_debt,
+            p_eq=p_eq,
+            huf_debt=huf_debt,
+            huf_eq=huf_eq,
+            p_debt_folios=len(personal.folios),
+            p_eq_folios=p_eq_folios,
+            huf_debt_folios=len(huf.folios),
+            huf_eq_folios=huf_eq_folios,
+            p_eq_buckets=eq_p.buckets_used(),
+            huf_eq_buckets=eq_h.buckets_used(),
+            folios_open=len(personal.folios),   # retained: CSV column expansion
+            value_equity=val_eq,
+            equity_cash=best.get("eq_cash", 0.0),
+            equity_gain=best.get("eq_gain", 0.0),
+            tax_equity=best.get("txe", 0.0),
             folio_values=[f.value(navs) for f in personal.folios],
             tax_personal=tax_p_final,
             tax_huf=tax_h_final,
@@ -834,20 +1226,32 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=FOLIO_CAP,
     if verbose:
         print(f"{'FY':>3}{'band':>7}{'need':>7}{'cash_p':>8}{'cash_h':>8}"
               f"{'surp':>8}{'trans':>8}{'gain':>7}{'fol':>5}"
-              f"{'personal':>10}{'HUF':>9}{'tax':>7}{'cum':>8}")
-        print("-" * 95)
+              f"{'p_debt':>10}{'p_eq':>9}{'h_debt':>9}{'h_eq':>8}"
+              f"{'eq$':>7}{'tax':>7}{'cum':>8}")
+        print("-" * 118)
         for r in rows:
             print(f"{r['fy']:>3}{r['personal_band']:>7.2f}{r['net_need']:>7.2f}"
                   f"{r['personal_cash']:>8.2f}{r['huf_cash']:>8.2f}"
                   f"{r['surplus']:>8.2f}{r['transition']:>8.2f}"
-                  f"{r['gain_personal']:>7.2f}{r['folios_open']:>5}"
-                  f"{r['value_personal']:>10.1f}{r['value_huf']:>9.1f}"
+                  f"{r['gain_personal']:>7.2f}{r['p_debt_folios']:>5}"
+                  f"{r['p_debt']:>10.1f}{r['p_eq']:>9.1f}"
+                  f"{r['huf_debt']:>9.1f}{r['huf_eq']:>8.1f}"
+                  f"{r['equity_cash']:>7.2f}"
                   f"{r['tax_total']:>7.2f}{r['tax_cumulative']:>8.2f}")
 
-    return dict(tax=tax_p_tot + tax_h_tot, tax_personal=tax_p_tot,
-                tax_huf=tax_h_tot,
-                corpus=rows[-1]["value_personal"] + rows[-1]["value_huf"],
-                folios=rows[-1]["folios_open"], rows=rows)
+    return dict(tax=tax_p_tot + tax_h_tot + tax_eq_tot,
+                tax_personal=tax_p_tot, tax_huf=tax_h_tot,
+                tax_equity=tax_eq_tot,
+                p_debt=rows[-1]["p_debt"], p_eq=rows[-1]["p_eq"],
+                huf_debt=rows[-1]["huf_debt"], huf_eq=rows[-1]["huf_eq"],
+                equity=rows[-1]["value_equity"],
+                corpus=(rows[-1]["p_debt"] + rows[-1]["p_eq"]
+                        + rows[-1]["huf_debt"] + rows[-1]["huf_eq"]),
+                p_debt_folios=rows[-1]["p_debt_folios"],
+                p_eq_folios=rows[-1]["p_eq_folios"],
+                huf_debt_folios=rows[-1]["huf_debt_folios"],
+                huf_eq_folios=rows[-1]["huf_eq_folios"],
+                folios=rows[-1]["p_debt_folios"], rows=rows)
 
 
 def write_csv(result, path):
@@ -882,9 +1286,11 @@ def main():
     a = ap.parse_args()
 
     if a.sweep:
-        print(f"{'scenario':>10}{'horizon':>9}{'vintage':>11}{'cap':>5}"
-              f"{'tax':>10}{'corpus':>10}{'folios':>8}")
-        print("-" * 63)
+        print(f"{'scenario':>10}{'horizon':>8}{'vintage':>11}"
+              f"{'tax':>9}{'corpus':>10}"
+              f"{'p_debt':>10}{'p_eq':>9}{'h_debt':>9}{'h_eq':>8}"
+              f"{'folios p/e/h/e':>16}")
+        print("-" * 100)
         for sc in ("1chunk", "2chunk", "3chunk"):
             for hz in (30, 35):
                 for vt_label, vt, nv in (("on drain", 0, False),
@@ -892,9 +1298,13 @@ def main():
                                          ("5yr", 5, False),
                                          ("3yr", 3, False)):
                     r = simulate(sc, hz, a.cap, vintage_every=vt, no_vintage=nv)
-                    print(f"{sc:>10}{hz:>9}{vt_label:>11}{a.cap:>5}"
-                          f"{r['tax']:>10.3f}{r['corpus']:>10.1f}"
-                          f"{r['folios']:>8}")
+                    fol = (f"{r['p_debt_folios']}/{r['p_eq_folios']}"
+                           f"/{r['huf_debt_folios']}/{r['huf_eq_folios']}")
+                    print(f"{sc:>10}{hz:>8}{vt_label:>11}"
+                          f"{r['tax']:>9.3f}{r['corpus']:>10.1f}"
+                          f"{r['p_debt']:>10.1f}{r['p_eq']:>9.1f}"
+                          f"{r['huf_debt']:>9.1f}{r['huf_eq']:>8.1f}"
+                          f"{fol:>16}")
             print()
         return 0
 
@@ -904,7 +1314,13 @@ def main():
           f"vintage {'no_vintage' if a.no_vintage else ('on drain' if not a.vintage else str(a.vintage) + 'yr')}")
     print(f"lifetime tax {r['tax']:.3f}  "
           f"(personal {r['tax_personal']:.3f} + HUF {r['tax_huf']:.3f})")
-    print(f"end corpus   {r['corpus']:.1f}   folios used {r['folios']}")
+    print(f"end corpus   {r['corpus']:.1f}")
+    print(f"  p_debt   {r['p_debt']:>9.1f}   folios {r['p_debt_folios']}")
+    print(f"  p_eq     {r['p_eq']:>9.1f}   folios {r['p_eq_folios']}"
+          f"   buckets {r['rows'][-1]['p_eq_buckets']} of {N_EQ_FUNDS}")
+    print(f"  huf_debt {r['huf_debt']:>9.1f}   folios {r['huf_debt_folios']}")
+    print(f"  huf_eq   {r['huf_eq']:>9.1f}   folios {r['huf_eq_folios']}"
+          f"   buckets {r['rows'][-1]['huf_eq_buckets']} of {N_EQ_FUNDS}")
     if a.csv:
         write_csv(r, a.csv)
         print(f"wrote {a.csv}")
