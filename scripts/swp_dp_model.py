@@ -352,6 +352,14 @@ EQUITY_SIGMA = 0.125        # NOT USED -- deterministic model. See docstring.
 N_EQ_FUNDS = 20             # eq_f1 .. eq_f20, filled SEQUENTIALLY not equally
 EQ_BUCKET_SHARE = 0.05      # each bucket is filled to this share of the excess
                             # over the floor. 20 x 5% = the whole excess.
+# ---- turnover -------------------------------------------------------------
+# Fraction of the INITIAL fund count moved at each chunk boundary. One entry per
+# boundary: 3chunk uses both, 2chunk uses the first. Turnover was previously
+# implicit in how many funds each transition emptied -- 7 of 21 at each of
+# 3chunk's boundaries, 10 of 21 at 2chunk's. It now drives the fund groups.
+N_BASE_FUNDS = 21
+TURNOVER = (1.0 / 3.0, 1.0 / 3.0)
+
 MIN_HORIZON = 20            # below this the tier arithmetic stops meaning
                             # anything and the plan is not a retirement plan
 
@@ -404,39 +412,66 @@ def _grp(a, b):
     return list(range(a - 1, b))        # 1-based fund numbers, inclusive
 
 
-SCENARIOS = {
-    # every fund at i for the whole horizon
-    "1chunk": dict(
-        n_funds=21,
-        rate=lambda k: INTEREST_RATE,
-        transitions=[],
-    ),
-    # f1-f21 are chosen for chunk 1 and earn i+spread for life. f12-f21 are
-    # transitioned out into f22-f31, which were chosen for chunk 2 and earn
-    # i-spread. Deadline is the FY15 boundary plus BOUNDARY_GRACE.
-    "2chunk": dict(
-        n_funds=31,
-        rate=lambda k: (INTEREST_RATE + CHUNK_SPREAD if k < 21
-                        else INTEREST_RATE - CHUNK_SPREAD),
-        transitions=[(1, 15 + BOUNDARY_GRACE, _grp(12, 21), _grp(22, 31))],
-        low_fund_idx=lambda k: k >= 21,
-        target_low_share=lambda fy: (0.0 if fy <= 15 else 10.0 / 21.0),
-    ),
-    # f1-f21 chosen for chunk 1 (i+spread), f22-f28 for chunk 2 (i), f29-f35
-    # for chunk 3 (i-spread). Two transitions, each with the grace period.
-    "3chunk": dict(
-        n_funds=35,
-        rate=lambda k: (INTEREST_RATE + CHUNK_SPREAD if k < 21
-                        else INTEREST_RATE if k < 28
-                        else INTEREST_RATE - CHUNK_SPREAD),
-        transitions=[(1, 10 + BOUNDARY_GRACE, _grp(15, 21), _grp(22, 28)),
-                     (11, 20 + BOUNDARY_GRACE, _grp(8, 14), _grp(29, 35))],
-        low_fund_idx=lambda k: k >= 21,
-        target_low_share=lambda fy: (0.0 if fy <= 10
-                                     else 1.0 / 3.0 if fy <= 20
-                                     else 2.0 / 3.0),
-    ),
-}
+def _turnover_counts():
+    """Funds moved at each boundary, as counts. At least one, at most what is
+    left, so a silly fraction degrades rather than producing empty groups."""
+    n1 = max(1, min(N_BASE_FUNDS - 1, round(TURNOVER[0] * N_BASE_FUNDS)))
+    n2 = max(1, min(N_BASE_FUNDS - n1 - 1,
+                    round(TURNOVER[1] * N_BASE_FUNDS)))
+    return n1, n2
+
+
+def get_scenario(name):
+    """Scenario spec built from the CURRENT constants.
+
+    Rebuilt on each call rather than held in a module-level dict, so that
+    --turnover and --interest_rate actually take effect. The fund groups are a
+    consequence of turnover: boundary 1 empties the last n1 of the base funds
+    into n1 brand-new ones, boundary 2 empties the last n2 of what remains.
+    """
+    n1, n2 = _turnover_counts()
+    base_last = N_BASE_FUNDS - 1
+
+    if name == "1chunk":
+        return dict(n_funds=N_BASE_FUNDS, rate=lambda k: INTEREST_RATE,
+                    transitions=[])
+
+    if name == "2chunk":
+        out1 = list(range(N_BASE_FUNDS - n1, N_BASE_FUNDS))
+        into1 = list(range(N_BASE_FUNDS, N_BASE_FUNDS + n1))
+        return dict(
+            n_funds=N_BASE_FUNDS + n1,
+            rate=lambda k: (INTEREST_RATE + CHUNK_SPREAD if k < N_BASE_FUNDS
+                            else INTEREST_RATE - CHUNK_SPREAD),
+            transitions=[(1, 15 + BOUNDARY_GRACE, out1, into1)],
+            low_fund_idx=lambda k: k >= N_BASE_FUNDS,
+            target_low_share=lambda fy: (0.0 if fy <= 15
+                                         else n1 / float(N_BASE_FUNDS)),
+        )
+
+    if name == "3chunk":
+        out1 = list(range(N_BASE_FUNDS - n1, N_BASE_FUNDS))
+        into1 = list(range(N_BASE_FUNDS, N_BASE_FUNDS + n1))
+        out2 = list(range(N_BASE_FUNDS - n1 - n2, N_BASE_FUNDS - n1))
+        into2 = list(range(N_BASE_FUNDS + n1, N_BASE_FUNDS + n1 + n2))
+        cut1, cut2 = N_BASE_FUNDS, N_BASE_FUNDS + n1
+        return dict(
+            n_funds=N_BASE_FUNDS + n1 + n2,
+            rate=lambda k: (INTEREST_RATE + CHUNK_SPREAD if k < cut1
+                            else INTEREST_RATE if k < cut2
+                            else INTEREST_RATE - CHUNK_SPREAD),
+            transitions=[(1, 10 + BOUNDARY_GRACE, out1, into1),
+                         (11, 20 + BOUNDARY_GRACE, out2, into2)],
+            low_fund_idx=lambda k: k >= N_BASE_FUNDS,
+            target_low_share=lambda fy: (
+                0.0 if fy <= 10
+                else n1 / float(N_BASE_FUNDS) if fy <= 20
+                else (n1 + n2) / float(N_BASE_FUNDS)),
+        )
+    raise KeyError(name)
+
+
+SCENARIO_NAMES = ("1chunk", "2chunk", "3chunk")
 
 def floor_tier_ends(horizon):
     """(last fy of tier 1, last fy of tier 2). Tier 3 runs to the horizon."""
@@ -1007,7 +1042,7 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
             f"floor tiers are min(10, N//3) years each and stop being "
             f"meaningful below that, and a drawdown shorter than 20 years is "
             f"not what this model is for.")
-    spec = SCENARIOS[scenario]
+    spec = get_scenario(scenario)
     nf = spec["n_funds"]
     lad = build_ladders(horizon)
 
@@ -1031,7 +1066,7 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
     navs = [1.0] * nf
     nav_h = 1.0
 
-    start_funds = [k for k in range(nf) if k < 21]
+    start_funds = [k for k in range(nf) if k < N_BASE_FUNDS]
     personal.folios[0].seed(PERSONAL_CORPUS, navs, 0, start_funds)
 
     wins = [dict(start=s, end=e, out=out, into=into, armed=False, still=0.0)
@@ -1433,6 +1468,7 @@ def _echo_invocation(a):
         f"--taxfree_other_income {TAXFREE_OTHER_INCOME:.2f}",
         f"--salary_income {SALARY_INCOME:.2f}",
         f"--rental_income {RENTAL_INCOME:.2f}",
+        "--turnover " + "/".join(f"{t:g}" for t in TURNOVER),
         "--debt_corpus_2_req_multiple "
         + "/".join(f"{m:g}" for m in DEBT_FLOOR_MULTIPLES),
     ]
@@ -1445,6 +1481,9 @@ def _echo_invocation(a):
     parts.append(f"--csv {a.csv}" if a.csv else "--csv out.csv")
 
     _e1, _e2 = floor_tier_ends(a.horizon)
+    _n1, _n2 = _turnover_counts()
+    print(f"turnover: {TURNOVER[0]:.1%} then {TURNOVER[1]:.1%} of the "
+          f"{N_BASE_FUNDS} base funds ({_n1} then {_n2} funds)")
     print(f"debt floor tiers: FY1-{_e1} at {DEBT_FLOOR_MULTIPLES[0]:g}X, "
           f"FY{_e1 + 1}-{_e2} at {DEBT_FLOOR_MULTIPLES[1]:g}X, "
           f"FY{_e2 + 1}-{a.horizon} at {DEBT_FLOOR_MULTIPLES[2]:g}X")
@@ -1462,7 +1501,7 @@ def _echo_invocation(a):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--scenario", default="1chunk", choices=sorted(SCENARIOS))
+    ap.add_argument("--scenario", default="1chunk", choices=sorted(SCENARIO_NAMES))
     ap.add_argument("--horizon", type=int, default=HORIZON)
     ap.add_argument("--max_folios", "--max-folios", "--cap",
                     type=int, default=MAX_FOLIOS, dest="max_folios",
@@ -1487,6 +1526,11 @@ def main():
                     help="salary, Rs lakh/yr (s.16(ia) deduction applied)")
     ap.add_argument("--rental_income", type=float, default=None,
                     help="rent, Rs lakh/yr (s.24(a) 30%% deduction applied)")
+    ap.add_argument("--turnover", type=str, default=None,
+                    help="fraction of the initial fund count moved at each "
+                         "chunk boundary, slash separated, e.g. 0.33/0.25. "
+                         "3chunk uses both, 2chunk uses the first. A single "
+                         "value applies to every boundary.")
     ap.add_argument("--debt_corpus_2_req_multiple", "--debt-corpus-2-req-multiple",
                     type=str, default=None, dest="floor_multiples",
                     help="three debt-floor multiples, slash separated, e.g. "
@@ -1504,6 +1548,27 @@ def main():
         val = getattr(a, flag)
         if val is not None:
             globals()[name] = val
+
+    if a.turnover is not None:
+        try:
+            tv = [float(x) for x in a.turnover.replace(",", "/").split("/")]
+        except ValueError:
+            sys.exit(f"FATAL: could not read --turnover {a.turnover!r}. "
+                     f"Expected one or two fractions like 0.33/0.25.")
+        if len(tv) == 1:
+            tv = tv * 2
+        if len(tv) != 2:
+            sys.exit(f"FATAL: --turnover takes one or two values, got "
+                     f"{len(tv)}: {a.turnover!r}")
+        if any(not (0.0 < x < 1.0) for x in tv):
+            sys.exit("FATAL: turnover fractions must be between 0 and 1 "
+                     "exclusive. They are fractions, not percentages.")
+        if tv[0] + tv[1] >= 1.0:
+            sys.exit(f"FATAL: turnover {tv[0]:.3f} + {tv[1]:.3f} = "
+                     f"{tv[0] + tv[1]:.3f} would move the entire base holding "
+                     f"and leave nothing in the chunk-1 funds. Keep the sum "
+                     f"below 1.0.")
+        globals()["TURNOVER"] = tuple(tv)
 
     if a.floor_multiples is not None:
         try:
