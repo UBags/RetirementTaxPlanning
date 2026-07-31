@@ -352,7 +352,18 @@ EQUITY_SIGMA = 0.125        # NOT USED -- deterministic model. See docstring.
 N_EQ_FUNDS = 20             # eq_f1 .. eq_f20, filled SEQUENTIALLY not equally
 EQ_BUCKET_SHARE = 0.05      # each bucket is filled to this share of the excess
                             # over the floor. 20 x 5% = the whole excess.
-DEBT_FLOOR_X = 25.0         # The combined DEBT corpus must not be allowed to
+MIN_HORIZON = 20            # below this the tier arithmetic stops meaning
+                            # anything and the plan is not a retirement plan
+
+# The floor steps DOWN over the horizon in three tiers. The liability shrinks
+# as the plan runs, so holding the opening multiple to the end traps surplus
+# against a debt that no longer exists. Tier boundaries scale with the horizon:
+# the first two are min(10, N//3) years each, the third is the remainder.
+#     20yr -> 6 / 6 / 8      25yr -> 8 / 8 / 9
+#     30yr -> 10 / 10 / 10   35yr -> 10 / 10 / 15
+DEBT_FLOOR_MULTIPLES = (25.0, 22.0, 18.0)
+
+DEBT_FLOOR_X = 25.0         # retained for reference. The combined DEBT corpus
                             # fall below this many years of net cash need.
                             # Surplus rebuilds debt to the floor FIRST; only
                             # what is left over goes to equity. This replaces
@@ -426,6 +437,22 @@ SCENARIOS = {
                                      else 2.0 / 3.0),
     ),
 }
+
+def floor_tier_ends(horizon):
+    """(last fy of tier 1, last fy of tier 2). Tier 3 runs to the horizon."""
+    span = min(10, horizon // 3)
+    return span, 2 * span
+
+
+def debt_floor_x(fy, horizon):
+    """The floor multiple in force in year `fy`."""
+    e1, e2 = floor_tier_ends(horizon)
+    if fy <= e1:
+        return DEBT_FLOOR_MULTIPLES[0]
+    if fy <= e2:
+        return DEBT_FLOOR_MULTIPLES[1]
+    return DEBT_FLOOR_MULTIPLES[2]
+
 
 EPS = 1e-12
 SPILL_GRID = 8   # search resolution for the personal/HUF split
@@ -974,6 +1001,12 @@ def pay_tax_bill(book, initial_tax, base_gain, navs, fy, is_huf=False,
 
 def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
              vintage_every=VINTAGE_EVERY, no_vintage=False, verbose=False):
+    if horizon < MIN_HORIZON:
+        raise ValueError(
+            f"horizon {horizon} is below MIN_HORIZON ({MIN_HORIZON}). The "
+            f"floor tiers are min(10, N//3) years each and stop being "
+            f"meaningful below that, and a drawdown shorter than 20 years is "
+            f"not what this model is for.")
     spec = SCENARIOS[scenario]
     nf = spec["n_funds"]
     lad = build_ladders(horizon)
@@ -1094,7 +1127,8 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
         # redemption -- exactly the quantity the floor should be measured in.
         joint_debt = personal.value(navs) + huf.value(hnavs)
         joint_eq = eq_p.value(nav_eq) + eq_h.value(nav_eq)
-        eq_excess = max(0.0, joint_debt + joint_eq - DEBT_FLOOR_X * need)
+        _floor_x = debt_floor_x(fy, horizon)
+        eq_excess = max(0.0, joint_debt + joint_eq - _floor_x * need)
         bucket_target = EQ_BUCKET_SHARE * eq_excess
 
         eligible = [k for k in base_eligible]
@@ -1169,7 +1203,7 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
             # corpus to DEBT_FLOOR_X years of net need goes back into debt.
             # Whatever remains is spare, and spare capacity is what equity is
             # for.
-            short = max(0.0, DEBT_FLOOR_X * need
+            short = max(0.0, _floor_x * need
                         - (p2.value(navs) + h2.value(hnavs)))
 
             # EVERY rupee of surplus must land somewhere. If equity is off,
@@ -1381,6 +1415,51 @@ def write_csv(result, path):
         w.writerows(rows)
 
 
+def _echo_invocation(a):
+    """Echo a fully-populated command line on every run.
+
+    Every dial spelled out with the value actually in effect, so the full
+    parameter set is discoverable from any invocation rather than only from
+    --help or the docstring. Built from the parsed args, so it cannot go stale
+    when a flag is added.
+    """
+    parts = [
+        f"--scenario {a.scenario}",
+        f"--horizon {a.horizon}",
+        f"--vintage {a.vintage}",
+        f"--max_folios {a.max_folios}",
+        f"--interest_rate {INTEREST_RATE:.4f}",
+        f"--taxable_other_income {TAXABLE_OTHER_INCOME:.2f}",
+        f"--taxfree_other_income {TAXFREE_OTHER_INCOME:.2f}",
+        f"--salary_income {SALARY_INCOME:.2f}",
+        f"--rental_income {RENTAL_INCOME:.2f}",
+        "--debt_corpus_2_req_multiple "
+        + "/".join(f"{m:g}" for m in DEBT_FLOOR_MULTIPLES),
+    ]
+    if a.no_vintage:
+        parts.append("--no_vintage")
+    if a.sweep:
+        parts.append("--sweep")
+    if a.quiet:
+        parts.append("--quiet")
+    parts.append(f"--csv {a.csv}" if a.csv else "--csv out.csv")
+
+    _e1, _e2 = floor_tier_ends(a.horizon)
+    print(f"debt floor tiers: FY1-{_e1} at {DEBT_FLOOR_MULTIPLES[0]:g}X, "
+          f"FY{_e1 + 1}-{_e2} at {DEBT_FLOOR_MULTIPLES[1]:g}X, "
+          f"FY{_e2 + 1}-{a.horizon} at {DEBT_FLOOR_MULTIPLES[2]:g}X")
+    print("full parameter set (values shown are the ones in effect):")
+    line = "  python3 scripts/swp_dp_model.py"
+    for p in parts:
+        if len(line) + len(p) + 1 > 78:
+            print(line + " \\")
+            line = "      " + p
+        else:
+            line += " " + p
+    print(line)
+    print()
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--scenario", default="1chunk", choices=sorted(SCENARIOS))
@@ -1408,6 +1487,11 @@ def main():
                     help="salary, Rs lakh/yr (s.16(ia) deduction applied)")
     ap.add_argument("--rental_income", type=float, default=None,
                     help="rent, Rs lakh/yr (s.24(a) 30%% deduction applied)")
+    ap.add_argument("--debt_corpus_2_req_multiple", "--debt-corpus-2-req-multiple",
+                    type=str, default=None, dest="floor_multiples",
+                    help="three debt-floor multiples, slash separated, e.g. "
+                         "25/22/18. Applied over tiers of min(10, N//3) years, "
+                         "min(10, N//3) years, and the remainder.")
     a = ap.parse_args()
 
     # Overrides are module globals because the scenario rate lambdas and
@@ -1421,10 +1505,33 @@ def main():
         if val is not None:
             globals()[name] = val
 
+    if a.floor_multiples is not None:
+        try:
+            parts = [float(x) for x in a.floor_multiples.replace(",", "/").split("/")]
+        except ValueError:
+            sys.exit(f"FATAL: could not read --debt_corpus_2_req_multiple "
+                     f"{a.floor_multiples!r}. Expected three numbers like 25/22/18.")
+        if len(parts) != 3:
+            sys.exit(f"FATAL: --debt_corpus_2_req_multiple needs exactly three "
+                     f"values, got {len(parts)}: {a.floor_multiples!r}")
+        if any(p <= 0 for p in parts):
+            sys.exit("FATAL: floor multiples must be positive.")
+        if not (parts[0] >= parts[1] >= parts[2]):
+            print(f"  NOTE: floor multiples {parts} do not step DOWN. That is "
+                  f"allowed, but the liability shrinks over the horizon, so a "
+                  f"rising floor traps surplus against a debt that is going "
+                  f"away.")
+        globals()["DEBT_FLOOR_MULTIPLES"] = tuple(parts)
+
+    if a.horizon < MIN_HORIZON:
+        sys.exit(f"FATAL: --horizon {a.horizon} is below the minimum of "
+                 f"{MIN_HORIZON}.")
+
     _tot = (TAXABLE_OTHER_INCOME + TAXFREE_OTHER_INCOME
             + SALARY_INCOME + RENTAL_INCOME)
     if _tot <= 0:
         sys.exit("FATAL: the four income heads sum to zero.")
+    _echo_invocation(a)
     print(f"base rate {INTEREST_RATE:.4%}   income {_tot:.2f} "
           f"(taxable-other {TAXABLE_OTHER_INCOME:.2f}, tax-free "
           f"{TAXFREE_OTHER_INCOME:.2f}, salary {SALARY_INCOME:.2f}, "
