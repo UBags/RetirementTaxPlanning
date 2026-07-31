@@ -622,13 +622,16 @@ class Sleeve:
                 self.ptr = (self.ptr + 1) % n
                 self.in_current = 0.0
 
-    def sell(self, nav, fy, amount=None, gain_cap=None):
-        """Cheapest bucket first -- i.e. the most recently filled vintage.
+    def sell(self, nav, fy, amount=None, gain_cap=None, dearest=False):
+        """LTCG-qualified lots only.
 
-        LTCG-qualified lots only.
+        Cheapest bucket first when raising CASH -- least gain per rupee. Dearest
+        first when HARVESTING, where the object is the opposite: extinguish as
+        much gain as the exemption allows per rupee churned.
         """
         cutoff = fy - EQUITY_MIN_HOLD
-        order = sorted(self.funds, key=lambda f: f.front_frac(nav))
+        order = sorted(self.funds, key=lambda f: f.front_frac(nav),
+                       reverse=dearest)
         gross = gain = 0.0
         for f in order:
             if amount is not None and amount - gross <= EPS:
@@ -640,6 +643,26 @@ class Sleeve:
             g, gn, _ld = f.sell(nav, fy, amount=a, gain_cap=c, max_buy_fy=cutoff)
             gross += g
             gain += gn
+        return gross, gain
+
+    def harvest(self, nav, fy, gain_budget, bucket_target=None):
+        """Spend leftover s.112A exemption: sell dearest, rebuy immediately.
+
+        The exemption is annual, per assessee, and use-it-or-lose-it. Without
+        this the sleeve only ever realises gain in the years it is called on
+        for cash -- MEASURED at 27% utilisation over 35 years, with 72.7 of 100
+        simply forfeited.
+
+        Churning is free here: proceeds are rebought at the same NAV, so value
+        is unchanged and the basis steps up by exactly the gain extinguished.
+        The rebought lot carries the current fy, so EQUITY_MIN_HOLD keeps it out
+        of next year's sales, which is correct.
+        """
+        if gain_budget <= EPS:
+            return 0.0, 0.0
+        gross, gain = self.sell(nav, fy, gain_cap=gain_budget, dearest=True)
+        if gross > EPS:
+            self.invest(gross, nav, fy, bucket_target)
         return gross, gain
 
     def capacity(self, nav, fy, gain_cap):
@@ -1125,7 +1148,8 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=FOLIO_CAP,
                         sold=sold2, cash_p=cash_p2 + eq_cash, cash_h=cash_h2,
                         surplus=surp2, gain_p=gpt + egp, gain_h=gain_h2 + egh,
                         txp=txp, txh=txh, txe=txe, eq_cash=eq_cash,
-                        eq_gain=eq_gain_p + eq_gain_h)
+                        eq_gain=eq_gain_p + eq_gain_h,
+                        eq_gain_p=eq_gain_p, eq_gain_h=eq_gain_h)
 
         # The ration-implied split first. It is free and usually optimal.
         best = run_year(offer)
@@ -1166,6 +1190,16 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=FOLIO_CAP,
 
         personal, huf = best["p"], best["h"]
         eq_p, eq_h = best["ep"], best["eh"]
+
+        # ---- spend whatever s.112A exemption the year did not use ----------
+        eq_harv_gain = 0.0
+        if EQUITY_ENABLED:
+            for _sl, _used in ((eq_p, best.get("eq_gain_p", 0.0)),
+                               (eq_h, best.get("eq_gain_h", 0.0))):
+                _left = max(0.0, eq_exempt - _used)
+                if _left > EPS and _sl.value(nav_eq) > EPS:
+                    _g, _gn = _sl.harvest(nav_eq, fy, _left, bucket_target)
+                    eq_harv_gain += _gn
         sold_p, cash_p, surplus = best["sold"], best["cash_p"], best["surplus"]
         cash_h = best["cash_h"]
         gain_p_total, gain_h = best["gain_p"], best["gain_h"]
@@ -1214,7 +1248,8 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=FOLIO_CAP,
             folios_open=len(personal.folios),   # retained: CSV column expansion
             value_equity=val_eq,
             equity_cash=best.get("eq_cash", 0.0),
-            equity_gain=best.get("eq_gain", 0.0),
+            equity_gain=best.get("eq_gain", 0.0) + eq_harv_gain,
+            equity_harvest_gain=eq_harv_gain,
             tax_equity=best.get("txe", 0.0),
             folio_values=[f.value(navs) for f in personal.folios],
             tax_personal=tax_p_final,
