@@ -12,6 +12,52 @@ library only. Every input is a constant in the INPUTS block below.
     python3 swp_dp_model.py --no_vintage               # never open folios (cap 1)
     python3 swp_dp_model.py --sweep
     python3 swp_dp_model.py --quiet --csv out.csv
+    python3 swp_dp_model.py --interest_rate 0.065
+    python3 swp_dp_model.py --max_folios 12
+    python3 swp_dp_model.py --salary_income 6.0 --rental_income 4.0 \
+                            --taxable_other_income 2.0 --taxfree_other_income 3.8
+
+PARAMETERS
+
+--interest_rate i   The base debt rate. The rate belongs to the FUND, fixed for
+                    its life, set by the chunk the fund was first chosen for:
+
+                      1chunk  f1-f21   i
+                      2chunk  f1-f21   i+0.25%   f22-f31  i-0.25%
+                      3chunk  f1-f21   i+0.25%   f22-f28  i     f29-f35 i-0.25%
+
+                    The PORTFOLIO rate is an output, not an input: it falls as
+                    the transitions shift the mix, and funds that never
+                    transition (f1-f7 in 3chunk) keep their chunk-1 rate for
+                    the whole horizon.
+
+--max_folios n      maximum debt cohorts per purse (was --cap, still accepted).
+                    Binds only at --vintage 3 or tighter, and releasing it
+                    changes nothing measurable; a guard, not a lever.
+
+Four income heads, each with its own statutory treatment:
+
+--taxable_other_income   fully taxable (interest and the like)
+--taxfree_other_income   PPF, tax-free bonds, return of capital
+--salary_income          taxable less the s.16(ia) standard deduction
+--rental_income          taxable less the s.24(a) 30% deduction
+
+They sum to gross income; OTHER_INCOME_STEP grows the total pro-rata so the
+taxable fraction is stable. Defaults reproduce the previous 15.80 gross with
+5.95 taxable. The TAXABLE portion is the lever, not the gross -- it is
+subtracted from the s.87A ceiling to give the year's tax-free band, so moving
+4 of income from tax-free to salary costs about 3 of band every year.
+
+BOUNDARY_GRACE  Every transition deadline sits this many years beyond its chunk
+                boundary. MEASURED at 35 years: no setting from 0 to 6 produces
+                any forced liquidation, so the grace is not buying safety. What
+                it buys is corpus -- money stays in the higher-rate chunk-1
+                funds longer -- at the cost of realising gain in later, more
+                contested years:
+
+                    3chunk 35yr   grace 0  tax 3.046  corpus 2133.2
+                                  grace 3  tax 3.848  corpus 2171.6
+                                  grace 6  tax 4.377  corpus 2198.5
 
 Runtime is roughly 8s for a 35-year run and several minutes for --sweep, because
 the personal/HUF split is solved by replaying each year up to SPILL_GRID times.
@@ -246,17 +292,38 @@ HORIZON = 30                # 30 or 35; ladders below extend to 35
 # ---- structure -------------------------------------------------------------
 N_FUNDS = 21                # funds per folio, each its own FIFO queue
 TRIPLE = 3                  # a year's surplus is split across this many funds
-FOLIO_CAP = 8               # maximum cohorts per purse
+MAX_FOLIOS = 8              # maximum debt cohorts per purse
 VINTAGE_EVERY = 5           # open a fresh receiver every N years.
                             # 0 = the old drain-triggered rule (much worse)
 
 # ---- the requirement ladder (Rs lakh/yr, one entry per 5-year block) --------
 REQUIREMENT_BLOCKS = [35.0, 37.5, 42.5, 45.0, 47.5, 50.0, 52.5]
 
-# ---- other income ----------------------------------------------------------
-OTHER_INCOME_START = 15.80  # FY1 gross other income
-OTHER_INCOME_STEP = 0.10    # flat increment per year
-TAXABLE_SHARE = 5.95 / 15.80    # the taxable fraction of other income
+# ---- the debt return ------------------------------------------------------
+# The rate is a property of the FUND, fixed for its life, set by the chunk the
+# fund was first chosen for. The portfolio rate then falls as the transitions
+# shift the mix -- the blend is an OUTPUT, not an input.
+INTEREST_RATE = 0.070       # the base rate i
+CHUNK_SPREAD = 0.0025       # chunk 1 funds earn i+spread, the last chunk's
+                            # earn i-spread, and 3chunk's middle set earns i
+
+# ---- income, by head ------------------------------------------------------
+# Split so each head carries its own statutory treatment. The defaults sum to
+# the previous total of 15.80 with a taxable portion of 5.95, so an
+# out-of-the-box run is unchanged.
+TAXABLE_OTHER_INCOME = 5.95     # interest and the like -- fully taxable
+TAXFREE_OTHER_INCOME = 9.85     # PPF, tax-free bonds, return of capital
+SALARY_INCOME = 0.0             # taxable less the s.16(ia) standard deduction
+RENTAL_INCOME = 0.0             # taxable less the s.24(a) 30% deduction
+SALARY_STD_DEDUCTION = 0.75     # s.16(ia)
+RENTAL_DEDUCTION = 0.30         # s.24(a)
+OTHER_INCOME_STEP = 0.10        # flat annual increment on the TOTAL, shared
+                                # pro-rata so the taxable fraction is stable
+
+# ---- transition timing ----------------------------------------------------
+BOUNDARY_GRACE = 3          # a transition's deadline sits this many years
+                            # BEYOND its chunk boundary, giving the pacing more
+                            # tax-free band to work with before it is forced
 
 # ---- statutory limits, projected forward (one entry per 5-year block) ------
 EXEMPT_BLOCKS = [12.0, 14.0, 16.0, 18.0, 20.0, 20.0, 20.0]   # s.87A ceiling
@@ -327,34 +394,33 @@ def _grp(a, b):
 
 
 SCENARIOS = {
-    # all 21 funds at a single rate for the whole horizon
+    # every fund at i for the whole horizon
     "1chunk": dict(
         n_funds=21,
-        rate=lambda k, fy: 0.070,
+        rate=lambda k: INTEREST_RATE,
         transitions=[],
     ),
-    # two 15-year chunks. The SAME funds re-rate at FY16 -- nothing is sold,
-    # so there is no transition cost at all.
+    # f1-f21 are chosen for chunk 1 and earn i+spread for life. f12-f21 are
+    # transitioned out into f22-f31, which were chosen for chunk 2 and earn
+    # i-spread. Deadline is the FY15 boundary plus BOUNDARY_GRACE.
     "2chunk": dict(
-        n_funds=21,
-        rate=lambda k, fy: (0.070 if k in _grp(1, 11)
-                            else (0.075 if fy <= 15 else 0.065)),
-        transitions=[],
+        n_funds=31,
+        rate=lambda k: (INTEREST_RATE + CHUNK_SPREAD if k < 21
+                        else INTEREST_RATE - CHUNK_SPREAD),
+        transitions=[(1, 15 + BOUNDARY_GRACE, _grp(12, 21), _grp(22, 31))],
+        low_fund_idx=lambda k: k >= 21,
+        target_low_share=lambda fy: (0.0 if fy <= 15 else 10.0 / 21.0),
     ),
-    # three 10-year chunks with MANDATED switches into new funds:
-    #   f15-f21 must be emptied into f22-f28 by FY10 (window starts FY1)
-    #   f8-f14  must be emptied into f29-f35 by FY20 (window starts FY11)
-    # Blended: 7.25% / 7.00% / 6.75%.
+    # f1-f21 chosen for chunk 1 (i+spread), f22-f28 for chunk 2 (i), f29-f35
+    # for chunk 3 (i-spread). Two transitions, each with the grace period.
     "3chunk": dict(
         n_funds=35,
-        rate=lambda k, fy: (0.0725 if k < 21 else 0.0650),
-        transitions=[(1, 10, _grp(15, 21), _grp(22, 28)),
-                     (11, 20, _grp(8, 14), _grp(29, 35))],
-        # Share of personal value that should sit in the incoming 6.50% funds.
-        # Without this the transitions are one-way emptying mandates and
-        # nothing holds the destination: money arrives with the freshest basis
-        # and the cheapest-first withdrawal takes it straight back out, so the
-        # plan drifts to ~97% in the 7.25% funds against a 33% target.
+        rate=lambda k: (INTEREST_RATE + CHUNK_SPREAD if k < 21
+                        else INTEREST_RATE if k < 28
+                        else INTEREST_RATE - CHUNK_SPREAD),
+        transitions=[(1, 10 + BOUNDARY_GRACE, _grp(15, 21), _grp(22, 28)),
+                     (11, 20 + BOUNDARY_GRACE, _grp(8, 14), _grp(29, 35))],
+        low_fund_idx=lambda k: k >= 21,
         target_low_share=lambda fy: (0.0 if fy <= 10
                                      else 1.0 / 3.0 if fy <= 20
                                      else 2.0 / 3.0),
@@ -396,13 +462,23 @@ def build_ladders(horizon):
             out += [v] * 5
         return out[:horizon]
 
-    oi = [OTHER_INCOME_START + OTHER_INCOME_STEP * k for k in range(horizon)]
+    base = (TAXABLE_OTHER_INCOME + TAXFREE_OTHER_INCOME
+            + SALARY_INCOME + RENTAL_INCOME)
+    taxable_base = (TAXABLE_OTHER_INCOME
+                    + max(0.0, SALARY_INCOME - SALARY_STD_DEDUCTION)
+                    + RENTAL_INCOME * (1.0 - RENTAL_DEDUCTION))
+    oi, toi = [], []
+    for k in range(horizon):
+        gross = base + OTHER_INCOME_STEP * k
+        scale = gross / base if base > EPS else 0.0
+        oi.append(gross)
+        toi.append(taxable_base * scale)
     return dict(
         requirement=spread(REQUIREMENT_BLOCKS),
         exempt=spread(EXEMPT_BLOCKS),
         nilband=spread(NILBAND_BLOCKS),
         other_income=oi,
-        taxable_other=[x * TAXABLE_SHARE for x in oi],
+        taxable_other=toi,
         eq_exempt=spread(EQ_EXEMPT_BLOCKS),
         eq_rate=spread(EQ_RATE_BLOCKS),
     )
@@ -896,7 +972,7 @@ def pay_tax_bill(book, initial_tax, base_gain, navs, fy, is_huf=False,
 #  The simulation
 # ═══════════════════════════════════════════════════════════════════════════
 
-def simulate(scenario="1chunk", horizon=HORIZON, cap=FOLIO_CAP,
+def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
              vintage_every=VINTAGE_EVERY, no_vintage=False, verbose=False):
     spec = SCENARIOS[scenario]
     nf = spec["n_funds"]
@@ -910,7 +986,8 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=FOLIO_CAP,
     for _s, _e, out, _into in spec["transitions"]:
         exiting_all |= set(out)
     base_eligible = [k for k in range(nf) if k not in exiting_all]
-    low_funds = [k for k in base_eligible if spec["rate"](k, 1) < 0.070]
+    _is_low = spec.get("low_fund_idx")
+    low_funds = [k for k in base_eligible if _is_low and _is_low(k)]
     high_funds = [k for k in base_eligible if k not in set(low_funds)]
     target_share = spec.get("target_low_share")
 
@@ -921,8 +998,7 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=FOLIO_CAP,
     navs = [1.0] * nf
     nav_h = 1.0
 
-    start_funds = [k for k in range(nf)
-                   if spec["rate"](k, 1) > 0 and k < 21]
+    start_funds = [k for k in range(nf) if k < 21]
     personal.folios[0].seed(PERSONAL_CORPUS, navs, 0, start_funds)
 
     wins = [dict(start=s, end=e, out=out, into=into, armed=False, still=0.0)
@@ -934,7 +1010,7 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=FOLIO_CAP,
     for fy in range(1, horizon + 1):
         i = fy - 1
         for k in range(nf):
-            navs[k] *= (1.0 + spec["rate"](k, fy))
+            navs[k] *= (1.0 + spec["rate"](k))
         if fy == HUF_YEAR:
             huf.folios[0].seed(HUF_WINDFALL, [nav_h] * nf, fy, start_funds)
         elif fy > HUF_YEAR:
@@ -1309,7 +1385,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--scenario", default="1chunk", choices=sorted(SCENARIOS))
     ap.add_argument("--horizon", type=int, default=HORIZON)
-    ap.add_argument("--cap", type=int, default=FOLIO_CAP)
+    ap.add_argument("--max_folios", "--max-folios", "--cap",
+                    type=int, default=MAX_FOLIOS, dest="max_folios",
+                    help="maximum debt cohorts per purse")
     ap.add_argument("--vintage", type=int, default=VINTAGE_EVERY,
                     help="open a fresh receiver every N years; 0 = on drain")
     ap.add_argument("--no_vintage", "--no-vintage", action="store_true",
@@ -1318,7 +1396,39 @@ def main():
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--sweep", action="store_true",
                     help="compare scenarios, horizons and vintage rules")
+    ap.add_argument("--interest_rate", "--interest-rate", type=float,
+                    default=None, dest="interest_rate",
+                    help="base debt rate i as a decimal, e.g. 0.065. Chunk-1 "
+                         "funds earn i+0.25%%, the last chunk's earn i-0.25%%.")
+    ap.add_argument("--taxable_other_income", type=float, default=None,
+                    help="fully taxable other income, Rs lakh/yr")
+    ap.add_argument("--taxfree_other_income", type=float, default=None,
+                    help="tax-free other income, Rs lakh/yr")
+    ap.add_argument("--salary_income", type=float, default=None,
+                    help="salary, Rs lakh/yr (s.16(ia) deduction applied)")
+    ap.add_argument("--rental_income", type=float, default=None,
+                    help="rent, Rs lakh/yr (s.24(a) 30%% deduction applied)")
     a = ap.parse_args()
+
+    # Overrides are module globals because the scenario rate lambdas and
+    # build_ladders() read them directly. Set before any run.
+    for flag, name in (("interest_rate", "INTEREST_RATE"),
+                       ("taxable_other_income", "TAXABLE_OTHER_INCOME"),
+                       ("taxfree_other_income", "TAXFREE_OTHER_INCOME"),
+                       ("salary_income", "SALARY_INCOME"),
+                       ("rental_income", "RENTAL_INCOME")):
+        val = getattr(a, flag)
+        if val is not None:
+            globals()[name] = val
+
+    _tot = (TAXABLE_OTHER_INCOME + TAXFREE_OTHER_INCOME
+            + SALARY_INCOME + RENTAL_INCOME)
+    if _tot <= 0:
+        sys.exit("FATAL: the four income heads sum to zero.")
+    print(f"base rate {INTEREST_RATE:.4%}   income {_tot:.2f} "
+          f"(taxable-other {TAXABLE_OTHER_INCOME:.2f}, tax-free "
+          f"{TAXFREE_OTHER_INCOME:.2f}, salary {SALARY_INCOME:.2f}, "
+          f"rent {RENTAL_INCOME:.2f})")
 
     if a.sweep:
         print(f"{'scenario':>10}{'horizon':>8}{'vintage':>11}"
@@ -1332,7 +1442,7 @@ def main():
                                          ("no_vintage", 0, True),
                                          ("5yr", 5, False),
                                          ("3yr", 3, False)):
-                    r = simulate(sc, hz, a.cap, vintage_every=vt, no_vintage=nv)
+                    r = simulate(sc, hz, a.max_folios, vintage_every=vt, no_vintage=nv)
                     fol = (f"{r['p_debt_folios']}/{r['p_eq_folios']}"
                            f"/{r['huf_debt_folios']}/{r['huf_eq_folios']}")
                     print(f"{sc:>10}{hz:>8}{vt_label:>11}"
@@ -1343,9 +1453,9 @@ def main():
             print()
         return 0
 
-    r = simulate(a.scenario, a.horizon, a.cap, vintage_every=a.vintage,
+    r = simulate(a.scenario, a.horizon, a.max_folios, vintage_every=a.vintage,
                  no_vintage=a.no_vintage, verbose=not a.quiet)
-    print(f"\nscenario {a.scenario}, {a.horizon} years, cap {a.cap}, "
+    print(f"\nscenario {a.scenario}, {a.horizon} years, max_folios {a.max_folios}, "
           f"vintage {'no_vintage' if a.no_vintage else ('on drain' if not a.vintage else str(a.vintage) + 'yr')}")
     print(f"lifetime tax {r['tax']:.3f}  "
           f"(personal {r['tax_personal']:.3f} + HUF {r['tax_huf']:.3f})")
