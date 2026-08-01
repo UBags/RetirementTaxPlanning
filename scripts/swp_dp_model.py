@@ -44,6 +44,22 @@ PARAMETERS
                     transition (f1-f7 in 3chunk) keep their chunk-1 rate for
                     the whole horizon.
 
+--post_tax_requirement
+                    The requirement schedule, as amount/from_FY pairs, comma
+                    separated:
+
+                        35/1,40/6,45/11,50/16,52.5/21,55/25,57.5/31
+
+                    Each pair holds until the next one starts; the last runs to
+                    the horizon. Blocks need NOT be five years -- the example
+                    above runs FY21-24 at 52.5 and FY25-30 at 55. Five-year
+                    blocks were a baked-in assumption and this replaces them.
+
+                    NOTE THE SEPARATORS, which differ from the other list-style
+                    flags on purpose: SLASH splits an amount from its year,
+                    COMMA splits one pair from the next. The first pair must
+                    start at FY1 and the years must strictly increase.
+
 --max_folios n      maximum debt cohorts per purse (was --cap, still accepted).
                     Binds only at --vintage 3 or tighter, and releasing it
                     changes nothing measurable; a guard, not a lever.
@@ -310,7 +326,11 @@ VINTAGE_EVERY = 5           # open a fresh receiver every N years.
                             # 0 = the old drain-triggered rule (much worse)
 
 # ---- the requirement ladder (Rs lakh/yr, one entry per 5-year block) --------
-REQUIREMENT_BLOCKS = [35.0, 37.5, 42.5, 45.0, 47.5, 50.0, 52.5]
+# (post-tax requirement, first FY it applies). Each pair holds until the next
+# one starts; the last extends to the horizon. Blocks need NOT be five years --
+# that was a baked-in assumption and this replaces it.
+REQUIREMENT_SCHEDULE = ((35.0, 1), (37.5, 6), (42.5, 11), (45.0, 16),
+                        (47.5, 21), (50.0, 26), (52.5, 31))
 
 # ---- the debt return ------------------------------------------------------
 # The rate is a property of the FUND, fixed for its life, set by the chunk the
@@ -565,6 +585,20 @@ empty -- a design change, not a parameter.
 #  Ladders
 # ═══════════════════════════════════════════════════════════════════════════
 
+def requirement_ladder(horizon):
+    """Per-year post-tax requirement from the (amount, from_FY) schedule."""
+    out = []
+    for fy in range(1, horizon + 1):
+        amount = REQUIREMENT_SCHEDULE[0][0]
+        for value, start in REQUIREMENT_SCHEDULE:
+            if fy >= start:
+                amount = value
+            else:
+                break
+        out.append(amount)
+    return out
+
+
 def build_ladders(horizon):
     n_blocks = (horizon + 4) // 5
 
@@ -586,7 +620,7 @@ def build_ladders(horizon):
         oi.append(gross)
         toi.append(taxable_base * scale)
     return dict(
-        requirement=spread(REQUIREMENT_BLOCKS),
+        requirement=requirement_ladder(horizon),
         exempt=spread(EXEMPT_BLOCKS),
         nilband=spread(NILBAND_BLOCKS),
         other_income=oi,
@@ -1518,6 +1552,8 @@ def _echo_invocation(a):
         f"--taxfree_other_income {TAXFREE_OTHER_INCOME:.2f}",
         f"--salary_income {SALARY_INCOME:.2f}",
         f"--rental_income {RENTAL_INCOME:.2f}",
+        "--post_tax_requirement "
+        + ",".join(f"{amt:g}/{fy}" for amt, fy in REQUIREMENT_SCHEDULE),
         "--turnover " + "/".join(f"{t:g}" for t in TURNOVER),
         "--debt_corpus_2_req_multiple "
         + "/".join(f"{m:g}" for m in DEBT_FLOOR_MULTIPLES),
@@ -1531,6 +1567,15 @@ def _echo_invocation(a):
     parts.append(f"--csv {a.csv}" if a.csv else "--csv out.csv")
 
     _e1, _e2 = floor_tier_ends(a.horizon)
+    _req = requirement_ladder(a.horizon)
+    _spans = []
+    for _j, (_amt, _from) in enumerate(REQUIREMENT_SCHEDULE):
+        if _from > a.horizon:
+            break
+        _to = (REQUIREMENT_SCHEDULE[_j + 1][1] - 1
+               if _j + 1 < len(REQUIREMENT_SCHEDULE) else a.horizon)
+        _spans.append(f"FY{_from}-{min(_to, a.horizon)} at {_amt:g}")
+    print("post-tax requirement: " + ", ".join(_spans))
     _n1, _n2 = _turnover_counts()
     print(f"turnover: {TURNOVER[0]:.1%} then {TURNOVER[1]:.1%} of the "
           f"{N_BASE_FUNDS} base funds ({_n1} then {_n2} funds)")
@@ -1579,6 +1624,15 @@ def main():
                     help="salary, Rs lakh/yr (s.16(ia) deduction applied)")
     ap.add_argument("--rental_income", type=float, default=None,
                     help="rent, Rs lakh/yr (s.24(a) 30%% deduction applied)")
+    ap.add_argument("--post_tax_requirement", "--post-tax-requirement",
+                    type=str, default=None, dest="post_tax_requirement",
+                    help="post-tax requirement schedule as amount/from_FY "
+                         "pairs, comma separated, e.g. "
+                         "35/1,40/6,45/11,50/16,52.5/21,55/25,57.5/31. Each "
+                         "pair holds until the next starts; the last runs to "
+                         "the horizon. Blocks need not be five years. NOTE the "
+                         "separators: SLASH splits amount from year, COMMA "
+                         "splits pairs.")
     ap.add_argument("--turnover", type=str, default=None,
                     help="fraction of the initial fund count moved at each "
                          "chunk boundary, slash separated, e.g. 0.33/0.25. "
@@ -1620,6 +1674,35 @@ def main():
         val = getattr(a, flag)
         if val is not None:
             globals()[name] = val
+
+    if a.post_tax_requirement is not None:
+        pairs = []
+        for token in a.post_tax_requirement.split(","):
+            token = token.strip()
+            if not token:
+                continue
+            if "/" not in token:
+                sys.exit(f"FATAL: {token!r} is not an amount/from_FY pair. The "
+                         f"schedule looks like 35/1,40/6,45/11 -- slash splits "
+                         f"amount from year, comma splits pairs.")
+            amt_s, fy_s = token.split("/", 1)
+            try:
+                pairs.append((float(amt_s), int(fy_s)))
+            except ValueError:
+                sys.exit(f"FATAL: could not read the pair {token!r}. Expected "
+                         f"a number, a slash, then a whole year.")
+        if not pairs:
+            sys.exit("FATAL: --post_tax_requirement is empty.")
+        if pairs[0][1] != 1:
+            sys.exit(f"FATAL: the first pair must start at FY1, not FY"
+                     f"{pairs[0][1]}. Years before the first pair would have "
+                     f"no requirement at all.")
+        if any(pairs[i][1] >= pairs[i + 1][1] for i in range(len(pairs) - 1)):
+            sys.exit(f"FATAL: the from_FY values must strictly increase, got "
+                     f"{[p[1] for p in pairs]}.")
+        if any(amt <= 0 for amt, _ in pairs):
+            sys.exit("FATAL: requirements must be positive.")
+        globals()["REQUIREMENT_SCHEDULE"] = tuple(pairs)
 
     if a.turnover is not None:
         try:
