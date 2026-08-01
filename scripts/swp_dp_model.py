@@ -60,6 +60,45 @@ PARAMETERS
                     COMMA splits one pair from the next. The first pair must
                     start at FY1 and the years must strictly increase.
 
+--starting_corpus   Personal corpus at FY1, in Rs LAKH. Every money figure in
+--huf_corpus        this model is lakh, so 350 is 3.5 crore. A value under 25
+                    is rejected as a probable crore/lakh confusion rather than
+                    silently modelling a plan that cannot fund itself.
+
+--huf_year          The FYs they land, paired positionally:
+
+                        --huf_corpus 190/60/40 --huf_year 5/8/12
+
+                    is 190 in FY5, 60 in FY8, 40 in FY12. The counts must
+                    match; repeated years are rejected.
+
+THE HUF IS NOT A SEPARATE ASSET CLASS. It holds the SAME funds at the SAME
+NAVs as the personal purse, earns the same per-fund rates, and is carried
+through the same chunk transitions. Each inflow is spread across the funds the
+personal purse holds IN THAT YEAR, in the same proportion, so money arriving
+mid-transition lands in the mix that actually exists rather than an arbitrary
+one. Its transition gains are charged against the HUF's OWN nil band -- two
+assessees, two allowances.
+
+It was previously a flat-rate pool pinned at 7.0% that ignored --interest_rate
+and never transitioned. At --interest_rate 0.045 that was worth 313 of corpus
+and the difference between the second purse surviving and being exhausted, so
+every low-rate result from before this change was optimistic.
+
+--ration_k          HUF draw pacing: offer = k x huf_value / years_remaining,
+                    capped at the HUF's own tax-free capacity. Around 1.2 the
+                    ration binds early and the capacity binds late, so k only
+                    controls roughly the first half of the horizon. Too low
+                    wastes a second tax-free allowance; too high triggers tax
+                    in the purse meant to avoid it.
+
+--equity_max_share  Equity deployment cap as a share of the purse. This is a
+                    cap on INFLOW, not a rebalancing target: the sleeve is
+                    never trimmed back, so it drifts above the cap as equity
+                    outgrows debt. Forcing it back costs tax and corpus both.
+
+--income_step       Flat annual increment on total other income.
+
 --equity_cagr       Equity sleeve CAGR as a decimal, e.g. 0.12. DETERMINISTIC:
                     EQUITY_SIGMA exists but is unused, because a fixed model
                     cannot use a dispersion for anything but false precision.
@@ -329,9 +368,12 @@ import sys
 
 # ---- the money, in Rs lakh -------------------------------------------------
 PERSONAL_CORPUS = 350.0     # starting personal corpus, spread evenly on FY0
-HUF_WINDFALL = 190.0        # arrives in the HUF, clean under s.64(2)
-HUF_YEAR = 5                # the FY the windfall lands
-HUF_RETURN = 0.070          # the HUF earns a flat rate; no chunk structure
+# The HUF receives one or more external inflows. Amounts and years are given
+# separately -- --huf_corpus 190/60/40 with --huf_year 5/8/12 -- and are zipped
+# into (amount, FY) pairs. Each inflow is spread across the funds the PERSONAL
+# purse holds in that year, in the same proportion, so the HUF starts life with
+# the same portfolio shape rather than an arbitrary one.
+HUF_INFLOWS = ((190.0, 5),)
 
 # ---- the horizon -----------------------------------------------------------
 HORIZON = 30                # 30 or 35; ladders below extend to 35
@@ -1166,7 +1208,6 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
     eq_p, eq_h = Sleeve(), Sleeve()
     nav_eq = 1.0
     navs = [1.0] * nf
-    nav_h = 1.0
 
     start_funds = [k for k in range(nf) if k < N_BASE_FUNDS]
     personal.folios[0].seed(PERSONAL_CORPUS, navs, 0, start_funds)
@@ -1181,11 +1222,26 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
         i = fy - 1
         for k in range(nf):
             navs[k] *= (1.0 + spec["rate"](k))
-        if fy == HUF_YEAR:
-            huf.folios[0].seed(HUF_WINDFALL, [nav_h] * nf, fy, start_funds)
-        elif fy > HUF_YEAR:
-            nav_h *= (1.0 + HUF_RETURN)
-        hnavs = [nav_h] * nf
+        # The HUF holds the SAME funds at the SAME NAVs as the personal purse.
+        # It is not a separate asset class with its own flat return; it is the
+        # same portfolio in a second pair of hands, so it earns the per-fund
+        # rates and ages exactly as the personal purse does.
+        hnavs = navs
+        for _amount, _fy in HUF_INFLOWS:
+            if fy != _fy or _amount <= EPS:
+                continue
+            # mirror the personal purse's CURRENT fund spread, so an inflow
+            # arriving mid-transition lands in the mix that actually exists
+            _held = {k: sum(fo.funds[k].value(navs[k]) for fo in personal.folios)
+                     for k in range(nf)}
+            _total = sum(_held.values())
+            if _total <= EPS:
+                huf.folios[huf.receiver].seed(_amount, navs, fy, start_funds)
+            else:
+                for k, v in _held.items():
+                    if v > EPS:
+                        huf.folios[huf.receiver].funds[k].invest(
+                            _amount * v / _total, navs[k], fy)
         if EQUITY_ENABLED:
             nav_eq *= (1.0 + EQUITY_RETURN)
         eq_exempt, eq_rate = lad["eq_exempt"][i], lad["eq_rate"][i]
@@ -1197,11 +1253,11 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
         # scheduled vintage -- the single most valuable dial in this model
         if vintage_every and fy > 1 and (fy - 1) % vintage_every == 0:
             personal.open_next()
-            if fy >= HUF_YEAR:
+            if any(fy >= _fy for _a, _fy in HUF_INFLOWS):
                 huf.open_next()
 
         # ---- mandated transitions take PRIORITY over the harvest ----------
-        turned = gain_turn = forced = 0.0
+        turned = gain_turn = forced = gain_turn_h = 0.0
         for w in wins:
             w["still"] = personal.group_value(navs, w["out"])
             if fy < w["start"] or w["still"] <= EPS or fy > w["end"]:
@@ -1228,6 +1284,19 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
             turned += pr
             gain_turn += g
             w["still"] = personal.group_value(navs, w["out"])
+
+            # The HUF holds the same funds, so the same mandate applies to it.
+            # Its gain is charged against the HUF's OWN nil band, not the
+            # personal band -- two assessees, two allowances.
+            h_left = huf.group_value(navs, w["out"])
+            if h_left > EPS:
+                h_slice = (h_left if fy >= w["end"]
+                           else h_left / max(1, w["end"] - fy + 1))
+                cap = None if fy >= w["end"] else max(0.0, band_h - gain_turn_h)
+                hpr, hg, _ = huf.draw(navs, fy, amount=h_slice,
+                                      gain_cap=cap, only=set(w["out"]))
+                huf.put_direct(hpr, navs, fy, into_fy)
+                gain_turn_h += hg
 
         band_left = max(0.0, band_p - gain_turn)
 
@@ -1381,6 +1450,7 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
 
             gpt = gain_p2 + gain_turn
             txp0 = personal_tax(toi + gpt, exempt_c, band_h)
+            gain_h2 += gain_turn_h
             txh0 = huf_tax(gain_h2, band_h)
             _dp, egp = pay_tax_bill(p2, txp0, gpt, navs, fy, is_huf=False,
                                     exempt_ceiling=exempt_c, taxable_other=toi,
@@ -1567,6 +1637,12 @@ def _echo_invocation(a):
         f"--max_folios {a.max_folios}",
         "--interest_rate " + "/".join(f"{r:g}" for r in INTEREST_RATES),
         f"--equity_cagr {EQUITY_RETURN:g}",
+        f"--starting_corpus {PERSONAL_CORPUS:g}",
+        "--huf_corpus " + "/".join(f"{amt:g}" for amt, _ in HUF_INFLOWS),
+        "--huf_year " + "/".join(str(fy) for _, fy in HUF_INFLOWS),
+        f"--ration_k {RATION_K:g}",
+        f"--equity_max_share {EQUITY_MAX_SHARE:g}",
+        f"--income_step {OTHER_INCOME_STEP:g}",
         f"--taxable_other_income {TAXABLE_OTHER_INCOME:.2f}",
         f"--taxfree_other_income {TAXFREE_OTHER_INCOME:.2f}",
         f"--salary_income {SALARY_INCOME:.2f}",
@@ -1643,6 +1719,27 @@ def main():
                     help="salary, Rs lakh/yr (s.16(ia) deduction applied)")
     ap.add_argument("--rental_income", type=float, default=None,
                     help="rent, Rs lakh/yr (s.24(a) 30%% deduction applied)")
+    ap.add_argument("--starting_corpus", "--starting-corpus", type=float,
+                    default=None, dest="starting_corpus",
+                    help="personal corpus at FY1, in Rs LAKH (350 = 3.5 crore)")
+    ap.add_argument("--huf_corpus", "--huf-corpus", type=str, default=None,
+                    dest="huf_corpus",
+                    help="HUF inflow amounts in Rs LAKH, slash separated: "
+                         "190/60/40. Paired positionally with --huf_year.")
+    ap.add_argument("--huf_year", "--huf-year", type=str, default=None,
+                    dest="huf_year",
+                    help="FYs the HUF inflows land, slash separated: 5/8/12. "
+                         "Must have the same count as --huf_corpus.")
+    ap.add_argument("--ration_k", "--ration-k", type=float, default=None,
+                    dest="ration_k",
+                    help="HUF draw pacing. offer = k x huf_value / years_left, "
+                         "capped at the HUF's own tax-free capacity.")
+    ap.add_argument("--equity_max_share", "--equity-max-share", type=float,
+                    default=None, dest="equity_max_share",
+                    help="equity deployment cap as a share of the purse")
+    ap.add_argument("--income_step", "--income-step", type=float, default=None,
+                    dest="income_step",
+                    help="flat annual increment on total other income, Rs lakh")
     ap.add_argument("--equity_cagr", "--equity-cagr", type=float, default=None,
                     dest="equity_cagr",
                     help="equity sleeve CAGR as a decimal, e.g. 0.12. "
@@ -1698,6 +1795,62 @@ def main():
         val = getattr(a, flag)
         if val is not None:
             globals()[name] = val
+
+    # Money parameters are in LAKH throughout, like every other figure in this
+    # model. A corpus entered in crore is a factor-of-100 error that would
+    # quietly model a plan with no chance of funding itself, so it is caught.
+    if a.starting_corpus is not None:
+        if a.starting_corpus <= 0:
+            sys.exit("FATAL: --starting_corpus must be positive.")
+        if a.starting_corpus < 25.0:
+            sys.exit(f"FATAL: --starting_corpus {a.starting_corpus:g} is in Rs "
+                     f"LAKH, not crore. A corpus of {a.starting_corpus:g} lakh "
+                     f"cannot fund a retirement of tens of lakh a year. Did "
+                     f"you mean {a.starting_corpus * 100:g}?")
+        globals()["PERSONAL_CORPUS"] = a.starting_corpus
+
+    if (a.huf_corpus is None) != (a.huf_year is None):
+        sys.exit("FATAL: --huf_corpus and --huf_year go together. Give both or "
+                 "neither.")
+    if a.huf_corpus is not None:
+        try:
+            amounts = [float(x) for x in a.huf_corpus.replace(",", "/").split("/")]
+            years = [int(x) for x in a.huf_year.replace(",", "/").split("/")]
+        except ValueError:
+            sys.exit(f"FATAL: could not read --huf_corpus {a.huf_corpus!r} / "
+                     f"--huf_year {a.huf_year!r}. Expected 190/60/40 and 5/8/12.")
+        if len(amounts) != len(years):
+            sys.exit(f"FATAL: --huf_corpus has {len(amounts)} amount(s) but "
+                     f"--huf_year has {len(years)} year(s). They pair up "
+                     f"positionally, so the counts must match.")
+        if any(x <= 0 for x in amounts):
+            sys.exit("FATAL: HUF inflows must be positive.")
+        if any(y < 1 for y in years):
+            sys.exit("FATAL: --huf_year values must be 1 or later.")
+        if len(set(years)) != len(years):
+            sys.exit(f"FATAL: --huf_year has a repeated year: {years}.")
+        if sum(amounts) < 25.0:
+            sys.exit(f"FATAL: --huf_corpus totals {sum(amounts):g}, which is in "
+                     f"Rs LAKH not crore. Did you mean {sum(amounts) * 100:g}?")
+        globals()["HUF_INFLOWS"] = tuple(sorted(zip(amounts, years),
+                                                key=lambda t: t[1]))
+
+    for flag, name, lo, hi in (("equity_max_share", "EQUITY_MAX_SHARE", 0.0, 1.0),):
+        val = getattr(a, flag)
+        if val is not None:
+            if not (lo < val < hi):
+                sys.exit(f"FATAL: --{flag} is a DECIMAL between 0 and 1. "
+                         f"Got {val}.")
+            globals()[name] = val
+
+    if a.ration_k is not None:
+        if a.ration_k < 0:
+            sys.exit("FATAL: --ration_k must be non-negative. 0 means the HUF "
+                     "offers nothing and only backstops.")
+        globals()["RATION_K"] = a.ration_k
+
+    if a.income_step is not None:
+        globals()["OTHER_INCOME_STEP"] = a.income_step
 
     if a.equity_cagr is not None:
         if not (0.0 < a.equity_cagr < 1.0):
@@ -1788,6 +1941,11 @@ def main():
           + ", ".join(f"chunk {j + 1} {x:.4%}" for j, x in enumerate(_rt))
           + (f"   (from {'/'.join(f'{r:g}' for r in INTEREST_RATES)})"
              if len(INTEREST_RATES) != _n else ""))
+    print(f"corpus: personal {PERSONAL_CORPUS:g} at FY1; HUF "
+          + " + ".join(f"{amt:g} at FY{fy}" for amt, fy in HUF_INFLOWS)
+          + f" (total {sum(a for a, _ in HUF_INFLOWS):g})")
+    print("the HUF holds the same funds at the same NAVs as the personal purse "
+          "and transitions with it")
     print(f"equity CAGR {EQUITY_RETURN:.2%}"
           + ("" if EQUITY_ENABLED else "   (sleeve DISABLED)"))
     print(f"income {_tot:.2f} "
