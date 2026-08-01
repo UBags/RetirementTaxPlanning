@@ -227,6 +227,41 @@ convincing false conclusion. The control that catches it is cheap: with
 EQUITY_ENABLED = False the routing must reproduce the no-equity run EXACTLY.
 Run it after any change here.
 
+WATER-FILLING WHEN THE FREE BANDS RUN OUT
+
+Once every purse's tax-free capacity is spent, the plain path lets each purse
+raise its share and pays whatever tax falls out. That is arbitrary: it can take
+a rupee from personal debt at a 31% slab while the HUF's 5% bracket and both
+s.112A exemptions sit unused.
+
+`run_waterfill` draws every source's FREE capacity first, then fills the
+remaining shortfall one slice at a time from whichever source is cheapest AT
+THAT MOMENT, across four taps -- personal debt, HUF debt, personal equity, HUF
+equity. Ties go to the personal purse.
+
+TWO THINGS ABOUT IT ARE EASY TO GET WRONG.
+
+The ordering is by tax cost per rupee of CASH, not per rupee of GAIN. Cash is
+what the year needs, and gain per rupee of cash varies enormously: an old debt
+lot is ~90% gain, a fresh equity bucket ~20%. So equity at 13% on 20% gain
+costs 2.6% per rupee raised while an HUF slab at 5.2% on 85% gain costs 4.4%.
+Sorting by tax RATE alone inverts those two.
+
+Marginal rates are read from the tax functions NUMERICALLY, not from a
+hardcoded ladder, so the s.87A claw-back's 104% band is seen and avoided
+automatically rather than needing a special case.
+
+AND IT IS CHOSEN ON TERMINAL VALUE, NOT ON TAX. Minimising tax alone will spend
+equity compounding at EQUITY_RETURN to avoid a smaller bill on debt compounding
+at the chunk rate. Measured on 2chunk/35yr at defaults, the tax-minimising path
+saved 1.166 of tax and cost 40.6 of corpus. Each purse is projected forward at
+its own rate to the end of the plan and the larger total wins, so that trade is
+correctly refused.
+
+TAX_EPS guards the trigger. EPS is 1e-12, and a tax bill of nine nanopaise --
+which a 35-year run really does produce -- once triggered a restructure that
+cost 25 of corpus to save nothing.
+
 THE EQUITY SLEEVE (s.112A)
 
 MEASURED CONFIGURATION SWEEP -- do not re-tune without a reason. Bucket share
@@ -620,6 +655,8 @@ def debt_floor_x(fy, horizon):
 
 
 EPS = 1e-12
+TAX_EPS = 1e-4   # Rs 10. Below this a tax figure is float noise,
+                 # not a bill worth restructuring a year for.
 SPILL_GRID = 8   # search resolution for the personal/HUF split
 EQ_GRID = 4      # search resolution for the equity draw
 HOLD_ALLOCATION = True
@@ -1469,6 +1506,137 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                         eq_gain_p=eq_gain_p, eq_gain_h=eq_gain_h)
 
         # The ration-implied split first. It is free and usually optimal.
+        def marginal_cost(kind, g_p, g_h, g_eqp, g_eqh, frac, d=0.01):
+            """Tax on the next rupee of CASH from a source, not of gain.
+
+            Cash is what the year needs, and gain per rupee of cash varies
+            enormously between sources -- an old debt lot is ~90% gain, a fresh
+            equity bucket ~20%. So a 13% equity rate on 20% gain costs 2.6% per
+            rupee raised, while a 5.2% HUF slab on 85% gain costs 4.4%. Sorting
+            by TAX RATE alone inverts those two.
+
+            Marginal rates are read from the tax functions NUMERICALLY rather
+            than from a hardcoded ladder, so the s.87A claw-back's 104% band is
+            seen and avoided automatically instead of having to be special-cased.
+            """
+            if kind == "p_debt":
+                r = (personal_tax(toi + g_p + d, exempt_c, band_h)
+                     - personal_tax(toi + g_p, exempt_c, band_h)) / d
+            elif kind == "h_debt":
+                r = (huf_tax(g_h + d, band_h) - huf_tax(g_h, band_h)) / d
+            elif kind == "p_eq":
+                r = (equity_tax(g_eqp + d, eq_exempt, eq_rate)
+                     - equity_tax(g_eqp, eq_exempt, eq_rate)) / d
+            else:
+                r = (equity_tax(g_eqh + d, eq_exempt, eq_rate)
+                     - equity_tax(g_eqh, eq_exempt, eq_rate)) / d
+            return r * frac
+
+        def run_waterfill():
+            """Fund the year free first, then fill the rest cheapest-margin up.
+
+            The plain path lets each purse raise its share and pays whatever
+            tax falls out. Once the free bands are gone that is arbitrary: it
+            can take a rupee from personal debt at a 31% slab while the HUF's
+            5% bracket and both equity exemptions sit unused.
+
+            This draws every source's FREE capacity first, then water-fills the
+            remaining shortfall one slice at a time, always from whichever
+            source is cheapest per rupee of cash AT THAT MOMENT. Ties go to the
+            personal purse.
+            """
+            p2, h2 = copy.deepcopy(personal), copy.deepcopy(huf)
+            e2p, e2h = copy.deepcopy(eq_p), copy.deepcopy(eq_h)
+
+            cash = g_p = g_h = g_eqp = g_eqh = 0.0
+            c, gg, _ = p2.draw(navs, fy, gain_cap=band_left)
+            cash += c; g_p += gg
+            if h2.value(hnavs) > EPS:
+                c, gg, _ = h2.draw(hnavs, fy, gain_cap=band_h)
+                cash += c; g_h += gg
+            if EQUITY_ENABLED:
+                c, gg = e2p.sell(nav_eq, fy, gain_cap=eq_exempt)
+                cash += c; g_eqp += gg
+                c, gg = e2h.sell(nav_eq, fy, gain_cap=eq_exempt)
+                cash += c; g_eqh += gg
+
+            short = max(0.0, need - cash)
+            step = max(0.05, short / 60.0)
+            for _ in range(200):
+                if short <= EPS:
+                    break
+                cands = []
+                for kind, book, nv in (("p_debt", p2, navs),
+                                       ("h_debt", h2, hnavs),
+                                       ("p_eq", e2p, None),
+                                       ("h_eq", e2h, None)):
+                    if kind.endswith("eq"):
+                        if not EQUITY_ENABLED:
+                            continue
+                        live = [f for f in book.funds if f.units() > EPS]
+                        if not live:
+                            continue
+                        frac = min(f.front_frac(nav_eq) for f in live)
+                    else:
+                        if book.value(nv) <= EPS:
+                            continue
+                        pool = [(fi, k, f) for fi in range(len(book.folios))
+                                for k, f in enumerate(book.folios[fi].funds)
+                                if f.units() > EPS]
+                        if not pool:
+                            continue
+                        frac = min(f.front_frac(nv[k]) for _fi, k, f in pool)
+                    frac = max(0.0, min(1.0, frac))
+                    cost = marginal_cost(kind, g_p, g_h, g_eqp, g_eqh, frac)
+                    order = {"p_debt": 0, "p_eq": 1, "h_debt": 2, "h_eq": 3}[kind]
+                    cands.append((cost, order, kind, book, nv))
+                if not cands:
+                    break
+                cands.sort(key=lambda t: (t[0], t[1]))
+                _cost, _o, kind, book, nv = cands[0]
+                take = min(short, step)
+                if kind.endswith("eq"):
+                    c, gg = book.sell(nav_eq, fy, amount=take)
+                    if kind == "p_eq":
+                        g_eqp += gg
+                    else:
+                        g_eqh += gg
+                else:
+                    c, gg, _ = book.draw(nv, fy, amount=take)
+                    if kind == "p_debt":
+                        g_p += gg
+                    else:
+                        g_h += gg
+                if c <= EPS:
+                    break
+                cash += c
+                short = max(0.0, short - c)
+
+            gpt = g_p + gain_turn
+            ght = g_h + gain_turn_h
+            txp0 = personal_tax(toi + gpt, exempt_c, band_h)
+            txh0 = huf_tax(ght, band_h)
+            # The tax must come OUT of the books, exactly as the plain path
+            # does it. Reporting a bill without paying it is the conservation
+            # leak that test_surplus_is_never_discarded exists to catch.
+            _dp, egp = pay_tax_bill(p2, txp0, gpt, navs, fy, is_huf=False,
+                                    exempt_ceiling=exempt_c, taxable_other=toi,
+                                    basic_exemption=band_h)
+            _dh, egh = pay_tax_bill(h2, txh0, ght, hnavs, fy, is_huf=True,
+                                    nil_band=band_h)
+            gpt += egp
+            ght += egh
+            txp = personal_tax(toi + gpt, exempt_c, band_h)
+            txh = huf_tax(ght, band_h)
+            txe = (equity_tax(g_eqp, eq_exempt, eq_rate)
+                   + equity_tax(g_eqh, eq_exempt, eq_rate))
+            return dict(tax=txp + txh + txe, p=p2, h=h2, ep=e2p, eh=e2h,
+                        sold={}, cash_p=cash, cash_h=0.0, surplus=0.0,
+                        gain_p=gpt, gain_h=ght,
+                        txp=txp, txh=txh, txe=txe,
+                        eq_cash=0.0, eq_gain=g_eqp + g_eqh,
+                        eq_gain_p=g_eqp, eq_gain_h=g_eqh)
+
         best = run_year(offer)
         best_offer = offer
 
@@ -1504,6 +1672,30 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                     alt = run_year(best_offer, eq_use=use)
                     if alt["tax"] < best["tax"] - 1e-9:
                         best = alt
+
+        # Water-filling is tried only when the plain path pays a MEANINGFUL
+        # amount of tax. EPS is 1e-12; a tax bill of nine nanopaise is a float
+        # artefact, and letting it trigger a restructure once cost 25 of corpus
+        # to save nothing.
+        #
+        # And it is chosen on TERMINAL VALUE, not on tax. Minimising tax alone
+        # will happily spend equity compounding at EQUITY_RETURN to avoid a
+        # smaller bill on debt compounding at the chunk rate -- which is a bad
+        # trade whenever the growth differential over the remaining horizon
+        # exceeds the tax saved. Each purse is projected forward at its own
+        # rate to the end of the plan and the larger total wins.
+        if best["tax"] > TAX_EPS:
+            alt = run_waterfill()
+            _yrs = max(0, horizon - fy)
+            _rd = (1.0 + chunk_rates(1)[0]) ** _yrs
+            _re = (1.0 + EQUITY_RETURN) ** _yrs
+
+            def _terminal(c):
+                return ((c["p"].value(navs) + c["h"].value(hnavs)) * _rd
+                        + (c["ep"].value(nav_eq) + c["eh"].value(nav_eq)) * _re)
+
+            if _terminal(alt) > _terminal(best) + TAX_EPS:
+                best = alt
 
         personal, huf = best["p"], best["h"]
         eq_p, eq_h = best["ep"], best["eh"]
@@ -1571,8 +1763,8 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
             folio_values=[f.value(navs) for f in personal.folios],
             tax_personal=tax_p_final,
             tax_huf=tax_h_final,
-            tax_total=tax_p_final + tax_h_final,
-            tax_cumulative=tax_p_tot + tax_h_tot,
+            tax_total=tax_p_final + tax_h_final + best.get("txe", 0.0),
+            tax_cumulative=tax_p_tot + tax_h_tot + tax_eq_tot,
         ))
 
     if verbose:

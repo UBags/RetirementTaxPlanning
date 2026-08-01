@@ -36,14 +36,17 @@ import swp_dp_model as M  # noqa: E402
 # are the values the leaking versions FAILED to reproduce -- one returned
 # 74.855 / 859.0, which is the entire signature of a discarded surplus.
 #
-# RE-PINNED when the default income split changed from 5.95/9.85 to 4.85/10.45.
+# RE-PINNED twice. Once when water-filling landed: tax fell 0.554 -> 0.363
+# and corpus ROSE 1839.576 -> 1839.776, both better, so a legitimate
+# improvement rather than a leak -- a leak shows as a large corpus DROP.
+# Before that, when the default income split changed from 5.95/9.85 to 4.85/10.45.
 # Total income fell 0.50 (so need rose and corpus fell) while the TAXABLE share
 # fell 1.10 (so the band widened and tax fell). Previous pin: 1.499788298 /
 # 1907.619583. If this test fails after an intentional default change, re-pin
 # it deliberately; if it fails after a routing change, suspect a discarded
 # surplus and check the corpus for a large DROP.
-NO_EQUITY_TAX = 0.554240407
-NO_EQUITY_CORPUS = 1839.576279
+NO_EQUITY_TAX = 0.362638768
+NO_EQUITY_CORPUS = 1839.775581
 
 
 @pytest.fixture(autouse=True)
