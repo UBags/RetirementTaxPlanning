@@ -19,12 +19,25 @@ library only. Every input is a constant in the INPUTS block below.
 
 PARAMETERS
 
---interest_rate i   The base debt rate. The rate belongs to the FUND, fixed for
-                    its life, set by the chunk the fund was first chosen for:
+--interest_rate     ONE, TWO or THREE rates, slash separated. The rate belongs
+                    to the FUND, fixed for its life, set by the chunk the fund
+                    was first chosen for. How the supplied rates map:
 
-                      1chunk  f1-f21   i
-                      2chunk  f1-f21   i+0.25%   f22-f31  i-0.25%
-                      3chunk  f1-f21   i+0.25%   f22-f28  i     f29-f35 i-0.25%
+                      0.045              1chunk  0.0450
+                                         2chunk  0.0475 0.0425
+                                         3chunk  0.0475 0.0450 0.0425
+                      0.055/0.045        1chunk  0.0550
+                                         2chunk  0.0550 0.0450
+                                         3chunk  0.0550 0.0500 0.0450
+                      0.065/0.055/0.045  1chunk  0.0650
+                                         2chunk  0.0650 0.0550
+                                         3chunk  0.0650 0.0550 0.0450
+
+                    One rate is a MIDPOINT and the chunks spread around it by
+                    CHUNK_SPREAD. Two are the first and last chunk, with a
+                    middle chunk taking their mean. Three are literal. A
+                    scenario always uses the first n_chunks of what it
+                    resolves, so one flag gives a coherent set for all three.
 
                     The PORTFOLIO rate is an output, not an input: it falls as
                     the transitions shift the mix, and funds that never
@@ -303,9 +316,8 @@ REQUIREMENT_BLOCKS = [35.0, 37.5, 42.5, 45.0, 47.5, 50.0, 52.5]
 # The rate is a property of the FUND, fixed for its life, set by the chunk the
 # fund was first chosen for. The portfolio rate then falls as the transitions
 # shift the mix -- the blend is an OUTPUT, not an input.
-INTEREST_RATE = 0.070       # the base rate i
-CHUNK_SPREAD = 0.0025       # chunk 1 funds earn i+spread, the last chunk's
-                            # earn i-spread, and 3chunk's middle set earns i
+INTEREST_RATES = (0.070,)   # one, two or three rates. What each chunk's funds
+CHUNK_SPREAD = 0.0025       # earn is resolved by chunk_rates() below.
 
 # ---- income, by head ------------------------------------------------------
 # Split so each head carries its own statutory treatment. The defaults sum to
@@ -412,6 +424,43 @@ def _grp(a, b):
     return list(range(a - 1, b))        # 1-based fund numbers, inclusive
 
 
+def chunk_rates(n_chunks):
+    """The rate each chunk's funds earn, given 1, 2 or 3 supplied rates.
+
+    ONE rate is a midpoint and the chunks spread around it by CHUNK_SPREAD.
+    TWO rates are the first and last chunk; a middle chunk takes their mean.
+    THREE rates are taken literally.
+
+    A scenario always uses the FIRST n_chunks of what it resolves, so the same
+    --interest_rate produces a coherent set for every scenario:
+
+        --interest_rate 0.045              1chunk  0.0450
+                                           2chunk  0.0475 0.0425
+                                           3chunk  0.0475 0.0450 0.0425
+        --interest_rate 0.055/0.045        1chunk  0.0550
+                                           2chunk  0.0550 0.0450
+                                           3chunk  0.0550 0.0500 0.0450
+        --interest_rate 0.065/0.055/0.045  1chunk  0.0650
+                                           2chunk  0.0650 0.0550
+                                           3chunk  0.0650 0.0550 0.0450
+    """
+    r = INTEREST_RATES
+    if len(r) == 1:
+        i = r[0]
+        if n_chunks == 1:
+            return [i]
+        if n_chunks == 2:
+            return [i + CHUNK_SPREAD, i - CHUNK_SPREAD]
+        return [i + CHUNK_SPREAD, i, i - CHUNK_SPREAD]
+    if n_chunks == 1:
+        return [r[0]]
+    if n_chunks == 2:
+        return [r[0], r[1]]
+    if len(r) == 2:
+        return [r[0], (r[0] + r[1]) / 2.0, r[1]]
+    return [r[0], r[1], r[2]]
+
+
 def _turnover_counts():
     """Funds moved at each boundary, as counts. At least one, at most what is
     left, so a silly fraction degrades rather than producing empty groups."""
@@ -433,7 +482,8 @@ def get_scenario(name):
     base_last = N_BASE_FUNDS - 1
 
     if name == "1chunk":
-        return dict(n_funds=N_BASE_FUNDS, rate=lambda k: INTEREST_RATE,
+        rt = chunk_rates(1)
+        return dict(n_funds=N_BASE_FUNDS, rate=lambda k: rt[0],
                     transitions=[])
 
     if name == "2chunk":
@@ -441,8 +491,8 @@ def get_scenario(name):
         into1 = list(range(N_BASE_FUNDS, N_BASE_FUNDS + n1))
         return dict(
             n_funds=N_BASE_FUNDS + n1,
-            rate=lambda k: (INTEREST_RATE + CHUNK_SPREAD if k < N_BASE_FUNDS
-                            else INTEREST_RATE - CHUNK_SPREAD),
+            rate=lambda k, _r=chunk_rates(2): (_r[0] if k < N_BASE_FUNDS
+                                               else _r[1]),
             transitions=[(1, 15 + BOUNDARY_GRACE, out1, into1)],
             low_fund_idx=lambda k: k >= N_BASE_FUNDS,
             target_low_share=lambda fy: (0.0 if fy <= 15
@@ -457,9 +507,9 @@ def get_scenario(name):
         cut1, cut2 = N_BASE_FUNDS, N_BASE_FUNDS + n1
         return dict(
             n_funds=N_BASE_FUNDS + n1 + n2,
-            rate=lambda k: (INTEREST_RATE + CHUNK_SPREAD if k < cut1
-                            else INTEREST_RATE if k < cut2
-                            else INTEREST_RATE - CHUNK_SPREAD),
+            rate=lambda k, _r=chunk_rates(3): (_r[0] if k < cut1
+                                               else _r[1] if k < cut2
+                                               else _r[2]),
             transitions=[(1, 10 + BOUNDARY_GRACE, out1, into1),
                          (11, 20 + BOUNDARY_GRACE, out2, into2)],
             low_fund_idx=lambda k: k >= N_BASE_FUNDS,
@@ -1463,7 +1513,7 @@ def _echo_invocation(a):
         f"--horizon {a.horizon}",
         f"--vintage {a.vintage}",
         f"--max_folios {a.max_folios}",
-        f"--interest_rate {INTEREST_RATE:.4f}",
+        "--interest_rate " + "/".join(f"{r:g}" for r in INTEREST_RATES),
         f"--taxable_other_income {TAXABLE_OTHER_INCOME:.2f}",
         f"--taxfree_other_income {TAXFREE_OTHER_INCOME:.2f}",
         f"--salary_income {SALARY_INCOME:.2f}",
@@ -1514,10 +1564,13 @@ def main():
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--sweep", action="store_true",
                     help="compare scenarios, horizons and vintage rules")
-    ap.add_argument("--interest_rate", "--interest-rate", type=float,
+    ap.add_argument("--interest_rate", "--interest-rate", type=str,
                     default=None, dest="interest_rate",
-                    help="base debt rate i as a decimal, e.g. 0.065. Chunk-1 "
-                         "funds earn i+0.25%%, the last chunk's earn i-0.25%%.")
+                    help="one, two or three debt rates as decimals, slash "
+                         "separated: 0.045 spreads by +-0.25%% per chunk; "
+                         "0.055/0.045 gives the first and last chunk and "
+                         "interpolates a middle one; 0.065/0.055/0.045 is "
+                         "taken literally.")
     ap.add_argument("--taxable_other_income", type=float, default=None,
                     help="fully taxable other income, Rs lakh/yr")
     ap.add_argument("--taxfree_other_income", type=float, default=None,
@@ -1540,8 +1593,27 @@ def main():
 
     # Overrides are module globals because the scenario rate lambdas and
     # build_ladders() read them directly. Set before any run.
-    for flag, name in (("interest_rate", "INTEREST_RATE"),
-                       ("taxable_other_income", "TAXABLE_OTHER_INCOME"),
+    if a.interest_rate is not None:
+        try:
+            rr = [float(x) for x in a.interest_rate.replace(",", "/").split("/")]
+        except ValueError:
+            sys.exit(f"FATAL: could not read --interest_rate "
+                     f"{a.interest_rate!r}. Expected one to three decimals "
+                     f"like 0.065 or 0.065/0.055/0.045.")
+        if not 1 <= len(rr) <= 3:
+            sys.exit(f"FATAL: --interest_rate takes one to three values, got "
+                     f"{len(rr)}: {a.interest_rate!r}")
+        if any(not (0.0 < x < 1.0) for x in rr):
+            sys.exit("FATAL: interest rates are DECIMALS, not percentages. "
+                     "Use 0.075, not 7.5.")
+        if len(rr) > 1 and not all(rr[i] >= rr[i + 1] for i in range(len(rr) - 1)):
+            print(f"  NOTE: rates {rr} do not step DOWN. That is allowed, but "
+                  f"the chunk structure exists to move money into "
+                  f"lower-yielding funds over time, so a rising path inverts "
+                  f"the premise.")
+        globals()["INTEREST_RATES"] = tuple(rr)
+
+    for flag, name in (("taxable_other_income", "TAXABLE_OTHER_INCOME"),
                        ("taxfree_other_income", "TAXFREE_OTHER_INCOME"),
                        ("salary_income", "SALARY_INCOME"),
                        ("rental_income", "RENTAL_INCOME")):
@@ -1597,7 +1669,13 @@ def main():
     if _tot <= 0:
         sys.exit("FATAL: the four income heads sum to zero.")
     _echo_invocation(a)
-    print(f"base rate {INTEREST_RATE:.4%}   income {_tot:.2f} "
+    _n = {"1chunk": 1, "2chunk": 2, "3chunk": 3}[a.scenario]
+    _rt = chunk_rates(_n)
+    print("chunk rates: "
+          + ", ".join(f"chunk {j + 1} {x:.4%}" for j, x in enumerate(_rt))
+          + (f"   (from {'/'.join(f'{r:g}' for r in INTEREST_RATES)})"
+             if len(INTEREST_RATES) != _n else ""))
+    print(f"income {_tot:.2f} "
           f"(taxable-other {TAXABLE_OTHER_INCOME:.2f}, tax-free "
           f"{TAXFREE_OTHER_INCOME:.2f}, salary {SALARY_INCOME:.2f}, "
           f"rent {RENTAL_INCOME:.2f})")
