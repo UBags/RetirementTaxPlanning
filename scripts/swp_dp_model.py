@@ -60,6 +60,24 @@ PARAMETERS
                     COMMA splits one pair from the next. The first pair must
                     start at FY1 and the years must strictly increase.
 
+--equity_cagr       Equity sleeve CAGR as a decimal, e.g. 0.12. DETERMINISTIC:
+                    EQUITY_SIGMA exists but is unused, because a fixed model
+                    cannot use a dispersion for anything but false precision.
+                    Measured on 2chunk/35yr, the sleeve is a corpus lever and
+                    barely a tax one -- above 9% the tax stops moving at all
+                    while the corpus roughly doubles:
+
+                        7%   tax 1.130  corpus 1995.3  equity 16.1% of it
+                        9%   tax 0.965  corpus 2238.5  equity 24.7%
+                       12%   tax 0.965  corpus 2894.0  equity 41.1%
+                       15%   tax 0.965  corpus 4196.7  equity 59.0%
+
+                    s.112A caps the tax-free drawdown at the annual exemption
+                    regardless of sleeve size, so a bigger sleeve adds nothing
+                    to tax capacity. Raising this assumption inflates the
+                    corpus and nothing else -- treat a high value as a
+                    forecast, not a finding.
+
 --max_folios n      maximum debt cohorts per purse (was --cap, still accepted).
                     Binds only at --vintage 3 or tighter, and releasing it
                     changes nothing measurable; a guard, not a lever.
@@ -343,8 +361,8 @@ CHUNK_SPREAD = 0.0025       # earn is resolved by chunk_rates() below.
 # Split so each head carries its own statutory treatment. The defaults sum to
 # the previous total of 15.80 with a taxable portion of 5.95, so an
 # out-of-the-box run is unchanged.
-TAXABLE_OTHER_INCOME = 5.95     # interest and the like -- fully taxable
-TAXFREE_OTHER_INCOME = 9.85     # PPF, tax-free bonds, return of capital
+TAXABLE_OTHER_INCOME = 4.85     # interest and the like -- fully taxable
+TAXFREE_OTHER_INCOME = 10.45    # PPF, tax-free bonds, return of capital
 SALARY_INCOME = 0.0             # taxable less the s.16(ia) standard deduction
 RENTAL_INCOME = 0.0             # taxable less the s.24(a) 30% deduction
 SALARY_STD_DEDUCTION = 0.75     # s.16(ia)
@@ -379,7 +397,7 @@ EXIT_LOAD = 0.01            # charged on units sold in their year of purchase
 # slab band nor is sheltered by it -- the exemption is additive capacity on top
 # of everything else, once per assessee.
 EQUITY_ENABLED = True
-EQUITY_RETURN = 0.090       # deterministic CAGR
+EQUITY_RETURN = 0.090       # deterministic CAGR, --equity_cagr
 EQUITY_SIGMA = 0.125        # NOT USED -- deterministic model. See docstring.
 N_EQ_FUNDS = 20             # eq_f1 .. eq_f20, filled SEQUENTIALLY not equally
 EQ_BUCKET_SHARE = 0.05      # each bucket is filled to this share of the excess
@@ -1548,6 +1566,7 @@ def _echo_invocation(a):
         f"--vintage {a.vintage}",
         f"--max_folios {a.max_folios}",
         "--interest_rate " + "/".join(f"{r:g}" for r in INTEREST_RATES),
+        f"--equity_cagr {EQUITY_RETURN:g}",
         f"--taxable_other_income {TAXABLE_OTHER_INCOME:.2f}",
         f"--taxfree_other_income {TAXFREE_OTHER_INCOME:.2f}",
         f"--salary_income {SALARY_INCOME:.2f}",
@@ -1624,6 +1643,11 @@ def main():
                     help="salary, Rs lakh/yr (s.16(ia) deduction applied)")
     ap.add_argument("--rental_income", type=float, default=None,
                     help="rent, Rs lakh/yr (s.24(a) 30%% deduction applied)")
+    ap.add_argument("--equity_cagr", "--equity-cagr", type=float, default=None,
+                    dest="equity_cagr",
+                    help="equity sleeve CAGR as a decimal, e.g. 0.12. "
+                         "Deterministic -- see EQUITY_SIGMA in the docstring "
+                         "for why the dispersion around it is not modelled.")
     ap.add_argument("--post_tax_requirement", "--post-tax-requirement",
                     type=str, default=None, dest="post_tax_requirement",
                     help="post-tax requirement schedule as amount/from_FY "
@@ -1674,6 +1698,12 @@ def main():
         val = getattr(a, flag)
         if val is not None:
             globals()[name] = val
+
+    if a.equity_cagr is not None:
+        if not (0.0 < a.equity_cagr < 1.0):
+            sys.exit(f"FATAL: --equity_cagr is a DECIMAL, not a percentage. "
+                     f"Use 0.12, not 12. Got {a.equity_cagr}.")
+        globals()["EQUITY_RETURN"] = a.equity_cagr
 
     if a.post_tax_requirement is not None:
         pairs = []
@@ -1758,6 +1788,8 @@ def main():
           + ", ".join(f"chunk {j + 1} {x:.4%}" for j, x in enumerate(_rt))
           + (f"   (from {'/'.join(f'{r:g}' for r in INTEREST_RATES)})"
              if len(INTEREST_RATES) != _n else ""))
+    print(f"equity CAGR {EQUITY_RETURN:.2%}"
+          + ("" if EQUITY_ENABLED else "   (sleeve DISABLED)"))
     print(f"income {_tot:.2f} "
           f"(taxable-other {TAXABLE_OTHER_INCOME:.2f}, tax-free "
           f"{TAXFREE_OTHER_INCOME:.2f}, salary {SALARY_INCOME:.2f}, "

@@ -34,10 +34,16 @@ import swp_dp_model as M  # noqa: E402
 
 # The no-equity path is the reference the equity code must not disturb. These
 # are the values the leaking versions FAILED to reproduce -- one returned
-# 74.855 / 859.0 against the 1.499788 / 1907.6196 below, which is the entire
-# signature of a discarded surplus.
-NO_EQUITY_TAX = 1.499788298
-NO_EQUITY_CORPUS = 1907.619583
+# 74.855 / 859.0, which is the entire signature of a discarded surplus.
+#
+# RE-PINNED when the default income split changed from 5.95/9.85 to 4.85/10.45.
+# Total income fell 0.50 (so need rose and corpus fell) while the TAXABLE share
+# fell 1.10 (so the band widened and tax fell). Previous pin: 1.499788298 /
+# 1907.619583. If this test fails after an intentional default change, re-pin
+# it deliberately; if it fails after a routing change, suspect a discarded
+# surplus and check the corpus for a large DROP.
+NO_EQUITY_TAX = 0.554240407
+NO_EQUITY_CORPUS = 1839.576279
 
 
 @pytest.fixture(autouse=True)
