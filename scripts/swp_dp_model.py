@@ -1548,17 +1548,23 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
             p2, h2 = copy.deepcopy(personal), copy.deepcopy(huf)
             e2p, e2h = copy.deepcopy(eq_p), copy.deepcopy(eq_h)
 
-            cash = g_p = g_h = g_eqp = g_eqh = 0.0
+            # Cash is tracked PER PURSE, not as one total, so the reported
+            # cash_p / cash_h split stays real. Lumping it into cash_p once
+            # made the table show the HUF contributing nothing while its debt
+            # book visibly drained.
+            cash_p = cash_h = 0.0
+            g_p = g_h = g_eqp = g_eqh = 0.0
             c, gg, _ = p2.draw(navs, fy, gain_cap=band_left)
-            cash += c; g_p += gg
+            cash_p += c; g_p += gg
             if h2.value(hnavs) > EPS:
                 c, gg, _ = h2.draw(hnavs, fy, gain_cap=band_h)
-                cash += c; g_h += gg
+                cash_h += c; g_h += gg
             if EQUITY_ENABLED:
                 c, gg = e2p.sell(nav_eq, fy, gain_cap=eq_exempt)
-                cash += c; g_eqp += gg
+                cash_p += c; g_eqp += gg
                 c, gg = e2h.sell(nav_eq, fy, gain_cap=eq_exempt)
-                cash += c; g_eqh += gg
+                cash_h += c; g_eqh += gg
+            cash = cash_p + cash_h
 
             short = max(0.0, need - cash)
             step = max(0.05, short / 60.0)
@@ -1599,14 +1605,18 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                     c, gg = book.sell(nav_eq, fy, amount=take)
                     if kind == "p_eq":
                         g_eqp += gg
+                        cash_p += c
                     else:
                         g_eqh += gg
+                        cash_h += c
                 else:
                     c, gg, _ = book.draw(nv, fy, amount=take)
                     if kind == "p_debt":
                         g_p += gg
+                        cash_p += c
                     else:
                         g_h += gg
+                        cash_h += c
                 if c <= EPS:
                     break
                 cash += c
@@ -1631,7 +1641,7 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
             txe = (equity_tax(g_eqp, eq_exempt, eq_rate)
                    + equity_tax(g_eqh, eq_exempt, eq_rate))
             return dict(tax=txp + txh + txe, p=p2, h=h2, ep=e2p, eh=e2h,
-                        sold={}, cash_p=cash, cash_h=0.0, surplus=0.0,
+                        sold={}, cash_p=cash_p, cash_h=cash_h, surplus=0.0,
                         gain_p=gpt, gain_h=ght,
                         txp=txp, txh=txh, txe=txe,
                         eq_cash=0.0, eq_gain=g_eqp + g_eqh,
@@ -1754,6 +1764,8 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
             huf_eq_folios=huf_eq_folios,
             p_eq_buckets=eq_p.buckets_used(),
             huf_eq_buckets=eq_h.buckets_used(),
+            debt_multiple=_floor_x,
+            debt_cover=((p_debt + huf_debt) / need if need > EPS else 0.0),
             folios_open=len(personal.folios),   # retained: CSV column expansion
             value_equity=val_eq,
             equity_cash=best.get("eq_cash", 0.0),
@@ -1769,15 +1781,17 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
 
     if verbose:
         print(f"{'FY':>3}{'band':>7}{'need':>7}{'cash_p':>8}{'cash_h':>8}"
-              f"{'surp':>8}{'trans':>8}{'gain':>7}{'fol':>5}"
+              f"{'surp':>8}{'trans':>8}{'gain':>7}{'mult':>6}{'cvr':>6}{'fol':>5}"
               f"{'p_debt':>10}{'p_eq':>9}{'h_debt':>9}{'h_eq':>8}"
               f"{'eq$':>7}{'tax':>7}{'cum':>8}")
-        print("-" * 118)
+        print("-" * 130)
         for r in rows:
             print(f"{r['fy']:>3}{r['personal_band']:>7.2f}{r['net_need']:>7.2f}"
                   f"{r['personal_cash']:>8.2f}{r['huf_cash']:>8.2f}"
                   f"{r['surplus']:>8.2f}{r['transition']:>8.2f}"
-                  f"{r['gain_personal']:>7.2f}{r['p_debt_folios']:>5}"
+                  f"{r['gain_personal']:>7.2f}"
+                  f"{r['debt_multiple']:>6.0f}{r['debt_cover']:>6.1f}"
+                  f"{r['p_debt_folios']:>5}"
                   f"{r['p_debt']:>10.1f}{r['p_eq']:>9.1f}"
                   f"{r['huf_debt']:>9.1f}{r['huf_eq']:>8.1f}"
                   f"{r['equity_cash']:>7.2f}"
