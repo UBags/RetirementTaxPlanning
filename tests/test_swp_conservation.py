@@ -125,16 +125,39 @@ def test_conservation_holds_when_a_purse_is_exhausted():
 def test_conservation_holds_with_a_much_larger_sleeve():
     """A third regime: 30% deployment cap against a 16/14/12 debt floor.
 
-    KNOWN COVERAGE GAP, recorded rather than papered over. Breaking the
+    KNOWN COVERAGE GAP, now with its reason rather than a shrug. Breaking the
     s.112A settlement in run_waterfill is caught; breaking it in run_year
-    alone is NOT, by any fixture here including this one, because in every
-    regime tried the equity bill arises only in the water-fill branch. If a
-    future change moves equity into the plain path's funding, this file needs
-    a case that proves it.
+    alone is NOT, by any fixture here. It is not that the path is unreachable
+    -- probing shows run_year carrying an equity bill once or twice per run --
+    but that it can only ever be a TINY one. run_year's own equity sales are
+    gain-capped at eq_exempt, so its s.112A bill is zero by construction; the
+    only gain that escapes the cap is what the exhausted-book fallback
+    realises, and that is small. The resulting bill sits below PLAN_TOL, so no
+    conservation fixture can distinguish its settlement from its absence.
+    Covering it needs an assertion on the tax figure, not on the identity.
     """
     _check(_residuals(**dict(WORKING_SET, EQUITY_MAX_SHARE=0.30,
                              DEBT_FLOOR_MULTIPLES=(16.0, 14.0, 12.0))),
            "equity in the plain path")
+
+
+def test_conservation_holds_when_the_sleeves_cannot_pay_the_equity_bill():
+    """Drive the s.112A fallback onto the debt book.
+
+    A 7% sleeve under a 10/9/8 floor with heavy taxable other income drains
+    the equity almost to nothing in the late years, so settle_equity_tax runs
+    out of units and the balance falls to pay_external_bill. That path used
+    pay_tax_bill, which converges on the whole slab bill rather than on this
+    one -- a residual of 0.0026 dragged 1.13 of debt out behind it. The
+    conservation identity does NOT catch that on its own, because the
+    over-draw is reported as tax and the identity still closes; this case is
+    here so the path is at least exercised.
+    """
+    _check(_residuals(**dict(WORKING_SET, EQUITY_RETURN=0.07,
+                             EQUITY_MAX_SHARE=0.30,
+                             TAXABLE_OTHER_INCOME=18.0,
+                             DEBT_FLOOR_MULTIPLES=(10.0, 9.0, 8.0))),
+           "sleeve cannot pay")
 
 
 def test_conservation_holds_without_equity():

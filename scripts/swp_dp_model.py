@@ -1439,6 +1439,50 @@ class Book:
 #  Fixed-Point Tax Payment Engine
 # ═══════════════════════════════════════════════════════════════════════════
 
+def pay_external_bill(book, bill, base_gain, navs, fy,
+                      exempt_ceiling=0.0, taxable_other=0.0,
+                      basic_exemption=BRACKET_WIDTH):
+    """Sell debt units to pay a bill that is NOT slab tax -- an s.112A bill the
+    sleeves could not cover.
+
+    pay_tax_bill cannot be used for this and using it was a real defect. That
+    function converges on `new_tax - total_tax_paid`, where new_tax is the
+    year's WHOLE personal slab bill. When the amount handed to it is a slab
+    bill those two are the same quantity, so the loop is sound. When it is an
+    equity bill they are different tax heads, and the first pass leaves
+    `current_tax_needed` equal to the entire slab bill -- which the caller has
+    already settled -- so the book is drained a second time for it. MEASURED:
+    at 2chunk/35yr with --taxable_other_income 12.0 a residual bill of
+    0.000006 drew 1.7750 of debt and realised 1.1903 of gain. Conservation did
+    not catch it, and could not: the over-draw is reported as tax, so the
+    identity still closes. It is tax charged for no reason, not value lost.
+
+    Here the target is the bill PLUS only the incremental slab tax the debt
+    sales themselves create, measured against the slab tax already standing at
+    base_gain. Returns (cash drawn, gain realised).
+    """
+    if bill <= EPS or book.value(navs) <= EPS:
+        return 0.0, 0.0
+    base_slab = personal_tax(taxable_other + base_gain, exempt_ceiling,
+                             basic_exemption)
+    drawn_tot = gain_tot = 0.0
+    want = bill
+    for _ in range(10):
+        if want <= EPS:
+            break
+        drawn, add_gain, _ = book.draw(navs, fy, amount=want,
+                                       high_gain_first=False)
+        if drawn <= EPS:
+            break
+        drawn_tot += drawn
+        gain_tot += add_gain
+        inc_slab = max(0.0, personal_tax(taxable_other + base_gain + gain_tot,
+                                         exempt_ceiling, basic_exemption)
+                       - base_slab)
+        want = max(0.0, bill + inc_slab - drawn_tot)
+    return drawn_tot, gain_tot
+
+
 def pay_tax_bill(book, initial_tax, base_gain, navs, fy, is_huf=False,
                  nil_band=0.0, exempt_ceiling=0.0, taxable_other=0.0,
                  basic_exemption=BRACKET_WIDTH):
@@ -1793,13 +1837,18 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                     eq_gain_p, eq_gain_h)
                 eq_gain_p += _xp
                 eq_gain_h += _xh
-                if txe - _pd > EPS:
+                # TAX_EPS, not EPS. EPS is 1e-12, and a settlement that
+                # lands a hundredth of a paisa short is float dust, not an
+                # unpaid bill -- one such residue of 0.000006 used to drag
+                # 1.7750 of debt out of the book behind it.
+                if txe - _pd > TAX_EPS:
                     # The debt sale that settles an equity bill realises DEBT
-                    # gain, which is slab-taxable. Discarding the return left
-                    # that gain uncharged -- the same omission as the equity
-                    # side, one book over.
-                    _d2, _e2 = pay_tax_bill(
-                        p2, txe - _pd, gpt, navs, fy, is_huf=False,
+                    # gain, which is slab-taxable, so the draw must cover the
+                    # bill AND the slab tax the draw itself creates -- but
+                    # nothing more. See pay_external_bill for why pay_tax_bill
+                    # is the wrong instrument here.
+                    _d2, _e2 = pay_external_bill(
+                        p2, txe - _pd, gpt, navs, fy,
                         exempt_ceiling=exempt_c, taxable_other=toi,
                         basic_exemption=band_h)
                     gpt += _e2
@@ -1813,7 +1862,26 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
 
         # The ration-implied split first. It is free and usually optimal.
         _yrs_left = max(0, horizon - fy)
-        _dr = chunk_rates(1)[0]
+        # The PORTFOLIO's debt rate, value-weighted across what is actually
+        # held, not chunk 1's. chunk_rates(1)[0] is the ONE-chunk resolution
+        # of --interest_rate, so in 2chunk it read 6.00% while half the book
+        # earned 5.25%, and in 3chunk it read the top of the spread against a
+        # book paying down to 4.50%. It has three consumers -- the terminal
+        # projection, the cap on the conservative leg of the scoring blend,
+        # and the annuity factor in the spillover reserve -- and all three
+        # were reading a rate the plan does not earn.
+        _dw, _drt = [], []
+        for _fi in range(len(personal.folios)):
+            for _k in range(nf):
+                _v = personal.folios[_fi].funds[_k].value(navs[_k])
+                if _fi < len(huf.folios):
+                    _v += huf.folios[_fi].funds[_k].value(hnavs[_k])
+                if _v > EPS:
+                    _dw.append(_v)
+                    _drt.append(spec["rate"](_k))
+        _dtot = sum(_dw)
+        _dr = (sum(v * r for v, r in zip(_dw, _drt)) / _dtot if _dtot > EPS
+               else chunk_rates(1)[0])
         _rd_opt = (1.0 + _dr) ** _yrs_left
         _re_opt = (1.0 + EQUITY_RETURN) ** _yrs_left
         _dcr = (min(_dr, DECISION_DEBT_FLOOR) if DECISION_DEBT_RATE is None
@@ -2087,13 +2155,18 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                     g_eqp, g_eqh)
                 g_eqp += _xp
                 g_eqh += _xh
-                if txe - _pd > EPS:
+                # TAX_EPS, not EPS. EPS is 1e-12, and a settlement that
+                # lands a hundredth of a paisa short is float dust, not an
+                # unpaid bill -- one such residue of 0.000006 used to drag
+                # 1.7750 of debt out of the book behind it.
+                if txe - _pd > TAX_EPS:
                     # The debt sale that settles an equity bill realises DEBT
-                    # gain, which is slab-taxable. Discarding the return left
-                    # that gain uncharged -- the same omission as the equity
-                    # side, one book over.
-                    _d2, _e2 = pay_tax_bill(
-                        p2, txe - _pd, gpt, navs, fy, is_huf=False,
+                    # gain, which is slab-taxable, so the draw must cover the
+                    # bill AND the slab tax the draw itself creates -- but
+                    # nothing more. See pay_external_bill for why pay_tax_bill
+                    # is the wrong instrument here.
+                    _d2, _e2 = pay_external_bill(
+                        p2, txe - _pd, gpt, navs, fy,
                         exempt_ceiling=exempt_c, taxable_other=toi,
                         basic_exemption=band_h)
                     gpt += _e2
@@ -2140,7 +2213,7 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
             # 12.5%-equity set: personal slab tax 8.872 -> 0.000, total
             # 17.692 -> 12.995, corpus 1574.3 -> 1581.1.
             _n = max(0, horizon - fy)
-            _r = chunk_rates(1)[0]
+            _r = _dr
             _ann = ((1.0 - (1.0 + _r) ** -_n) / _r) if _n > 0 and _r > EPS else _n
             reserve = max(0.0, _ann * band_h / _hf)
             spill_max = min(need, max(0.0, huf.value(hnavs) - reserve))
