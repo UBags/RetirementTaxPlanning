@@ -296,6 +296,30 @@ years fall on the personal slab: tax 38.250 -> 51.336 and corpus 2944.0 ->
 the HUF at all, where the plain path has RATION_K -- but until it has one, the
 harvest is a lever that makes the missing rule bite harder.
 
+AND THE MISSING PACING RULE WAS BUILT, MEASURED, AND NOT KEPT. Two versions
+were tried on the 2chunk/35yr 12.5%-equity set at 20/20/18, where the HUF
+empties at FY31 and the last four years fall on equity at 13%:
+
+    lever                                    tax      corpus
+    none (shipped)                        17.452      1570.9
+    RATION_K applied to the water-fill    22.646      1554.7
+    HUF_BAND_RESERVE on, annuity PV       20.385      1566.4
+
+Both are worse, and the reason is structural rather than a tuning failure. The
+water-fill exists to take the cheapest marginal rupee; a pacing rule is a
+standing instruction to NOT take it. Holding the HUF back pushes the same cash
+onto the personal purse years earlier, into the s.87A claw-back, and the
+claw-back costs far more than the nil band that pacing preserves. The reserve
+version keeps the HUF alive to FY34 instead of FY31 and still ends at zero,
+buying three years of a 10.0 allowance for 2.9 of tax and 4.5 of corpus.
+
+It is NOT universally worse. At --taxable_other_income 12.0, where the
+personal purse is already deep in slab and the HUF is the only cheap source,
+the ration version wins: tax 38.093 -> 37.328, corpus 2957.3 -> 2986.2. No
+single rule dominates, so none is imposed. The HUF running dry at FY31 is the
+optimum on these parameters, not a defect -- which is the opposite of what it
+looks like in the trace, and is why it is written down here.
+
 TWO THINGS ABOUT IT ARE EASY TO GET WRONG.
 
 The ordering is by tax cost per rupee of CASH, not per rupee of GAIN. Cash is
@@ -561,6 +585,12 @@ SLAB_RATES = [0.05, 0.10, 0.15, 0.20, 0.25]
 TOP_RATE = 0.30
 CESS = 1.04                 # health and education cess
 EXIT_LOAD = 0.01            # charged on units sold in their year of purchase
+PLAN_TOL = 1e-2             # tolerance the yearly conservation identity must
+                            # close to. Everything that leaves a purse is cash
+                            # drawn, tax paid, or exit load; anything else is a
+                            # leak, and five have now been found by checking
+                            # exactly that. tests/test_swp_conservation.py
+                            # pins it.
 
 # ---- the equity sleeve (s.112A) --------------------------------------------
 # Equity LTCG is a SEPARATE tax head: a flat rate above its own annual
@@ -954,10 +984,16 @@ def huf_tax(gain, nil_band):
 # ═══════════════════════════════════════════════════════════════════════════
 
 class Fund:
-    __slots__ = ("lots",)
+    __slots__ = ("lots", "loss")
 
     def __init__(self):
         self.lots = []                      # [units, purchase_nav, buy_fy]
+        # Cumulative exit load charged on this fund. It rides on the FUND, not
+        # on a global counter, because the grid searches sell against hundreds
+        # of clones per year and only the winning lineage is committed. A
+        # clone inherits the running total, so close-minus-open across a
+        # committed substitution is exactly the load that really happened.
+        self.loss = 0.0
 
     def clone(self):
         """Shallow-structure deep-value copy. The grid searches clone state
@@ -966,6 +1002,7 @@ class Fund:
         slice copies it fully -- no nested references to chase."""
         f = Fund.__new__(Fund)
         f.lots = [lot[:] for lot in self.lots]
+        f.loss = self.loss
         return f
 
     def invest(self, amount, nav, fy):
@@ -1012,6 +1049,7 @@ class Fund:
                 load += take * EXIT_LOAD
             lot[0] -= take / nav
         self.lots = [l for l in self.lots if l[0] > EPS]
+        self.loss += load
         return gross, gain, load
 
 
@@ -1095,6 +1133,10 @@ class Sleeve:
         s.ptr = self.ptr
         s.in_current = self.in_current
         return s
+
+    def loss(self):
+        """Exit load charged across this sleeve's whole lineage."""
+        return sum(f.loss for f in self.funds)
 
     def value(self, nav):
         return sum(f.value(nav) for f in self.funds)
@@ -1214,6 +1256,10 @@ class Book:
         b.folios = [fo.clone() for fo in self.folios]
         b.receiver = self.receiver
         return b
+
+    def loss(self):
+        """Exit load charged across this book's whole lineage."""
+        return sum(f.loss for fo in self.folios for f in fo.funds)
 
     def value(self, navs):
         return sum(f.value(navs) for f in self.folios)
@@ -1515,6 +1561,15 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
         if EQUITY_ENABLED:
             nav_eq *= (1.0 + EQUITY_RETURN)
         eq_exempt, eq_rate = lad["eq_exempt"][i], lad["eq_rate"][i]
+        # OPEN OF YEAR: after growth and inflows, before anything is sold.
+        # The identity closed against this is the only check that sees value
+        # VANISHING rather than merely being misreported, which is how the
+        # sleeve leak, the unpaid s.112A bill and the unpaid bill on an
+        # exhausted book were all found.
+        _v_open = (personal.value(navs) + huf.value(hnavs)
+                   + eq_p.value(nav_eq) + eq_h.value(nav_eq))
+        _l_open = (personal.loss() + huf.loss()
+                   + eq_p.loss() + eq_h.loss())
 
         need = lad["requirement"][i] - lad["other_income"][i]
         band_p = lad["exempt"][i] - lad["taxable_other"][i]
@@ -1739,9 +1794,16 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                 eq_gain_p += _xp
                 eq_gain_h += _xh
                 if txe - _pd > EPS:
-                    pay_tax_bill(p2, txe - _pd, gpt, navs, fy, is_huf=False,
-                                 exempt_ceiling=exempt_c, taxable_other=toi,
-                                 basic_exemption=band_h)
+                    # The debt sale that settles an equity bill realises DEBT
+                    # gain, which is slab-taxable. Discarding the return left
+                    # that gain uncharged -- the same omission as the equity
+                    # side, one book over.
+                    _d2, _e2 = pay_tax_bill(
+                        p2, txe - _pd, gpt, navs, fy, is_huf=False,
+                        exempt_ceiling=exempt_c, taxable_other=toi,
+                        basic_exemption=band_h)
+                    gpt += _e2
+                    txp = personal_tax(toi + gpt, exempt_c, band_h)
             return dict(tax=txp + txh + txe, p=p2, h=h2, ep=e2p, eh=e2h,
                         sold=sold2, cash_p=cash_p2 + eq_cash, cash_h=cash_h2,
                         surplus=surp2, gain_p=gpt + egp, gain_h=gain_h2 + egh,
@@ -2026,9 +2088,16 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                 g_eqp += _xp
                 g_eqh += _xh
                 if txe - _pd > EPS:
-                    pay_tax_bill(p2, txe - _pd, gpt, navs, fy, is_huf=False,
-                                 exempt_ceiling=exempt_c, taxable_other=toi,
-                                 basic_exemption=band_h)
+                    # The debt sale that settles an equity bill realises DEBT
+                    # gain, which is slab-taxable. Discarding the return left
+                    # that gain uncharged -- the same omission as the equity
+                    # side, one book over.
+                    _d2, _e2 = pay_tax_bill(
+                        p2, txe - _pd, gpt, navs, fy, is_huf=False,
+                        exempt_ceiling=exempt_c, taxable_other=toi,
+                        basic_exemption=band_h)
+                    gpt += _e2
+                    txp = personal_tax(toi + gpt, exempt_c, band_h)
             return dict(tax=txp + txh + txe, p=p2, h=h2, ep=e2p, eh=e2h,
                         sold={}, cash_p=cash_p, cash_h=cash_h,
                         surplus=_surp_p,
@@ -2149,8 +2218,18 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
         huf_eq_folios = 1 if huf_eq > EPS else 0
         tax_eq_tot += best.get("txe", 0.0)
 
+        _v_close = (personal.value(navs) + huf.value(hnavs)
+                    + eq_p.value(nav_eq) + eq_h.value(nav_eq))
+        _year_load = (personal.loss() + huf.loss()
+                      + eq_p.loss() + eq_h.loss()) - _l_open
         rows.append(dict(
             fy=fy,
+            value_open=_v_open,
+            value_close=_v_close,
+            exit_load=_year_load,
+            residual=(_v_open - cash_p - cash_h
+                      - (tax_p_final + tax_h_final + best.get("txe", 0.0))
+                      - _year_load - _v_close),
             requirement=lad["requirement"][i],
             other_income=lad["other_income"][i],
             net_need=need,
