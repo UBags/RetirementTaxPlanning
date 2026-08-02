@@ -1565,6 +1565,23 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                         eq_gain_p=eq_gain_p, eq_gain_h=eq_gain_h)
 
         # The ration-implied split first. It is free and usually optimal.
+        _yrs_left = max(0, horizon - fy)
+        _rd = (1.0 + chunk_rates(1)[0]) ** _yrs_left
+        _re = (1.0 + EQUITY_RETURN) ** _yrs_left
+
+        def terminal(c):
+            """Each purse projected to the end of the plan at its own rate.
+
+            EVERY candidate search compares on this, not on tax. A tax-only
+            comparison will spend equity compounding at EQUITY_RETURN to avoid
+            a smaller bill on debt compounding at the chunk rate, which is a
+            bad trade whenever the growth differential over the remaining
+            horizon exceeds the tax saved. Corpus is already net of tax, so
+            terminal value is the score and tax is only one term in it.
+            """
+            return ((c["p"].value(navs) + c["h"].value(hnavs)) * _rd
+                    + (c["ep"].value(nav_eq) + c["eh"].value(nav_eq)) * _re)
+
         def marginal_cost(kind, g_p, g_h, g_eqp, g_eqh, frac, d=0.01):
             """Tax on the next rupee of CASH from a source, not of gain.
 
@@ -1766,7 +1783,7 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                 for j in range(1, SPILL_GRID + 1):
                     x = offer + (spill_max - offer) * j / SPILL_GRID
                     alt = run_year(x)
-                    if alt["tax"] < best["tax"] - 1e-9:
+                    if terminal(alt) > terminal(best) + TAX_EPS:
                         best, best_offer = alt, x
 
         # Equity is engaged ONLY when the debt answer still costs tax. The
@@ -1784,7 +1801,7 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                     # -- comparing equity variants to a worse baseline is how
                     # this silently did nothing in the years that paid tax.
                     alt = run_year(best_offer, eq_use=use)
-                    if alt["tax"] < best["tax"] - 1e-9:
+                    if terminal(alt) > terminal(best) + TAX_EPS:
                         best = alt
 
         # Water-filling is tried only when the plain path pays a MEANINGFUL
@@ -1800,15 +1817,7 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
         # rate to the end of the plan and the larger total wins.
         if best["tax"] > TAX_EPS:
             alt = run_waterfill()
-            _yrs = max(0, horizon - fy)
-            _rd = (1.0 + chunk_rates(1)[0]) ** _yrs
-            _re = (1.0 + EQUITY_RETURN) ** _yrs
-
-            def _terminal(c):
-                return ((c["p"].value(navs) + c["h"].value(hnavs)) * _rd
-                        + (c["ep"].value(nav_eq) + c["eh"].value(nav_eq)) * _re)
-
-            if _terminal(alt) > _terminal(best) + TAX_EPS:
+            if terminal(alt) > terminal(best) + TAX_EPS:
                 best = alt
 
         personal, huf = best["p"], best["h"]
