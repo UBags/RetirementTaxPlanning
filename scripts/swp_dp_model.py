@@ -998,7 +998,10 @@ class Fund:
         reflectively and dominates runtime. Each lot is a 3-element list, so a
         slice copies it fully -- no nested references to chase."""
         f = Fund.__new__(Fund)
-        f.lots = [lot[:] for lot in self.lots]
+        # Most funds in a book are empty most of the time -- 21 funds across
+        # up to 8 folios, and only the live ones hold lots -- so the branch
+        # pays for itself many times over across a Monte Carlo run.
+        f.lots = [lot[:] for lot in self.lots] if self.lots else []
         f.loss = self.loss
         return f
 
@@ -1387,12 +1390,26 @@ class Book:
                                   protect=protect)
 
         if got >= need - 1e-6 and gmin <= band + 1e-9:
-            lo, hi, best = 0.0, need, 0.0
+            # FAST PATH. The bisection searches for the largest high-gain-first
+            # slice whose total gain still fits the band. Test the TOP of the
+            # range first: if the whole need can be taken high-gain-first and
+            # still fits, the answer is `need` and twenty halvings would only
+            # crawl up to need minus 5e-5. One clone instead of twenty, and it
+            # hits in exactly the years where the band is not binding -- which
+            # on these parameters is most of them.
+            _fp = self.clone()
+            _fa, _fga, _ = _fp.draw(navs, fy, folio_idxs=lv, amount=need,
+                                    prefer=prefer, high_gain_first=True,
+                                    protect=protect)
+            if _fa >= need - 1e-6 and _fga <= band + 1e-9:
+                lo, hi, best = need, need, need
+            else:
+                lo, hi, best = 0.0, need, 0.0
             # 20 halvings of a need of ~50 resolves to 5e-5, five thousand
             # times finer than PLAN_TOL. 35 was 1.5e-9 and cost 30% of the
             # runtime for precision nothing downstream can use; verified
             # byte-identical output on every scenario and horizon.
-            for _ in range(20):
+            for _ in range(20 if best < need else 0):
                 mid = (lo + hi) / 2
                 trial = self.clone()
                 a, ga, _ = trial.draw(navs, fy, folio_idxs=lv, amount=mid,
@@ -1908,15 +1925,20 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
         # projection, the cap on the conservative leg of the scoring blend,
         # and the annuity factor in the spillover reserve -- and all three
         # were reading a rate the plan does not earn.
+        # Flat over BOTH books. The previous form walked personal's folios and
+        # reached into huf at the same index, which silently dropped any HUF
+        # folio beyond personal's count. That cannot happen while the two open
+        # folios on the same schedule, but they do NOT in the on-drain vintage
+        # mode, where each book opens when it is itself drawn. Cheap insurance
+        # against a rate weighted on part of the portfolio.
         _dw, _drt = [], []
-        for _fi in range(len(personal.folios)):
-            for _k in range(nf):
-                _v = personal.folios[_fi].funds[_k].value(navs[_k])
-                if _fi < len(huf.folios):
-                    _v += huf.folios[_fi].funds[_k].value(hnavs[_k])
-                if _v > EPS:
-                    _dw.append(_v)
-                    _drt.append(spec["rate"](_k))
+        for _bk, _nvs in ((personal, navs), (huf, hnavs)):
+            for _fo in _bk.folios:
+                for _k, _f in enumerate(_fo.funds):
+                    _v = _f.value(_nvs[_k])
+                    if _v > EPS:
+                        _dw.append(_v)
+                        _drt.append(spec["rate"](_k))
         _dtot = sum(_dw)
         _dr = (sum(v * r for v, r in zip(_dw, _drt)) / _dtot if _dtot > EPS
                else chunk_rates(1)[0])
