@@ -494,8 +494,8 @@ VINTAGE_EVERY = 5           # open a fresh receiver every N years.
 # (post-tax requirement, first FY it applies). Each pair holds until the next
 # one starts; the last extends to the horizon. Blocks need NOT be five years --
 # that was a baked-in assumption and this replaces it.
-REQUIREMENT_SCHEDULE = ((35.0, 1), (37.5, 6), (42.5, 11), (45.0, 16),
-                        (47.5, 21), (50.0, 26), (52.5, 31))
+REQUIREMENT_SCHEDULE = ((40.0, 1), (45, 6), (50, 11), (52.5, 16),
+                        (55, 21), (57.5, 26), (60, 31))
 
 # ---- the debt return ------------------------------------------------------
 # The rate is a property of the FUND, fixed for its life, set by the chunk the
@@ -589,6 +589,10 @@ CONSERVATIVE_WEIGHT = 0.6     # 0.0 = score purely at the modelled rates,
 N_BASE_FUNDS = 21
 TURNOVER = (1.0 / 3.0, 1.0 / 3.0)
 
+MAX_HORIZON = 60            # the statutory ladders are projected only as far
+                            # as LADDER_PROJECTED_YEARS (computed below, once
+                            # the blocks exist) and are frozen at their last
+                            # block beyond that; see build_ladders.spread.
 MIN_HORIZON = 20            # below this the tier arithmetic stops meaning
                             # anything and the plan is not a retirement plan
 
@@ -628,6 +632,11 @@ EQUITY_MIN_HOLD = 1         # years before a lot qualifies as LTCG (s.2(42A))
 # per 5-year block, so both can be re-projected like the slab ladders
 EQ_EXEMPT_BLOCKS = [1.25, 1.25, 1.50, 1.50, 1.75, 1.75, 2.00]   # s.112A exemption
 EQ_RATE_BLOCKS = [0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125]  # s.112A rate
+
+# How far the ladders above are actually projected. Past this the last block
+# repeats: allowances stop growing, so the tax is if anything overstated.
+LADDER_PROJECTED_YEARS = 5 * min(len(EXEMPT_BLOCKS), len(NILBAND_BLOCKS),
+                                 len(EQ_EXEMPT_BLOCKS), len(EQ_RATE_BLOCKS))
 
 # ---- the HUF draw ----------------------------------------------------------
 RATION_K = 1.195            # HUF offer = K * huf_value / years_remaining,
@@ -810,9 +819,19 @@ def build_ladders(horizon):
     n_blocks = (horizon + 4) // 5
 
     def spread(blocks):
+        """Five years per block, padded with the LAST block if the horizon
+        outruns the projection.
+
+        The statutory ladders are projected as far as someone was willing to
+        project them. Beyond that the honest assumption is that indexation
+        STOPS, not that it continues at the same pace -- freezing the last
+        block understates the allowances and therefore overstates the tax,
+        which is the direction to be wrong in. Extend the *_BLOCKS lists when
+        you have a view on the years past the projection.
+        """
         out = []
-        for v in blocks[:n_blocks]:
-            out += [v] * 5
+        for k in range(n_blocks):
+            out += [blocks[min(k, len(blocks) - 1)]] * 5
         return out[:horizon]
 
     base = (TAXABLE_OTHER_INCOME + TAXFREE_OTHER_INCOME
@@ -859,7 +878,10 @@ def settle_equity_tax(bill, e_p, e_h, nav_eq, fy, eq_exempt, eq_rate,
     """
     paid = xp = xh = 0.0
     due = bill
-    for _ in range(3):
+    # Six passes, not three. Three closed a 35-year plan comfortably, but at a
+    # 60-year horizon the equity bill is large enough that the residue after
+    # three passes reaches 1e-2 -- PLAN_TOL exactly, with no headroom left.
+    for _ in range(6):
         want = due - paid
         if want <= EPS:
             break
@@ -960,6 +982,10 @@ class Fund:
 
     def value(self, nav):
         return self.units() * nav
+
+    def gain(self, nav):
+        """Unrealised gain if every lot were sold at nav."""
+        return sum(u * (nav - basis) for u, basis, _ in self.lots)
 
     def front_frac(self, nav):
         """Gain fraction of the next rupee sold. Inf if empty."""
@@ -1084,6 +1110,10 @@ class Sleeve:
         """Exit load charged across this sleeve's whole lineage."""
         return sum(f.loss for f in self.funds)
 
+    def gain(self, nav):
+        """Unrealised gain in the whole sleeve at nav."""
+        return sum(f.gain(nav) for f in self.funds)
+
     def value(self, nav):
         return sum(f.value(nav) for f in self.funds)
 
@@ -1206,6 +1236,11 @@ class Book:
     def loss(self):
         """Exit load charged across this book's whole lineage."""
         return sum(f.loss for fo in self.folios for f in fo.funds)
+
+    def gain(self, navs):
+        """Unrealised gain across every folio and fund at navs."""
+        return sum(f.gain(navs[k])
+                   for fo in self.folios for k, f in enumerate(fo.funds))
 
     def value(self, navs):
         return sum(f.value(navs) for f in self.folios)
@@ -1472,6 +1507,9 @@ def pay_tax_bill(book, initial_tax, base_gain, navs, fy, is_huf=False,
 
 def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
              vintage_every=VINTAGE_EVERY, no_vintage=False, verbose=False):
+    if horizon > MAX_HORIZON:
+        raise ValueError(
+            f"horizon {horizon} is above MAX_HORIZON ({MAX_HORIZON}).")
     if horizon < MIN_HORIZON:
         raise ValueError(
             f"horizon {horizon} is below MIN_HORIZON ({MIN_HORIZON}). The "
@@ -1705,6 +1743,28 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                     max(0.0, need_left - cash_p2), band_h, hnavs, fy, eligible)
                 if th2 and not vintage_every and not no_vintage:
                     h2.open_next()
+
+            # ---- LAST RESORT: the debt books could not fund the year -------
+            # Equity is normally drawn only through the EQ_GRID search, which
+            # runs only when there is tax to save. Once BOTH debt books are
+            # empty there is no tax, so that search never fires -- and before
+            # this the year was simply left UNFUNDED while the sleeve went on
+            # compounding. Silent, and it flattered the corpus enormously: at
+            # a 50-year horizon the plan stopped paying the requirement
+            # altogether from FY42 and still reported a growing corpus.
+            # The draw is uncapped by the s.112A exemption because it is
+            # forced; the gain flows into eq_gain_p / eq_gain_h and is taxed
+            # and settled by the machinery already below.
+            _unfunded = max(0.0, need_left - cash_p2 - cash_h2)
+            if _unfunded > EPS and EQUITY_ENABLED:
+                _c, _gn = e2p.sell(nav_eq, fy, amount=_unfunded)
+                eq_cash += _c
+                eq_gain_p += _gn
+                _unfunded -= _c
+                if _unfunded > EPS:
+                    _c, _gn = e2h.sell(nav_eq, fy, amount=_unfunded)
+                    eq_cash += _c
+                    eq_gain_h += _gn
 
             # ---- surplus routing: rebuild the debt floor, then equity ------
             # Only the part of the surplus needed to restore the combined debt
@@ -2208,13 +2268,15 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
 
         # ---- spend whatever s.112A exemption the year did not use ----------
         eq_harv_gain = 0.0
+        _harv = {"p": 0.0, "h": 0.0}
         if EQUITY_ENABLED:
-            for _sl, _used in ((eq_p, best.get("eq_gain_p", 0.0)),
-                               (eq_h, best.get("eq_gain_h", 0.0))):
+            for _tag, _sl, _used in (("p", eq_p, best.get("eq_gain_p", 0.0)),
+                                     ("h", eq_h, best.get("eq_gain_h", 0.0))):
                 _left = max(0.0, eq_exempt - _used)
                 if _left > EPS and _sl.value(nav_eq) > EPS:
                     _g, _gn = _sl.harvest(nav_eq, fy, _left, bucket_target)
                     eq_harv_gain += _gn
+                    _harv[_tag] += _gn
         sold_p, cash_p, surplus = best["sold"], best["cash_p"], best["surplus"]
         cash_h = best["cash_h"]
         gain_p_total, gain_h = best["gain_p"], best["gain_h"]
@@ -2285,6 +2347,29 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
             tax_cumulative=tax_p_tot + tax_h_tot + tax_eq_tot,
         ))
 
+    # ---- what it would cost to close the plan --------------------------
+    # The horizon is an arbitrary stopping point, and stopping there hides the
+    # tax embedded in whatever is still held -- most of it in the equity
+    # sleeve, whose whole advantage during the plan was that s.112A was never
+    # forced. This charges the WHOLE remaining corpus as one realisation in
+    # the final year, ON TOP of what that year already realised, at that
+    # year's bands and other income. It is the marginal cost of closing on the
+    # last day, not a separate tax year: the annual allowances are already
+    # part-spent, which is exactly why liquidating in one go is expensive.
+    _lq_p = personal.gain(navs)
+    _lq_h = huf.gain(hnavs)
+    _lq_ep = eq_p.gain(nav_eq) if EQUITY_ENABLED else 0.0
+    _lq_eh = eq_h.gain(nav_eq) if EQUITY_ENABLED else 0.0
+    _eg_p = best.get("eq_gain_p", 0.0) + _harv["p"]
+    _eg_h = best.get("eq_gain_h", 0.0) + _harv["h"]
+    liq_p = max(0.0, personal_tax(toi + gain_p_total + tax_p_extra_gain + _lq_p,
+                                  exempt_c, band_h) - tax_p_final)
+    liq_h = max(0.0, huf_tax(gain_h + tax_h_extra_gain + _lq_h, band_h)
+                - tax_h_final)
+    liq_e = max(0.0, (equity_tax(_eg_p + _lq_ep, eq_exempt, eq_rate)
+                      + equity_tax(_eg_h + _lq_eh, eq_exempt, eq_rate))
+                - best.get("txe", 0.0))
+
     if verbose:
         print(f"{'FY':>3}{'band':>7}{'need':>7}{'cash_p':>8}{'cash_h':>8}"
               f"{'surp':>8}{'trans':>8}{'gain':>7}{'mult':>6}{'cvr':>6}{'fol':>5}"
@@ -2303,9 +2388,21 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                   f"{r['equity_cash']:>7.2f}"
                   f"{r['tax_total']:>7.2f}{r['tax_cumulative']:>8.2f}")
 
+    # A plan can simply run out. Silence would be the worst possible answer:
+    # an exhausted plan reports a small corpus and a small tax bill, both of
+    # which look like success.
+    _sf = [max(0.0, r["net_need"] - r["personal_cash"] - r["huf_cash"])
+           for r in rows]
     return dict(tax=tax_p_tot + tax_h_tot + tax_eq_tot,
                 tax_personal=tax_p_tot, tax_huf=tax_h_tot,
                 tax_equity=tax_eq_tot,
+                shortfall=sum(_sf),
+                shortfall_years=sum(1 for v in _sf if v > PLAN_TOL),
+                first_shortfall_fy=next((r["fy"] for r, v in zip(rows, _sf)
+                                         if v > PLAN_TOL), 0),
+                liq_tax=liq_p + liq_h + liq_e,
+                liq_personal=liq_p, liq_huf=liq_h, liq_equity=liq_e,
+                liq_gain=_lq_p + _lq_h + _lq_ep + _lq_eh,
                 p_debt=rows[-1]["p_debt"], p_eq=rows[-1]["p_eq"],
                 huf_debt=rows[-1]["huf_debt"], huf_eq=rows[-1]["huf_eq"],
                 equity=rows[-1]["value_equity"],
@@ -2697,6 +2794,16 @@ def main():
     if a.horizon < MIN_HORIZON:
         sys.exit(f"FATAL: --horizon {a.horizon} is below the minimum of "
                  f"{MIN_HORIZON}.")
+    if a.horizon > MAX_HORIZON:
+        sys.exit(f"FATAL: --horizon {a.horizon} is above the maximum of "
+                 f"{MAX_HORIZON}.")
+    if a.horizon > LADDER_PROJECTED_YEARS and not a.quiet:
+        print(f"NOTE: the statutory ladders are projected to "
+              f"{LADDER_PROJECTED_YEARS} years. From FY"
+              f"{LADDER_PROJECTED_YEARS + 1} the last block repeats, so the "
+              f"s.87A ceiling, the HUF nil band and the s.112A exemption stop "
+              f"growing. Extend EXEMPT_BLOCKS, NILBAND_BLOCKS, "
+              f"EQ_EXEMPT_BLOCKS and EQ_RATE_BLOCKS to change that.")
 
     _tot = (TAXABLE_OTHER_INCOME + TAXFREE_OTHER_INCOME
             + SALARY_INCOME + RENTAL_INCOME)
@@ -2827,6 +2934,16 @@ def main():
     print(f"  huf_debt {r['huf_debt']:>9.1f}   folios {r['huf_debt_folios']}")
     print(f"  huf_eq   {r['huf_eq']:>9.1f}   folios {r['huf_eq_folios']}"
           f"   buckets {r['rows'][-1]['huf_eq_buckets']} of {N_EQ_FUNDS}")
+    if r["shortfall"] > PLAN_TOL:
+        print(f"PLAN EXHAUSTED: the requirement went UNFUNDED in "
+              f"{r['shortfall_years']} year(s) from FY{r['first_shortfall_fy']}"
+              f", short by {r['shortfall']:.1f} in total. Every figure below "
+              f"is the arithmetic of a plan that has already failed.")
+    print(f"Final liquidation tax = {r['liq_tax']:.3f}")
+    print(f"  (personal {r['liq_personal']:.3f} + HUF {r['liq_huf']:.3f}"
+          f" + equity {r['liq_equity']:.3f} on {r['liq_gain']:.1f} of"
+          f" unrealised gain, charged in FY{a.horizon} on top of that year's"
+          f" own bill)")
     if a.csv:
         write_csv(r, a.csv)
         print(f"wrote {a.csv}")
