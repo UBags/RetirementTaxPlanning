@@ -2478,6 +2478,28 @@ def _mc_run(job):
             r["shortfall"], r["first_shortfall_fy"])
 
 
+def _mc_progress(done, total, t0, width=32):
+    """A bar on stderr, so stdout stays a clean report you can pipe.
+
+    imap_unordered gives results as they land, which is what makes a live
+    count possible at all -- Pool.map returns nothing until every path is
+    finished. When stderr is not a terminal the bar would be thousands of
+    lines of carriage returns in a log, so it degrades to one line per tenth.
+    """
+    el = time.time() - t0
+    rate = done / el if el > 0 else 0.0
+    eta = (total - done) / rate if rate > 0 else 0.0
+    if sys.stderr.isatty():
+        fill = int(width * done / total)
+        print(f"\r  [{'#' * fill}{'.' * (width - fill)}] {done}/{total}  "
+              f"{el:5.0f}s elapsed, {eta:5.0f}s left ", end="", file=sys.stderr)
+        if done == total:
+            print(file=sys.stderr)
+    elif done == total or done % max(1, total // 10) == 0:
+        print(f"  {done}/{total} paths, {el:.0f}s elapsed, {eta:.0f}s left",
+              file=sys.stderr)
+
+
 def _pct(vals, q):
     """Nearest-rank percentile. No interpolation: with 100 paths an
     interpolated p5 invents a number no path actually produced."""
@@ -2964,11 +2986,17 @@ def main():
               "tests the STRATEGY")
         print("under uncertainty and not clairvoyance.\n")
         _t0 = time.time()
+        _res = []
         if _w > 1 and _n > 1:
             with multiprocessing.Pool(_w) as _pool:
-                _res = _pool.map(_mc_run, _jobs, chunksize=1)
+                for _done, _one in enumerate(
+                        _pool.imap_unordered(_mc_run, _jobs, chunksize=1), 1):
+                    _res.append(_one)
+                    _mc_progress(_done, _n, _t0)
         else:
-            _res = [_mc_run(j) for j in _jobs]
+            for _done, _job in enumerate(_jobs, 1):
+                _res.append(_mc_run(_job))
+                _mc_progress(_done, _n, _t0)
         _el = time.time() - _t0
         _corp = [x[0] for x in _res]
         _tax = [x[1] for x in _res]
