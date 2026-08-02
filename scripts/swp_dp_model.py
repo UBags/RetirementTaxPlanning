@@ -388,6 +388,36 @@ use to manage its band, while the s.112A exemption stays fixed regardless of
 sleeve size. Whether a 26% equity holding at age 90 is acceptable is a risk
 question this model cannot answer -- see below.
 
+AND THERE IS NO HOLDING CEILING AT ALL. THIS IS DELIBERATE, AND IT IS THE ONE
+THING ABOUT THIS MODEL MOST LIKELY TO MISLEAD ITS OWNER. The 26.3% above is a
+mild case because equity beats debt by only 2 points there. Run the same plan
+with a 12.5% sleeve against 6.00%/5.25% debt and the drift is not mild:
+
+    FY6   equity  6% of corpus       debt cover 20.5 years
+    FY15          15%                           16.3
+    FY21          26%                           14.1
+    FY27          43%                           12.4
+    FY30          52%                           12.1
+    FY35          64%                           11.5
+
+`--equity_max_share 0.125` ends holding 64% equity. Both numbers are true and
+they are not in conflict: the cap governs INFLOW and the debt floor governs
+LIQUIDITY IN YEARS OF SPENDING, and the floor is satisfied throughout -- debt
+never drops below eleven years of need. Nothing is broken. But nobody reading
+`--equity_max_share 0.125` expects a two-thirds equity book at the horizon,
+so it is written down here rather than left to be discovered.
+
+WHY NO CEILING IS ADDED. A holding ceiling means trimming, trimming means
+realising gain on the way down, and the s.112A exemption is fixed per year, so
+a forced trim in the late years is bought at 13% on the excess plus the loss
+of whatever the trimmed capital would have compounded to. The model would also
+choose the trim points using a projection with NO DRAWDOWN IN IT, which is the
+one input that would justify a ceiling in the first place. A deterministic
+model cannot price sequence risk, so it must not be the thing that sets the
+equity ceiling. That is an owner's judgement, expressed today through the debt
+floor -- which is denominated in years of spending and therefore does bite --
+and it should stay that way until the model can simulate a bad decade.
+
 IT MAKES 3chunk WORSE (1.555 -> 2.610 at 30 years). Surplus diverted into
 equity is surplus the debt purse no longer has for its transitions. Corpus
 still rises, so this is a genuine trade rather than a defect.
@@ -811,15 +841,20 @@ def build_ladders(horizon):
 
     base = (TAXABLE_OTHER_INCOME + TAXFREE_OTHER_INCOME
             + SALARY_INCOME + RENTAL_INCOME)
-    taxable_base = (TAXABLE_OTHER_INCOME
-                    + max(0.0, SALARY_INCOME - SALARY_STD_DEDUCTION)
-                    + RENTAL_INCOME * (1.0 - RENTAL_DEDUCTION))
+    # The s.16(ia) deduction is a NOMINAL statutory allowance, so it is
+    # subtracted AFTER the head is scaled, not before. Scaling a
+    # post-deduction figure inflates the deduction itself -- at 35 years and
+    # OTHER_INCOME_STEP the scale reaches 1.22, quietly turning a 0.75
+    # allowance into 0.92. The rental deduction is a PERCENTAGE and is
+    # unaffected either way.
     oi, toi = [], []
     for k in range(horizon):
         gross = base + OTHER_INCOME_STEP * k
         scale = gross / base if base > EPS else 0.0
         oi.append(gross)
-        toi.append(taxable_base * scale)
+        toi.append(TAXABLE_OTHER_INCOME * scale
+                   + max(0.0, SALARY_INCOME * scale - SALARY_STD_DEDUCTION)
+                   + RENTAL_INCOME * scale * (1.0 - RENTAL_DEDUCTION))
     return dict(
         requirement=requirement_ladder(horizon),
         exempt=spread(EXEMPT_BLOCKS),
@@ -834,6 +869,35 @@ def build_ladders(horizon):
 # ═══════════════════════════════════════════════════════════════════════════
 #  Tax
 # ═══════════════════════════════════════════════════════════════════════════
+
+def settle_equity_tax(bill, e_p, e_h, nav_eq, fy, eq_exempt, eq_rate,
+                      g_eqp, g_eqh):
+    """Pay the s.112A bill and charge the gain the payment itself realises.
+
+    Selling equity to pay equity tax realises more gain, which is taxable
+    once the annual exemption is spent, so the bill and the sale chase each
+    other. Three passes close it to well under PLAN_TOL. Returns
+    (total tax, cash raised, extra personal gain, extra HUF gain); whatever
+    the sleeves cannot cover comes back as an unmet balance for the caller
+    to take out of the debt books.
+    """
+    paid = xp = xh = 0.0
+    due = bill
+    for _ in range(3):
+        want = due - paid
+        if want <= EPS:
+            break
+        c, gn = e_p.sell(nav_eq, fy, amount=want)
+        paid += c
+        xp += gn
+        if due - paid > EPS:
+            c, gn = e_h.sell(nav_eq, fy, amount=due - paid)
+            paid += c
+            xh += gn
+        due = (equity_tax(g_eqp + xp, eq_exempt, eq_rate)
+               + equity_tax(g_eqh + xh, eq_exempt, eq_rate))
+    return due, paid, xp, xh
+
 
 def slab_tax(income, basic_exemption=BRACKET_WIDTH):
     """Slab tax with the ladder anchored on `basic_exemption`.
@@ -1073,6 +1137,10 @@ class Sleeve:
             share = left / n
             for f in self.funds:
                 f.invest(share, nav, fy)
+            # in_current tracks how much has gone into the bucket at ptr THIS
+            # cycle; the spread above put `share` into that bucket too, so
+            # leaving it stale overstates the room left there next time.
+            self.in_current = min(bucket_target, self.in_current + share)
 
     def sell(self, nav, fy, amount=None, gain_cap=None, dearest=False):
         """LTCG-qualified lots only.
@@ -1264,7 +1332,11 @@ class Book:
 
         if got >= need - 1e-6 and gmin <= band + 1e-9:
             lo, hi, best = 0.0, need, 0.0
-            for _ in range(35):
+            # 20 halvings of a need of ~50 resolves to 5e-5, five thousand
+            # times finer than PLAN_TOL. 35 was 1.5e-9 and cost 30% of the
+            # runtime for precision nothing downstream can use; verified
+            # byte-identical output on every scenario and horizon.
+            for _ in range(20):
                 mid = (lo + hi) / 2
                 trial = self.clone()
                 a, ga, _ = trial.draw(navs, fy, folio_idxs=lv, amount=mid,
@@ -1644,8 +1716,32 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                                     nil_band=band_h)
             txp = personal_tax(toi + gpt + egp, exempt_c, band_h)
             txh = huf_tax(gain_h2 + egh, band_h)
+            # A bill charged against an EXHAUSTED book was reported and never
+            # taken out of the corpus: pay_tax_bill returns (0, 0) the moment
+            # book.value is zero. MEASURED, 2chunk/35yr at 12.5% equity: the
+            # HUF emptied at FY31 and 0.369 of HUF slab tax was logged but
+            # never paid. The sleeve settles the balance, and the gain that
+            # raises feeds the s.112A computation immediately below.
+            _sp = max(0.0, txp - _dp)
+            if _sp > EPS and e2p.value(nav_eq) > EPS:
+                _c, _gn = e2p.sell(nav_eq, fy, amount=_sp)
+                eq_gain_p += _gn
+            _sh = max(0.0, txh - _dh)
+            if _sh > EPS and e2h.value(nav_eq) > EPS:
+                _c, _gn = e2h.sell(nav_eq, fy, amount=_sh)
+                eq_gain_h += _gn
             txe = (equity_tax(eq_gain_p, eq_exempt, eq_rate)
                    + equity_tax(eq_gain_h, eq_exempt, eq_rate))
+            if txe > EPS:
+                txe, _pd, _xp, _xh = settle_equity_tax(
+                    txe, e2p, e2h, nav_eq, fy, eq_exempt, eq_rate,
+                    eq_gain_p, eq_gain_h)
+                eq_gain_p += _xp
+                eq_gain_h += _xh
+                if txe - _pd > EPS:
+                    pay_tax_bill(p2, txe - _pd, gpt, navs, fy, is_huf=False,
+                                 exempt_ceiling=exempt_c, taxable_other=toi,
+                                 basic_exemption=band_h)
             return dict(tax=txp + txh + txe, p=p2, h=h2, ep=e2p, eh=e2h,
                         sold=sold2, cash_p=cash_p2 + eq_cash, cash_h=cash_h2,
                         surplus=surp2, gain_p=gpt + egp, gain_h=gain_h2 + egh,
@@ -1907,8 +2003,32 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
             ght += egh
             txp = personal_tax(toi + gpt, exempt_c, band_h)
             txh = huf_tax(ght, band_h)
+            # A bill charged against an EXHAUSTED book was reported and never
+            # taken out of the corpus: pay_tax_bill returns (0, 0) the moment
+            # book.value is zero. MEASURED, 2chunk/35yr at 12.5% equity: the
+            # HUF emptied at FY31 and 0.369 of HUF slab tax was logged but
+            # never paid. The sleeve settles the balance, and the gain that
+            # raises feeds the s.112A computation immediately below.
+            _sp = max(0.0, txp - _dp)
+            if _sp > EPS and e2p.value(nav_eq) > EPS:
+                _c, _gn = e2p.sell(nav_eq, fy, amount=_sp)
+                g_eqp += _gn
+            _sh = max(0.0, txh - _dh)
+            if _sh > EPS and e2h.value(nav_eq) > EPS:
+                _c, _gn = e2h.sell(nav_eq, fy, amount=_sh)
+                g_eqh += _gn
             txe = (equity_tax(g_eqp, eq_exempt, eq_rate)
                    + equity_tax(g_eqh, eq_exempt, eq_rate))
+            if txe > EPS:
+                txe, _pd, _xp, _xh = settle_equity_tax(
+                    txe, e2p, e2h, nav_eq, fy, eq_exempt, eq_rate,
+                    g_eqp, g_eqh)
+                g_eqp += _xp
+                g_eqh += _xh
+                if txe - _pd > EPS:
+                    pay_tax_bill(p2, txe - _pd, gpt, navs, fy, is_huf=False,
+                                 exempt_ceiling=exempt_c, taxable_other=toi,
+                                 basic_exemption=band_h)
             return dict(tax=txp + txh + txe, p=p2, h=h2, ep=e2p, eh=e2h,
                         sold={}, cash_p=cash_p, cash_h=cash_h,
                         surplus=_surp_p,
@@ -1941,7 +2061,19 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                 _hf = (sum(f.value(hnavs[k]) * f.front_frac(hnavs[k])
                            for k, f in _hpool) / _hw) if _hw > EPS else 1.0
                 _hf = max(0.05, min(1.0, _hf))
-            reserve = max(0.0, (horizon - fy) * band_h / _hf)
+            # The reserve is the value needed TODAY to keep realising band_h
+            # of gain every remaining year -- so it is an annuity present
+            # value, not a plain sum. The plain sum ignored that the HUF goes
+            # on compounding while it is drawn, and over-reserved by roughly
+            # 1/annuity-factor: at FY22 it demanded 200.9 against a purse
+            # worth 160.0, so spill_max was zero and the spillover search did
+            # not run at all from FY10 to FY24. MEASURED on the 2chunk/35yr
+            # 12.5%-equity set: personal slab tax 8.872 -> 0.000, total
+            # 17.692 -> 12.995, corpus 1574.3 -> 1581.1.
+            _n = max(0, horizon - fy)
+            _r = chunk_rates(1)[0]
+            _ann = ((1.0 - (1.0 + _r) ** -_n) / _r) if _n > 0 and _r > EPS else _n
+            reserve = max(0.0, _ann * band_h / _hf)
             spill_max = min(need, max(0.0, huf.value(hnavs) - reserve))
             if spill_max > offer + EPS:
                 for j in range(1, SPILL_GRID + 1):
@@ -1996,11 +2128,6 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                 if _left > EPS and _sl.value(nav_eq) > EPS:
                     _g, _gn = _sl.harvest(nav_eq, fy, _left, bucket_target)
                     eq_harv_gain += _gn
-        _txe = best.get("txe", 0.0)
-        if _txe > EPS:
-            _paid, _pg = eq_p.sell(nav_eq, fy, amount=_txe)
-            if _txe - _paid > EPS:
-                eq_h.sell(nav_eq, fy, amount=_txe - _paid)
         sold_p, cash_p, surplus = best["sold"], best["cash_p"], best["surplus"]
         cash_h = best["cash_h"]
         gain_p_total, gain_h = best["gain_p"], best["gain_h"]
