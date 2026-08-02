@@ -542,6 +542,23 @@ EQUITY_RETURN = 0.090       # deterministic CAGR, --equity_cagr
 EQUITY_SIGMA = 0.125        # NOT USED -- deterministic model. See docstring.
 N_EQ_FUNDS = 20             # eq_f1 .. eq_f20, filled SEQUENTIALLY not equally
 EQ_BUCKET_SHARE = 0.05      # each bucket is filled to this share of the excess
+
+# ── DECISION RATES ─────────────────────────────────────────────────────────
+# The rates used to SCORE candidates, which need not be the rates the world
+# is modelled to deliver. terminal() pays real tax today to buy projected
+# growth tomorrow, so the projection's rate is a policy input in its own
+# right. MEASURED across realised equity CAGR 7% to 14%: scoring at 8%/5%
+# instead of the modelled rates gains 17.1 of corpus at 7% and 4.5 at 8%,
+# costs 7.9 at 11%, 21.1 at 12.5% and 38.4 at 14%, and holds lifetime tax
+# near 9 across the whole range instead of 3 to 29. Insurance, with the
+# premium paid in the states where the plan is already comfortable.
+#
+# LAMBDA blends the two. terminal() is LINEAR in the projection multipliers,
+# so blending the multipliers is identical to blending the two scores and
+# costs nothing -- no extra candidate evaluations, no change in runtime.
+DECISION_EQUITY_CAGR = None   # scoring-only equity rate; None = EQUITY_RETURN
+DECISION_DEBT_RATE = None     # scoring-only debt rate; None = chunk 1's rate
+DECISION_LAMBDA = 1.0         # 1.0 = score entirely at the modelled rates
                             # over the floor. 20 x 5% = the whole excess.
 # ---- turnover -------------------------------------------------------------
 # Fraction of the INITIAL fund count moved at each chunk boundary. One entry per
@@ -1042,6 +1059,13 @@ class Sleeve:
             if self.in_current >= bucket_target - EPS:
                 self.ptr = (self.ptr + 1) % n
                 self.in_current = 0.0
+        if left > EPS:
+            # EVERY rupee must land somewhere. bucket_target caps how much a
+            # bucket takes in a cycle, so a large deployment can exhaust one
+            # full cycle with money still in hand; dropping it destroys value.
+            share = left / n
+            for f in self.funds:
+                f.invest(share, nav, fy)
 
     def sell(self, nav, fy, amount=None, gain_cap=None, dearest=False):
         """LTCG-qualified lots only.
@@ -1624,8 +1648,16 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
 
         # The ration-implied split first. It is free and usually optimal.
         _yrs_left = max(0, horizon - fy)
-        _rd = (1.0 + chunk_rates(1)[0]) ** _yrs_left
-        _re = (1.0 + EQUITY_RETURN) ** _yrs_left
+        _dr = chunk_rates(1)[0]
+        _rd_opt = (1.0 + _dr) ** _yrs_left
+        _re_opt = (1.0 + EQUITY_RETURN) ** _yrs_left
+        _rd_con = (1.0 + (_dr if DECISION_DEBT_RATE is None
+                          else DECISION_DEBT_RATE)) ** _yrs_left
+        _re_con = (1.0 + (EQUITY_RETURN if DECISION_EQUITY_CAGR is None
+                          else DECISION_EQUITY_CAGR)) ** _yrs_left
+        _lam = min(1.0, max(0.0, DECISION_LAMBDA))
+        _rd = _lam * _rd_opt + (1.0 - _lam) * _rd_con
+        _re = _lam * _re_opt + (1.0 - _lam) * _re_con
 
         def terminal(c):
             """Each purse projected to the end of the plan at its own rate.
@@ -1896,8 +1928,10 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
             _hpool = [(k, f) for fo in huf.folios
                       for k, f in enumerate(fo.funds) if f.units() > EPS]
             if _hpool:
-                _hf = max(0.05, min(1.0, min(f.front_frac(hnavs[k])
-                                             for k, f in _hpool)))
+                _hw = sum(f.value(hnavs[k]) for k, f in _hpool)
+                _hf = (sum(f.value(hnavs[k]) * f.front_frac(hnavs[k])
+                           for k, f in _hpool) / _hw) if _hw > EPS else 1.0
+                _hf = max(0.05, min(1.0, _hf))
             reserve = max(0.0, (horizon - fy) * band_h / _hf)
             spill_max = min(need, max(0.0, huf.value(hnavs) - reserve))
             if spill_max > offer + EPS:
@@ -1953,6 +1987,11 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                 if _left > EPS and _sl.value(nav_eq) > EPS:
                     _g, _gn = _sl.harvest(nav_eq, fy, _left, bucket_target)
                     eq_harv_gain += _gn
+        _txe = best.get("txe", 0.0)
+        if _txe > EPS:
+            _paid, _pg = eq_p.sell(nav_eq, fy, amount=_txe)
+            if _txe - _paid > EPS:
+                eq_h.sell(nav_eq, fy, amount=_txe - _paid)
         sold_p, cash_p, surplus = best["sold"], best["cash_p"], best["surplus"]
         cash_h = best["cash_h"]
         gain_p_total, gain_h = best["gain_p"], best["gain_h"]
@@ -2037,6 +2076,10 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                 p_debt=rows[-1]["p_debt"], p_eq=rows[-1]["p_eq"],
                 huf_debt=rows[-1]["huf_debt"], huf_eq=rows[-1]["huf_eq"],
                 equity=rows[-1]["value_equity"],
+                cover_end=((rows[-1]["p_debt"] + rows[-1]["p_eq"]
+                            + rows[-1]["huf_debt"] + rows[-1]["huf_eq"])
+                           / rows[-1]["requirement"]
+                           if rows[-1]["requirement"] > EPS else 0.0),
                 corpus=(rows[-1]["p_debt"] + rows[-1]["p_eq"]
                         + rows[-1]["huf_debt"] + rows[-1]["huf_eq"]),
                 p_debt_folios=rows[-1]["p_debt_folios"],
@@ -2151,6 +2194,22 @@ def main():
                          "parameter is kept.")
     ap.add_argument("--sweep", action="store_true",
                     help="compare scenarios, horizons and vintage rules")
+    ap.add_argument("--decision_equity_cagr", "--decision-equity-cagr",
+                    type=float, default=None,
+                    help="equity rate used to SCORE candidates, not to grow "
+                         "the sleeve. Default: the modelled --equity_cagr.")
+    ap.add_argument("--decision_debt_rate", "--decision-debt-rate",
+                    type=float, default=None,
+                    help="debt rate used to SCORE candidates, not to grow the "
+                         "books. Default: chunk 1's rate.")
+    ap.add_argument("--decision_lambda", "--decision-lambda", type=float,
+                    default=None, metavar="L",
+                    help="blend: L=1 scores entirely at the modelled rates "
+                         "(current behaviour), L=0 entirely at the decision "
+                         "rates. Linear in the projection, so it costs nothing.")
+    ap.add_argument("--lambda_sweep", "--lambda-sweep", action="store_true",
+                    help="sweep L against realised equity CAGR and report "
+                         "corpus, tax and years of cover for each cell")
     ap.add_argument("--interest_rate", "--interest-rate", type=str,
                     default=None, dest="interest_rate",
                     help="one, two or three debt rates as decimals, slash "
@@ -2318,6 +2377,12 @@ def main():
 
     if a.income_step_absolute is not None:
         globals()["OTHER_INCOME_STEP"] = a.income_step_absolute
+    if a.decision_equity_cagr is not None:
+        globals()["DECISION_EQUITY_CAGR"] = a.decision_equity_cagr
+    if a.decision_debt_rate is not None:
+        globals()["DECISION_DEBT_RATE"] = a.decision_debt_rate
+    if a.decision_lambda is not None:
+        globals()["DECISION_LAMBDA"] = a.decision_lambda
 
     if a.equity_cagr is not None:
         if not (0.0 < a.equity_cagr < 1.0):
@@ -2446,6 +2511,50 @@ def main():
         print("little tax, which is a symptom of a poorer plan, not a better one.")
         return 0
 
+    if a.lambda_sweep:
+        _dq = (DECISION_EQUITY_CAGR if DECISION_EQUITY_CAGR is not None
+               else EQUITY_RETURN)
+        _dd = (DECISION_DEBT_RATE if DECISION_DEBT_RATE is not None
+               else chunk_rates(1)[0])
+        _lams = (0.0, 0.25, 0.5, 0.75, 1.0)
+        _eqs = (0.07, 0.08, 0.09, 0.10, 0.11, 0.125, 0.14)
+        _true = EQUITY_RETURN
+        print("DECISION-RATE / LAMBDA SWEEP")
+        print(f"Scoring rates: equity {_dq:.2%}, debt {_dd:.2%}. LAMBDA blends")
+        print("them with the modelled rates: 1.00 scores entirely at what the")
+        print("model delivers, 0.00 entirely at the scoring rates above. Every")
+        print("other parameter is as printed above; only the REALISED equity")
+        print("CAGR moves across the columns.\n")
+        _res = {}
+        for _lam in _lams:
+            globals()["DECISION_LAMBDA"] = _lam
+            for _eq in _eqs:
+                globals()["EQUITY_RETURN"] = _eq
+                _res[(_lam, _eq)] = simulate(
+                    a.scenario, a.horizon, a.max_folios,
+                    vintage_every=a.vintage, no_vintage=a.no_vintage)
+        globals()["EQUITY_RETURN"] = _true
+        for _title, _key, _w, _p in (("END CORPUS", "corpus", 10, 1),
+                                     ("LIFETIME TAX", "tax", 10, 3),
+                                     ("YEARS OF COVER AT HORIZON",
+                                      "cover_end", 10, 1)):
+            print(_title)
+            print(f"{'lambda':>8}" + "".join(f"{e:>10.1%}" for e in _eqs)
+                  + f"{'worst':>10}")
+            print("-" * (18 + 10 * len(_eqs)))
+            for _lam in _lams:
+                _row = [_res[(_lam, e)][_key] for e in _eqs]
+                print(f"{_lam:>8.2f}"
+                      + "".join(f"{v:>{_w}.{_p}f}" for v in _row)
+                      + f"{min(_row):>{_w}.{_p}f}")
+            print()
+        print("Read the WORST column first. The plan is only in danger in the")
+        print("low-return states, and years of cover at the horizon is the")
+        print("number that says whether it ran aground. A lambda that gives up")
+        print("a little in the 12.5% and 14% columns to buy cover in the 7%")
+        print("and 8% ones is the trade this sweep exists to price.")
+        return 0
+
     if a.sweep:
         print(f"{'scenario':>10}{'horizon':>8}{'vintage':>11}"
               f"{'tax':>9}{'corpus':>10}"
@@ -2474,7 +2583,8 @@ def main():
     print(f"\nscenario {a.scenario}, {a.horizon} years, max_folios {a.max_folios}, "
           f"vintage {'no_vintage' if a.no_vintage else ('on drain' if not a.vintage else str(a.vintage) + 'yr')}")
     print(f"lifetime tax {r['tax']:.3f}  "
-          f"(personal {r['tax_personal']:.3f} + HUF {r['tax_huf']:.3f})")
+          f"(personal {r['tax_personal']:.3f} + HUF {r['tax_huf']:.3f}"
+          f" + equity {r['tax_equity']:.3f})")
     print(f"end corpus   {r['corpus']:.1f}")
     print(f"  p_debt   {r['p_debt']:>9.1f}   folios {r['p_debt_folios']}")
     print(f"  p_eq     {r['p_eq']:>9.1f}   folios {r['p_eq_folios']}"
