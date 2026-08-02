@@ -663,6 +663,10 @@ MC_DEFAULT_PATHS = 500      # what a bare --monte_carlo runs. Enough to put a
                             # the only part of the distribution worth having.
 MC_DEFAULT_SEED = 4242      # fixed, so two strategies meet identical worlds
 
+LIQUIDATION_YEARS = 1       # how many years the final wind-down is spread
+                            # over. 1 is closing on the last day; each extra
+                            # year buys a fresh set of annual allowances.
+
 # ---- the HUF draw ----------------------------------------------------------
 RATION_K = 1.195            # HUF offer = K * huf_value / years_remaining,
                             # capped at the HUF's own tax-free capacity
@@ -2384,19 +2388,72 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
     # year's bands and other income. It is the marginal cost of closing on the
     # last day, not a separate tax year: the annual allowances are already
     # part-spent, which is exactly why liquidating in one go is expensive.
-    _lq_p = personal.gain(navs)
-    _lq_h = huf.gain(hnavs)
-    _lq_ep = eq_p.gain(nav_eq) if EQUITY_ENABLED else 0.0
-    _lq_eh = eq_h.gain(nav_eq) if EQUITY_ENABLED else 0.0
-    _eg_p = best.get("eq_gain_p", 0.0) + _harv["p"]
-    _eg_h = best.get("eq_gain_h", 0.0) + _harv["h"]
-    liq_p = max(0.0, personal_tax(toi + gain_p_total + tax_p_extra_gain + _lq_p,
-                                  exempt_c, band_h) - tax_p_final)
-    liq_h = max(0.0, huf_tax(gain_h + tax_h_extra_gain + _lq_h, band_h)
-                - tax_h_final)
-    liq_e = max(0.0, (equity_tax(_eg_p + _lq_ep, eq_exempt, eq_rate)
-                      + equity_tax(_eg_h + _lq_eh, eq_exempt, eq_rate))
-                - best.get("txe", 0.0))
+    # LIQUIDATION_YEARS spreads it. One year is the marginal cost of closing on
+    # the last day. More years is a WIND-DOWN: each further year brings a fresh
+    # s.87A ceiling, a fresh HUF nil band and a fresh s.112A exemption, and
+    # whatever has not been sold yet goes on earning. Nothing is spent during
+    # the wind-down -- the requirement ladder ends at the horizon -- so this
+    # measures the cost of turning the corpus into cash and nothing else.
+    #
+    # The slices are equal in VALUE, not in units: each year sells what is left
+    # divided by the years remaining, so the book empties exactly on the last
+    # one. Gain per slice is therefore not uniform, because FIFO takes the
+    # oldest and highest-gain lots first -- which is the honest ordering and
+    # front-loads the bill.
+    _ln = max(1, LIQUIDATION_YEARS)
+    _lad2 = build_ladders(horizon + _ln - 1) if _ln > 1 else lad
+    _wp, _wh = personal.clone(), huf.clone()
+    _wep, _weh = eq_p.clone(), eq_h.clone()
+    _wnv = list(navs)
+    _wne = nav_eq
+    _shift0 = (DEBT_PATH[i] - chunk_rates(1)[0]) if DEBT_PATH else 0.0
+    liq_p = liq_h = liq_e = 0.0
+    _lq_gain = _lq_cash = 0.0
+    for _wk in range(_ln):
+        _wi = i + _wk
+        if _wk:
+            # a year passes; whatever is still held keeps earning. The sampled
+            # path has run out by definition, so the wind-down uses the flat
+            # assumption with the final year's spread preserved.
+            for _wf in range(nf):
+                _wnv[_wf] *= (1.0 + spec["rate"](_wf) + _shift0)
+            if EQUITY_ENABLED:
+                _wne *= (1.0 + EQUITY_RETURN)
+        _rem = _ln - _wk
+        _wtoi = _lad2["taxable_other"][_wi]
+        _wexc, _wnb = _lad2["exempt"][_wi], _lad2["nilband"][_wi]
+        _wee, _wer = _lad2["eq_exempt"][_wi], _lad2["eq_rate"][_wi]
+        _amt = None if _rem == 1 else _wp.value(_wnv) / _rem
+        _cp, _gp, _ = _wp.draw(_wnv, fy + _wk, amount=_amt)
+        _amt = None if _rem == 1 else _wh.value(_wnv) / _rem
+        _ch, _gh, _ = _wh.draw(_wnv, fy + _wk, amount=_amt)
+        _gep = _geh = _cep = _ceh = 0.0
+        if EQUITY_ENABLED:
+            _amt = None if _rem == 1 else _wep.value(_wne) / _rem
+            _cep, _gep = _wep.sell(_wne, fy + _wk, amount=_amt)
+            _amt = None if _rem == 1 else _weh.value(_wne) / _rem
+            _ceh, _geh = _weh.sell(_wne, fy + _wk, amount=_amt)
+        _lq_cash += _cp + _ch + _cep + _ceh
+        _lq_gain += _gp + _gh + _gep + _geh
+        if _wk == 0:
+            # The first slice lands in the final PLAN year, so it is charged on
+            # top of what that year already realised: the allowances are
+            # part-spent and only the increment is attributable to closing.
+            _egp0 = best.get("eq_gain_p", 0.0) + _harv["p"]
+            _egh0 = best.get("eq_gain_h", 0.0) + _harv["h"]
+            liq_p += max(0.0, personal_tax(
+                toi + gain_p_total + tax_p_extra_gain + _gp,
+                exempt_c, band_h) - tax_p_final)
+            liq_h += max(0.0, huf_tax(gain_h + tax_h_extra_gain + _gh,
+                                      band_h) - tax_h_final)
+            liq_e += max(0.0, (equity_tax(_egp0 + _gep, eq_exempt, eq_rate)
+                               + equity_tax(_egh0 + _geh, eq_exempt, eq_rate))
+                         - best.get("txe", 0.0))
+        else:
+            liq_p += personal_tax(_wtoi + _gp, _wexc, _wnb)
+            liq_h += huf_tax(_gh, _wnb)
+            liq_e += (equity_tax(_gep, _wee, _wer)
+                      + equity_tax(_geh, _wee, _wer))
 
     if verbose:
         print(f"{'FY':>3}{'band':>7}{'need':>7}{'cash_p':>8}{'cash_h':>8}"
@@ -2430,7 +2487,9 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                                          if v > PLAN_TOL), 0),
                 liq_tax=liq_p + liq_h + liq_e,
                 liq_personal=liq_p, liq_huf=liq_h, liq_equity=liq_e,
-                liq_gain=_lq_p + _lq_h + _lq_ep + _lq_eh,
+                liq_gain=_lq_gain, liq_years=_ln,
+                liq_proceeds=_lq_cash, liq_net=_lq_cash - (liq_p + liq_h
+                                                           + liq_e),
                 p_debt=rows[-1]["p_debt"], p_eq=rows[-1]["p_eq"],
                 huf_debt=rows[-1]["huf_debt"], huf_eq=rows[-1]["huf_eq"],
                 equity=rows[-1]["value_equity"],
@@ -2638,6 +2697,13 @@ def main():
                          f"distribution of corpus, tax and cover. Bare, it "
                          f"runs {MC_DEFAULT_PATHS}. Paths are independent, so "
                          f"this runs across several cores.")
+    ap.add_argument("--liquidation_years", "--liquidation-years", type=int,
+                    default=None, metavar="N",
+                    help="spread the closing liquidation over N years instead "
+                         "of one. Each year brings a fresh s.87A ceiling, HUF "
+                         "nil band and s.112A exemption, and what is not yet "
+                         "sold goes on earning. Nothing is spent during the "
+                         "wind-down.")
     ap.add_argument("--mc_csv", "--mc-csv", default=None, metavar="PATH",
                     help="write one row per path: seed, corpus, tax, liq_tax, "
                          "cover, shortfall. Rows are ordered by seed, so two "
@@ -2848,6 +2914,11 @@ def main():
         globals()["DECISION_DEBT_RATE"] = a.decision_debt_rate
     if a.conservative_weightage is not None:
         globals()["CONSERVATIVE_WEIGHT"] = a.conservative_weightage
+    if a.liquidation_years is not None:
+        if a.liquidation_years < 1:
+            sys.exit(f"FATAL: --liquidation_years must be at least 1. Got "
+                     f"{a.liquidation_years}.")
+        globals()["LIQUIDATION_YEARS"] = a.liquidation_years
 
     if a.equity_cagr is not None:
         if not (0.0 < a.equity_cagr < 1.0):
@@ -3146,10 +3217,18 @@ def main():
               f", short by {r['shortfall']:.1f} in total. Every figure below "
               f"is the arithmetic of a plan that has already failed.")
     print(f"Final liquidation tax = {r['liq_tax']:.3f}")
+    _ly = r["liq_years"]
+    if _ly == 1:
+        _when = (f"charged in FY{a.horizon} on top of that year's own bill")
+    else:
+        _when = (f"spread over FY{a.horizon} to FY{a.horizon + _ly - 1}, the "
+                 f"first slice on top of FY{a.horizon}'s own bill and each "
+                 f"later year on fresh allowances")
     print(f"  (personal {r['liq_personal']:.3f} + HUF {r['liq_huf']:.3f}"
           f" + equity {r['liq_equity']:.3f} on {r['liq_gain']:.1f} of"
-          f" unrealised gain, charged in FY{a.horizon} on top of that year's"
-          f" own bill)")
+          f" gain, {_when})")
+    print(f"Cash in hand after liquidation = {r['liq_net']:.1f}"
+          f"   (proceeds {r['liq_proceeds']:.1f} less the tax above)")
     if a.csv:
         write_csv(r, a.csv)
         print(f"wrote {a.csv}")
