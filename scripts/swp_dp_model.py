@@ -658,6 +658,10 @@ MC_EQUITY_MEAN = 0.12       # Indian equity, long-run CAGR
 MC_EQUITY_SIGMA = 0.20      # one sigma either side gives -8% to +32%
 MC_DEBT_MEAN = 0.0575       # short and medium debt funds, 4.5% to 7.0%
 MC_DEBT_SIGMA = 0.0125      # one sigma either side gives that range
+MC_DEFAULT_PATHS = 500      # what a bare --monte_carlo runs. Enough to put a
+                            # usable number on the fifth percentile, which is
+                            # the only part of the distribution worth having.
+MC_DEFAULT_SEED = 4242      # fixed, so two strategies meet identical worlds
 
 # ---- the HUF draw ----------------------------------------------------------
 RATION_K = 1.195            # HUF offer = K * huf_value / years_remaining,
@@ -2475,7 +2479,7 @@ def _mc_run(job):
     finally:
         globals()["EQUITY_PATH"] = globals()["DEBT_PATH"] = None
     return (r["corpus"], r["tax"], r["liq_tax"], r["cover_end"],
-            r["shortfall"], r["first_shortfall_fy"])
+            r["shortfall"], r["first_shortfall_fy"], seed)
 
 
 def _mc_progress(done, total, t0, width=32):
@@ -2628,11 +2632,18 @@ def main():
                          "rates: W=0 scores purely at the modelled rates, W=1 "
                          "purely at the conservative ones. Linear in the "
                          "projection, so it costs no runtime. Default 0.6.")
-    ap.add_argument("--monte_carlo", "--monte-carlo", type=int, default=0,
-                    metavar="N",
-                    help="run N sampled return paths and report the "
-                         "distribution of corpus, tax and cover. Paths are "
-                         "independent, so this runs across all cores.")
+    ap.add_argument("--monte_carlo", "--monte-carlo", type=int, nargs="?",
+                    const=MC_DEFAULT_PATHS, default=0, metavar="N",
+                    help=f"run N sampled return paths and report the "
+                         f"distribution of corpus, tax and cover. Bare, it "
+                         f"runs {MC_DEFAULT_PATHS}. Paths are independent, so "
+                         f"this runs across several cores.")
+    ap.add_argument("--mc_csv", "--mc-csv", default=None, metavar="PATH",
+                    help="write one row per path: seed, corpus, tax, liq_tax, "
+                         "cover, shortfall. Rows are ordered by seed, so two "
+                         "runs on the same --mc_seed can be differenced path "
+                         "by path -- which resolves a small effect that the "
+                         "percentile table cannot.")
     ap.add_argument("--mc_equity_mean", type=float, default=None,
                     help=f"mean annual equity return (default "
                          f"{MC_EQUITY_MEAN})")
@@ -2643,11 +2654,16 @@ def main():
                     help=f"mean annual debt rate (default {MC_DEBT_MEAN})")
     ap.add_argument("--mc_debt_sigma", type=float, default=None,
                     help=f"sd of annual debt rate (default {MC_DEBT_SIGMA})")
-    ap.add_argument("--mc_seed", type=int, default=12345,
+    ap.add_argument("--mc_seed", type=int, default=MC_DEFAULT_SEED,
                     help="base seed. The same seed gives the same paths, so "
                          "two strategies can be compared on identical worlds.")
     ap.add_argument("--mc_workers", type=int, default=0,
-                    help="processes to use (default: one per core)")
+                    help="processes to use. Default is HALF the cores: this "
+                         "is a 15W part, the package is power-limited long "
+                         "before it is core-limited, and hyperthread siblings "
+                         "share execution units on work like this. Measured, "
+                         "six workers finished 200 paths in 62s against 80s "
+                         "on twelve -- faster AND leaving the machine usable.")
     ap.add_argument("--conservative_sweep", "--conservative-sweep",
                     dest="conservative_sweep", action="store_true",
                     help="sweep the conservative weightage against realised "
@@ -2972,7 +2988,7 @@ def main():
 
     if a.monte_carlo:
         _n = a.monte_carlo
-        _w = a.mc_workers or (multiprocessing.cpu_count() or 1)
+        _w = a.mc_workers or max(1, (multiprocessing.cpu_count() or 2) // 2)
         _jobs = [(a.mc_seed + k, a.scenario, a.horizon, a.max_folios,
                   a.vintage, a.no_vintage) for k in range(_n)]
         print(f"MONTE CARLO -- {_n} sampled paths, {a.scenario}, "
@@ -3014,6 +3030,21 @@ def main():
                                                       0.75, 0.95))
                   + f"{sum(_v) / len(_v):>10.1f}")
         print()
+        if a.mc_csv:
+            # Ordered by seed, NOT by completion. imap_unordered returns paths
+            # as they land, so an unsorted file would differ run to run and
+            # could not be differenced against another. The seed is the join
+            # key: same --mc_seed, same paths, so row N here and row N there
+            # are the same world under two strategies.
+            with open(a.mc_csv, "w", newline="") as _fh:
+                _wr = csv.writer(_fh)
+                _wr.writerow(["seed", "corpus", "tax", "liq_tax", "cover",
+                              "shortfall"])
+                for _x in sorted(_res, key=lambda t: t[6]):
+                    _wr.writerow([_x[6], f"{_x[0]:.6f}", f"{_x[1]:.6f}",
+                                  f"{_x[2]:.6f}", f"{_x[3]:.6f}",
+                                  f"{_x[4]:.6f}"])
+            print(f"wrote {a.mc_csv} -- {_n} rows, ordered by seed\n")
         if _ruined:
             _fy = sorted(x[5] for x in _ruined)
             print(f"RUIN: {len(_ruined)} of {_n} paths "
