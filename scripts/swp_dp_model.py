@@ -556,9 +556,16 @@ EQ_BUCKET_SHARE = 0.05      # each bucket is filled to this share of the excess
 # LAMBDA blends the two. terminal() is LINEAR in the projection multipliers,
 # so blending the multipliers is identical to blending the two scores and
 # costs nothing -- no extra candidate evaluations, no change in runtime.
-DECISION_EQUITY_CAGR = None   # scoring-only equity rate; None = EQUITY_RETURN
-DECISION_DEBT_RATE = None     # scoring-only debt rate; None = chunk 1's rate
-DECISION_LAMBDA = 1.0         # 1.0 = score entirely at the modelled rates
+# The conservative rates default to a FLOOR, not to a haircut: whichever is
+# LOWER, the modelled rate or the floor below. A plan already modelled at 7%
+# equity has nothing to be conservative about, and a haircut would score it at
+# 4.5% and start selling equity to buy debt. min() cannot invert.
+DECISION_EQUITY_FLOOR = 0.08  # scoring-only equity rate, capped at EQUITY_RETURN
+DECISION_DEBT_FLOOR = 0.05    # scoring-only debt rate, capped at chunk 1's rate
+DECISION_EQUITY_CAGR = None   # explicit override; None = the floor above
+DECISION_DEBT_RATE = None     # explicit override; None = the floor above
+CONSERVATIVE_WEIGHT = 0.6     # 0.0 = score purely at the modelled rates,
+                              # 1.0 = purely at the conservative ones
                             # over the floor. 20 x 5% = the whole excess.
 # ---- turnover -------------------------------------------------------------
 # Fraction of the INITIAL fund count moved at each chunk boundary. One entry per
@@ -1651,11 +1658,13 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
         _dr = chunk_rates(1)[0]
         _rd_opt = (1.0 + _dr) ** _yrs_left
         _re_opt = (1.0 + EQUITY_RETURN) ** _yrs_left
-        _rd_con = (1.0 + (_dr if DECISION_DEBT_RATE is None
-                          else DECISION_DEBT_RATE)) ** _yrs_left
-        _re_con = (1.0 + (EQUITY_RETURN if DECISION_EQUITY_CAGR is None
-                          else DECISION_EQUITY_CAGR)) ** _yrs_left
-        _lam = min(1.0, max(0.0, DECISION_LAMBDA))
+        _dcr = (min(_dr, DECISION_DEBT_FLOOR) if DECISION_DEBT_RATE is None
+                else DECISION_DEBT_RATE)
+        _ecr = (min(EQUITY_RETURN, DECISION_EQUITY_FLOOR)
+                if DECISION_EQUITY_CAGR is None else DECISION_EQUITY_CAGR)
+        _rd_con = (1.0 + _dcr) ** _yrs_left
+        _re_con = (1.0 + _ecr) ** _yrs_left
+        _lam = 1.0 - min(1.0, max(0.0, CONSERVATIVE_WEIGHT))
         _rd = _lam * _rd_opt + (1.0 - _lam) * _rd_con
         _re = _lam * _re_opt + (1.0 - _lam) * _re_con
 
@@ -2202,14 +2211,17 @@ def main():
                     type=float, default=None,
                     help="debt rate used to SCORE candidates, not to grow the "
                          "books. Default: chunk 1's rate.")
-    ap.add_argument("--decision_lambda", "--decision-lambda", type=float,
-                    default=None, metavar="L",
-                    help="blend: L=1 scores entirely at the modelled rates "
-                         "(current behaviour), L=0 entirely at the decision "
-                         "rates. Linear in the projection, so it costs nothing.")
-    ap.add_argument("--lambda_sweep", "--lambda-sweep", action="store_true",
-                    help="sweep L against realised equity CAGR and report "
-                         "corpus, tax and years of cover for each cell")
+    ap.add_argument("--conservative_weightage", "--conservative-weightage",
+                    type=float, default=None, metavar="W",
+                    help="how much of the SCORE is judged at the conservative "
+                         "rates: W=0 scores purely at the modelled rates, W=1 "
+                         "purely at the conservative ones. Linear in the "
+                         "projection, so it costs no runtime. Default 0.6.")
+    ap.add_argument("--conservative_sweep", "--conservative-sweep",
+                    dest="conservative_sweep", action="store_true",
+                    help="sweep the conservative weightage against realised "
+                         "equity CAGR and report corpus, lifetime tax and "
+                         "years of cover at the horizon for each cell")
     ap.add_argument("--interest_rate", "--interest-rate", type=str,
                     default=None, dest="interest_rate",
                     help="one, two or three debt rates as decimals, slash "
@@ -2381,8 +2393,8 @@ def main():
         globals()["DECISION_EQUITY_CAGR"] = a.decision_equity_cagr
     if a.decision_debt_rate is not None:
         globals()["DECISION_DEBT_RATE"] = a.decision_debt_rate
-    if a.decision_lambda is not None:
-        globals()["DECISION_LAMBDA"] = a.decision_lambda
+    if a.conservative_weightage is not None:
+        globals()["CONSERVATIVE_WEIGHT"] = a.conservative_weightage
 
     if a.equity_cagr is not None:
         if not (0.0 < a.equity_cagr < 1.0):
@@ -2511,48 +2523,47 @@ def main():
         print("little tax, which is a symptom of a poorer plan, not a better one.")
         return 0
 
-    if a.lambda_sweep:
-        _dq = (DECISION_EQUITY_CAGR if DECISION_EQUITY_CAGR is not None
-               else EQUITY_RETURN)
-        _dd = (DECISION_DEBT_RATE if DECISION_DEBT_RATE is not None
-               else chunk_rates(1)[0])
-        _lams = (0.0, 0.25, 0.5, 0.75, 1.0)
+    if a.conservative_sweep:
+        _dd = (min(chunk_rates(1)[0], DECISION_DEBT_FLOOR)
+               if DECISION_DEBT_RATE is None else DECISION_DEBT_RATE)
+        _ws = (0.0, 0.25, 0.4, 0.5, 0.6, 0.75, 1.0)
         _eqs = (0.07, 0.08, 0.09, 0.10, 0.11, 0.125, 0.14)
-        _true = EQUITY_RETURN
-        print("DECISION-RATE / LAMBDA SWEEP")
-        print(f"Scoring rates: equity {_dq:.2%}, debt {_dd:.2%}. LAMBDA blends")
-        print("them with the modelled rates: 1.00 scores entirely at what the")
-        print("model delivers, 0.00 entirely at the scoring rates above. Every")
-        print("other parameter is as printed above; only the REALISED equity")
-        print("CAGR moves across the columns.\n")
+        _true, _tw = EQUITY_RETURN, CONSERVATIVE_WEIGHT
+        print("CONSERVATIVE WEIGHTAGE SWEEP")
+        print(f"Conservative scoring rates: debt {_dd:.2%}, equity the LOWER")
+        print("of the column rate and the equity floor. W is how much of the")
+        print("score is judged at those rates: 0.00 purely at what the model")
+        print("delivers, 1.00 purely at the conservative ones. Every other")
+        print("parameter is as printed above; only the REALISED equity CAGR")
+        print("moves across the columns.\n")
         _res = {}
-        for _lam in _lams:
-            globals()["DECISION_LAMBDA"] = _lam
+        for _w in _ws:
+            globals()["CONSERVATIVE_WEIGHT"] = _w
             for _eq in _eqs:
                 globals()["EQUITY_RETURN"] = _eq
-                _res[(_lam, _eq)] = simulate(
+                _res[(_w, _eq)] = simulate(
                     a.scenario, a.horizon, a.max_folios,
                     vintage_every=a.vintage, no_vintage=a.no_vintage)
-        globals()["EQUITY_RETURN"] = _true
-        for _title, _key, _w, _p in (("END CORPUS", "corpus", 10, 1),
+        globals()["EQUITY_RETURN"], globals()["CONSERVATIVE_WEIGHT"] = _true, _tw
+        for _title, _key, _wd, _p in (("END CORPUS", "corpus", 10, 1),
                                      ("LIFETIME TAX", "tax", 10, 3),
                                      ("YEARS OF COVER AT HORIZON",
                                       "cover_end", 10, 1)):
             print(_title)
-            print(f"{'lambda':>8}" + "".join(f"{e:>10.1%}" for e in _eqs)
+            print(f"{'W':>8}" + "".join(f"{e:>10.1%}" for e in _eqs)
                   + f"{'worst':>10}")
             print("-" * (18 + 10 * len(_eqs)))
-            for _lam in _lams:
-                _row = [_res[(_lam, e)][_key] for e in _eqs]
-                print(f"{_lam:>8.2f}"
-                      + "".join(f"{v:>{_w}.{_p}f}" for v in _row)
-                      + f"{min(_row):>{_w}.{_p}f}")
+            for _cw in _ws:
+                _row = [_res[(_cw, e)][_key] for e in _eqs]
+                print(f"{_cw:>8.2f}"
+                      + "".join(f"{v:>{_wd}.{_p}f}" for v in _row)
+                      + f"{min(_row):>{_wd}.{_p}f}")
             print()
         print("Read the WORST column first. The plan is only in danger in the")
         print("low-return states, and years of cover at the horizon is the")
-        print("number that says whether it ran aground. A lambda that gives up")
-        print("a little in the 12.5% and 14% columns to buy cover in the 7%")
-        print("and 8% ones is the trade this sweep exists to price.")
+        print("number that says whether it ran aground. A weightage that")
+        print("gives up a little in the 12.5% and 14% columns to buy cover in")
+        print("the 7% and 8% ones is the trade this sweep exists to price.")
         return 0
 
     if a.sweep:
