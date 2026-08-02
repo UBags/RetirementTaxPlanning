@@ -684,6 +684,22 @@ def debt_floor_x(fy, horizon):
 
 
 EPS = 1e-12
+HUF_BAND_RESERVE = False
+"""Hold back enough HUF debt to use its nil band every remaining year.
+
+Without it the HUF debt is exhausted around FY31 and 40.0 of nil band is
+wasted over the last five years. With it, that capacity is preserved.
+
+OFF BY DEFAULT, because it loses money. MEASURED on a 35-year run:
+
+    off   tax 14.620   corpus 1755.3
+    on    tax 12.345   corpus 1747.4
+
+Corpus is already NET of tax, so the version with less tax is the worse plan.
+Holding debt to use the band means not holding equity compounding 6-7 points
+faster, and the foregone growth exceeds the tax saved. Kept as a switch because
+the reasoning is not obvious and someone will propose it again.
+"""
 TAX_EPS = 1e-4   # Rs 10. Below this a tax figure is float noise,
                  # not a bill worth restructuring a year for.
 SPILL_GRID = 8   # search resolution for the personal/HUF split
@@ -1595,18 +1611,22 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
             # cash_p / cash_h split stays real. Lumping it into cash_p once
             # made the table show the HUF contributing nothing while its debt
             # book visibly drained.
-            cash_p = cash_h = 0.0
+            cash_p = cash_h = eq_cash = 0.0
             g_p = g_h = g_eqp = g_eqh = 0.0
             c, gg, _ = p2.draw(navs, fy, gain_cap=band_left)
             cash_p += c; g_p += gg
             if h2.value(hnavs) > EPS:
-                c, gg, _ = h2.draw(hnavs, fy, gain_cap=band_h)
+                # Net off the HUF's transition gain, exactly as band_left does
+                # for the personal purse. Passing band_h raw let the free draw
+                # overshoot the nil band in transition years.
+                band_h_left = max(0.0, band_h - gain_turn_h)
+                c, gg, _ = h2.draw(hnavs, fy, gain_cap=band_h_left)
                 cash_h += c; g_h += gg
             if EQUITY_ENABLED:
                 c, gg = e2p.sell(nav_eq, fy, gain_cap=eq_exempt)
-                cash_p += c; g_eqp += gg
+                cash_p += c; eq_cash += c; g_eqp += gg
                 c, gg = e2h.sell(nav_eq, fy, gain_cap=eq_exempt)
-                cash_h += c; g_eqh += gg
+                cash_h += c; eq_cash += c; g_eqh += gg
             cash = cash_p + cash_h
 
             short = max(0.0, need - cash)
@@ -1626,6 +1646,33 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                         if not live:
                             continue
                         frac = min(f.front_frac(nav_eq) for f in live)
+                    elif kind == "h_debt":
+                        # The HUF's nil band is free slab capacity EVERY year,
+                        # but only while it has debt left to realise gain
+                        # against. Draining it now at 5% is locally the
+                        # cheapest tap and globally wrong: measured, it
+                        # exhausted the HUF at FY31 and wasted 40.0 of nil band
+                        # over the last five years, forcing the same cash out
+                        # of equity at 13%.
+                        #
+                        # So hold back enough to keep realising band_h of gain
+                        # a year for the rest of the plan. Value needed per
+                        # year is band_h / gain_fraction; the reserve is that
+                        # times the years remaining.
+                        val = book.value(nv)
+                        if val <= EPS:
+                            continue
+                        pool = [(fi, k, f) for fi in range(len(book.folios))
+                                for k, f in enumerate(book.folios[fi].funds)
+                                if f.units() > EPS]
+                        if not pool:
+                            continue
+                        frac = min(f.front_frac(nv[k]) for _fi, k, f in pool)
+                        yrs_left = max(0, horizon - fy)
+                        if HUF_BAND_RESERVE and yrs_left > 0 and frac > 0.05:
+                            reserve = yrs_left * band_h / frac
+                            if val <= reserve:
+                                continue
                     else:
                         if book.value(nv) <= EPS:
                             continue
@@ -1646,6 +1693,7 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                 take = min(short, step)
                 if kind.endswith("eq"):
                     c, gg = book.sell(nav_eq, fy, amount=take)
+                    eq_cash += c
                     if kind == "p_eq":
                         g_eqp += gg
                         cash_p += c
@@ -1687,7 +1735,7 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                         sold={}, cash_p=cash_p, cash_h=cash_h, surplus=0.0,
                         gain_p=gpt, gain_h=ght,
                         txp=txp, txh=txh, txe=txe,
-                        eq_cash=0.0, eq_gain=g_eqp + g_eqh,
+                        eq_cash=eq_cash, eq_gain=g_eqp + g_eqh,
                         eq_gain_p=g_eqp, eq_gain_h=g_eqh)
 
         best = run_year(offer)
@@ -1905,6 +1953,30 @@ def _echo_invocation(a):
     ]
     if a.no_vintage:
         parts.append("--no_vintage")
+    if a.rate_stress:
+        print("RATE REGIME STRESS TEST")
+        print("Flat rates, 1chunk -- chunk structure and turnover are switched")
+        print("off so the rate is the only thing moving. Every other parameter")
+        print("is as printed above.\n")
+        print(f"{'rate':>7}{'tax total':>11}{'  personal':>11}{'HUF':>8}"
+              f"{'equity':>9}   {'corpus':>10}{'personal':>11}{'HUF':>10}")
+        print("-" * 78)
+        base = 0.070
+        while base >= 0.0399:
+            globals()["INTEREST_RATES"] = (base,)
+            r = simulate("1chunk", a.horizon, a.max_folios,
+                         vintage_every=a.vintage, no_vintage=a.no_vintage)
+            p_tot = r["p_debt"] + r["p_eq"]
+            h_tot = r["huf_debt"] + r["huf_eq"]
+            print(f"{base:>7.2%}{r['tax']:>11.3f}{r['tax_personal']:>11.3f}"
+                  f"{r['tax_huf']:>8.3f}{r['tax_equity']:>9.3f}   "
+                  f"{r['corpus']:>10.1f}{p_tot:>11.1f}{h_tot:>10.1f}")
+            base -= 0.005
+        print("\nCorpus is NET of tax. Read the corpus columns, not the tax")
+        print("columns: a low-rate world produces little gain and therefore")
+        print("little tax, which is a symptom of a poorer plan, not a better one.")
+        return 0
+
     if a.sweep:
         parts.append("--sweep")
     if a.quiet:
@@ -1952,6 +2024,12 @@ def main():
                     help="never open new folios (cap = 1)")
     ap.add_argument("--csv", default=None)
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--rate_regime_stress_test", "--rate-regime-stress-test",
+                    action="store_true", dest="rate_stress",
+                    help="sweep flat interest rates from 7%% down to 4%% in "
+                         "0.5%% steps. Forces 1chunk and ignores "
+                         "--scenario/--interest_rate/--turnover; every other "
+                         "parameter is kept.")
     ap.add_argument("--sweep", action="store_true",
                     help="compare scenarios, horizons and vintage rules")
     ap.add_argument("--interest_rate", "--interest-rate", type=str,
@@ -2224,6 +2302,30 @@ def main():
           f"(taxable-other {TAXABLE_OTHER_INCOME:.2f}, tax-free "
           f"{TAXFREE_OTHER_INCOME:.2f}, salary {SALARY_INCOME:.2f}, "
           f"rent {RENTAL_INCOME:.2f})")
+
+    if a.rate_stress:
+        print("RATE REGIME STRESS TEST")
+        print("Flat rates, 1chunk -- chunk structure and turnover are switched")
+        print("off so the rate is the only thing moving. Every other parameter")
+        print("is as printed above.\n")
+        print(f"{'rate':>7}{'tax total':>11}{'  personal':>11}{'HUF':>8}"
+              f"{'equity':>9}   {'corpus':>10}{'personal':>11}{'HUF':>10}")
+        print("-" * 78)
+        base = 0.070
+        while base >= 0.0399:
+            globals()["INTEREST_RATES"] = (base,)
+            r = simulate("1chunk", a.horizon, a.max_folios,
+                         vintage_every=a.vintage, no_vintage=a.no_vintage)
+            p_tot = r["p_debt"] + r["p_eq"]
+            h_tot = r["huf_debt"] + r["huf_eq"]
+            print(f"{base:>7.2%}{r['tax']:>11.3f}{r['tax_personal']:>11.3f}"
+                  f"{r['tax_huf']:>8.3f}{r['tax_equity']:>9.3f}   "
+                  f"{r['corpus']:>10.1f}{p_tot:>11.1f}{h_tot:>10.1f}")
+            base -= 0.005
+        print("\nCorpus is NET of tax. Read the corpus columns, not the tax")
+        print("columns: a low-rate world produces little gain and therefore")
+        print("little tax, which is a symptom of a poorer plan, not a better one.")
+        return 0
 
     if a.sweep:
         print(f"{'scenario':>10}{'horizon':>8}{'vintage':>11}"
