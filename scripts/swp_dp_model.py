@@ -1747,7 +1747,20 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
         # is 5.2%. Search upward, holding back enough HUF value to keep its own
         # free band usable in every remaining year.
         if best["tax"] > EPS and huf.value(hnavs) > EPS:
-            reserve = max(0.0, (horizon - fy) * band_h)
+            # DIMENSIONS. band_h is measured in realised GAIN; huf.value is
+            # measured in portfolio VALUE. Subtracting one from the other
+            # assumes a 100% gain fraction and over-reserves by 1/frac -- at a
+            # 50% gain fraction it holds back twice what is needed. With
+            # band_h = 10 and 30 years left that reserved 300 against an HUF
+            # worth ~190, so spill_max was zero and the spillover search never
+            # ran at all for most of the horizon.
+            _hf = 1.0
+            _hpool = [(k, f) for fo in huf.folios
+                      for k, f in enumerate(fo.funds) if f.units() > EPS]
+            if _hpool:
+                _hf = max(0.05, min(1.0, min(f.front_frac(hnavs[k])
+                                             for k, f in _hpool)))
+            reserve = max(0.0, (horizon - fy) * band_h / _hf)
             spill_max = min(need, max(0.0, huf.value(hnavs) - reserve))
             if spill_max > offer + EPS:
                 for j in range(1, SPILL_GRID + 1):
@@ -1953,30 +1966,6 @@ def _echo_invocation(a):
     ]
     if a.no_vintage:
         parts.append("--no_vintage")
-    if a.rate_stress:
-        print("RATE REGIME STRESS TEST")
-        print("Flat rates, 1chunk -- chunk structure and turnover are switched")
-        print("off so the rate is the only thing moving. Every other parameter")
-        print("is as printed above.\n")
-        print(f"{'rate':>7}{'tax total':>11}{'  personal':>11}{'HUF':>8}"
-              f"{'equity':>9}   {'corpus':>10}{'personal':>11}{'HUF':>10}")
-        print("-" * 78)
-        base = 0.070
-        while base >= 0.0399:
-            globals()["INTEREST_RATES"] = (base,)
-            r = simulate("1chunk", a.horizon, a.max_folios,
-                         vintage_every=a.vintage, no_vintage=a.no_vintage)
-            p_tot = r["p_debt"] + r["p_eq"]
-            h_tot = r["huf_debt"] + r["huf_eq"]
-            print(f"{base:>7.2%}{r['tax']:>11.3f}{r['tax_personal']:>11.3f}"
-                  f"{r['tax_huf']:>8.3f}{r['tax_equity']:>9.3f}   "
-                  f"{r['corpus']:>10.1f}{p_tot:>11.1f}{h_tot:>10.1f}")
-            base -= 0.005
-        print("\nCorpus is NET of tax. Read the corpus columns, not the tax")
-        print("columns: a low-rate world produces little gain and therefore")
-        print("little tax, which is a symptom of a poorer plan, not a better one.")
-        return 0
-
     if a.sweep:
         parts.append("--sweep")
     if a.quiet:
