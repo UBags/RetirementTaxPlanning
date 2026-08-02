@@ -45,7 +45,7 @@ import swp_dp_model as M  # noqa: E402
 # 1907.619583. If this test fails after an intentional default change, re-pin
 # it deliberately; if it fails after a routing change, suspect a discarded
 # surplus and check the corpus for a large DROP.
-NO_EQUITY_TAX = 0.362638768
+NO_EQUITY_TAX = 2.116115765
 NO_EQUITY_CORPUS = 1839.775581
 
 

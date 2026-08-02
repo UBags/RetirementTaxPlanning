@@ -459,7 +459,10 @@ from __future__ import annotations
 
 import argparse
 import csv
+import multiprocessing
+import random
 import sys
+import time
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  INPUTS -- everything below this line is a dial
@@ -637,6 +640,24 @@ EQ_RATE_BLOCKS = [0.125, 0.125, 0.125, 0.125, 0.125, 0.125, 0.125]  # s.112A rat
 # repeats: allowances stop growing, so the tax is if anything overstated.
 LADDER_PROJECTED_YEARS = 5 * min(len(EXEMPT_BLOCKS), len(NILBAND_BLOCKS),
                                  len(EQ_EXEMPT_BLOCKS), len(EQ_RATE_BLOCKS))
+
+# ── SAMPLED RETURN PATHS (Monte Carlo) ─────────────────────────────────────
+# When set, these REPLACE the flat assumptions year by year. They affect what
+# the world DELIVERS and nothing else: terminal() still scores candidates at
+# the flat EQUITY_RETURN and the portfolio debt rate, blended by
+# CONSERVATIVE_WEIGHT, because a plan cannot see next year's return. That
+# separation is the whole point -- it is what makes the result a test of the
+# STRATEGY under uncertainty rather than of clairvoyance.
+#
+# DEBT_PATH[i] is the realised chunk-1 rate for year i+1; every fund keeps its
+# own spread against chunk 1, so a 3chunk book still earns its ladder, shifted.
+EQUITY_PATH = None
+DEBT_PATH = None
+
+MC_EQUITY_MEAN = 0.12       # Indian equity, long-run CAGR
+MC_EQUITY_SIGMA = 0.20      # one sigma either side gives -8% to +32%
+MC_DEBT_MEAN = 0.0575       # short and medium debt funds, 4.5% to 7.0%
+MC_DEBT_SIGMA = 0.0125      # one sigma either side gives that range
 
 # ---- the HUF draw ----------------------------------------------------------
 RATION_K = 1.195            # HUF offer = K * huf_value / years_remaining,
@@ -1550,8 +1571,10 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
 
     for fy in range(1, horizon + 1):
         i = fy - 1
+        _base_r = chunk_rates(1)[0]
+        _shift = (DEBT_PATH[i] - _base_r) if DEBT_PATH else 0.0
         for k in range(nf):
-            navs[k] *= (1.0 + spec["rate"](k))
+            navs[k] *= (1.0 + spec["rate"](k) + _shift)
         # The HUF holds the SAME funds at the SAME NAVs as the personal purse.
         # It is not a separate asset class with its own flat return; it is the
         # same portfolio in a second pair of hands, so it earns the per-fund
@@ -1587,7 +1610,8 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                         huf.folios[huf.receiver].funds[k].invest(
                             _amount * v / _total, navs[k], fy)
         if EQUITY_ENABLED:
-            nav_eq *= (1.0 + EQUITY_RETURN)
+            nav_eq *= (1.0 + (EQUITY_PATH[i] if EQUITY_PATH
+                              else EQUITY_RETURN))
         eq_exempt, eq_rate = lad["eq_exempt"][i], lad["eq_rate"][i]
         # OPEN OF YEAR: after growth and inflows, before anything is sold.
         # The identity closed against this is the only check that sees value
@@ -2419,6 +2443,50 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                 folios=rows[-1]["p_debt_folios"], rows=rows)
 
 
+def _mc_path(seed, horizon):
+    """One sampled path of annual returns.
+
+    Normal, and independent year to year -- no mean reversion, and no
+    correlation between the sleeve and the book. Both of those are real and
+    both would SOFTEN the tails, so this is the pessimistic reading of the
+    assumption, which is the right way round for a plan.
+
+    Equity is floored at -95% and debt at 0% so a deep draw cannot take a NAV
+    to zero or below. At the shipped sigmas the equity floor binds beyond five
+    standard deviations and the debt floor beyond four, so neither is doing
+    real work; they are there so that a wide sigma cannot produce nonsense.
+    """
+    rng = random.Random(seed)
+    eq = [max(-0.95, rng.gauss(MC_EQUITY_MEAN, MC_EQUITY_SIGMA))
+          for _ in range(horizon)]
+    dt = [max(0.0, rng.gauss(MC_DEBT_MEAN, MC_DEBT_SIGMA))
+          for _ in range(horizon)]
+    return eq, dt
+
+
+def _mc_run(job):
+    """One path, start to finish. Top level so multiprocessing can pickle it."""
+    seed, scenario, horizon, cap, vintage, no_vintage = job
+    eq, dt = _mc_path(seed, horizon)
+    globals()["EQUITY_PATH"], globals()["DEBT_PATH"] = eq, dt
+    try:
+        r = simulate(scenario, horizon, cap, vintage_every=vintage,
+                     no_vintage=no_vintage)
+    finally:
+        globals()["EQUITY_PATH"] = globals()["DEBT_PATH"] = None
+    return (r["corpus"], r["tax"], r["liq_tax"], r["cover_end"],
+            r["shortfall"], r["first_shortfall_fy"])
+
+
+def _pct(vals, q):
+    """Nearest-rank percentile. No interpolation: with 100 paths an
+    interpolated p5 invents a number no path actually produced."""
+    if not vals:
+        return 0.0
+    xs = sorted(vals)
+    return xs[min(len(xs) - 1, max(0, int(round(q * (len(xs) - 1)))))]
+
+
 def write_csv(result, path):
     rows = []
     maxf = max(r["folios_open"] for r in result["rows"])
@@ -2538,6 +2606,26 @@ def main():
                          "rates: W=0 scores purely at the modelled rates, W=1 "
                          "purely at the conservative ones. Linear in the "
                          "projection, so it costs no runtime. Default 0.6.")
+    ap.add_argument("--monte_carlo", "--monte-carlo", type=int, default=0,
+                    metavar="N",
+                    help="run N sampled return paths and report the "
+                         "distribution of corpus, tax and cover. Paths are "
+                         "independent, so this runs across all cores.")
+    ap.add_argument("--mc_equity_mean", type=float, default=None,
+                    help=f"mean annual equity return (default "
+                         f"{MC_EQUITY_MEAN})")
+    ap.add_argument("--mc_equity_sigma", type=float, default=None,
+                    help=f"sd of annual equity return (default "
+                         f"{MC_EQUITY_SIGMA})")
+    ap.add_argument("--mc_debt_mean", type=float, default=None,
+                    help=f"mean annual debt rate (default {MC_DEBT_MEAN})")
+    ap.add_argument("--mc_debt_sigma", type=float, default=None,
+                    help=f"sd of annual debt rate (default {MC_DEBT_SIGMA})")
+    ap.add_argument("--mc_seed", type=int, default=12345,
+                    help="base seed. The same seed gives the same paths, so "
+                         "two strategies can be compared on identical worlds.")
+    ap.add_argument("--mc_workers", type=int, default=0,
+                    help="processes to use (default: one per core)")
     ap.add_argument("--conservative_sweep", "--conservative-sweep",
                     dest="conservative_sweep", action="store_true",
                     help="sweep the conservative weightage against realised "
@@ -2710,6 +2798,12 @@ def main():
 
     if a.income_step_absolute is not None:
         globals()["OTHER_INCOME_STEP"] = a.income_step_absolute
+    for _flag, _const in (("mc_equity_mean", "MC_EQUITY_MEAN"),
+                          ("mc_equity_sigma", "MC_EQUITY_SIGMA"),
+                          ("mc_debt_mean", "MC_DEBT_MEAN"),
+                          ("mc_debt_sigma", "MC_DEBT_SIGMA")):
+        if getattr(a, _flag) is not None:
+            globals()[_const] = getattr(a, _flag)
     if a.decision_equity_cagr is not None:
         globals()["DECISION_EQUITY_CAGR"] = a.decision_equity_cagr
     if a.decision_debt_rate is not None:
@@ -2852,6 +2946,59 @@ def main():
         print("\nCorpus is NET of tax. Read the corpus columns, not the tax")
         print("columns: a low-rate world produces little gain and therefore")
         print("little tax, which is a symptom of a poorer plan, not a better one.")
+        return 0
+
+    if a.monte_carlo:
+        _n = a.monte_carlo
+        _w = a.mc_workers or (multiprocessing.cpu_count() or 1)
+        _jobs = [(a.mc_seed + k, a.scenario, a.horizon, a.max_folios,
+                  a.vintage, a.no_vintage) for k in range(_n)]
+        print(f"MONTE CARLO -- {_n} sampled paths, {a.scenario}, "
+              f"{a.horizon} years")
+        print(f"equity  N({MC_EQUITY_MEAN:.2%}, {MC_EQUITY_SIGMA:.2%}) a year")
+        print(f"debt    N({MC_DEBT_MEAN:.2%}, {MC_DEBT_SIGMA:.2%}) a year, "
+              f"each fund keeping its own spread against chunk 1")
+        print("Decisions are still scored at the FLAT assumptions, blended by "
+              "the conservative")
+        print("weightage. The plan cannot see the path it is on, so this "
+              "tests the STRATEGY")
+        print("under uncertainty and not clairvoyance.\n")
+        _t0 = time.time()
+        if _w > 1 and _n > 1:
+            with multiprocessing.Pool(_w) as _pool:
+                _res = _pool.map(_mc_run, _jobs, chunksize=1)
+        else:
+            _res = [_mc_run(j) for j in _jobs]
+        _el = time.time() - _t0
+        _corp = [x[0] for x in _res]
+        _tax = [x[1] for x in _res]
+        _liq = [x[2] for x in _res]
+        _cov = [x[3] for x in _res]
+        _ruined = [x for x in _res if x[4] > PLAN_TOL]
+        print(f"{'':>18}{'p5':>10}{'p25':>10}{'p50':>10}{'p75':>10}"
+              f"{'p95':>10}{'mean':>10}")
+        print("-" * 78)
+        for _label, _v in (("end corpus", _corp), ("lifetime tax", _tax),
+                           ("liquidation tax", _liq),
+                           ("cover, years", _cov)):
+            print(f"{_label:>18}" + "".join(f"{_pct(_v, q):>10.1f}"
+                                            for q in (0.05, 0.25, 0.5,
+                                                      0.75, 0.95))
+                  + f"{sum(_v) / len(_v):>10.1f}")
+        print()
+        if _ruined:
+            _fy = sorted(x[5] for x in _ruined)
+            print(f"RUIN: {len(_ruined)} of {_n} paths "
+                  f"({len(_ruined) / _n:.1%}) failed to fund the requirement. "
+                  f"Median first failure FY{_fy[len(_fy) // 2]}, earliest "
+                  f"FY{_fy[0]}. Median shortfall "
+                  f"{_pct([x[4] for x in _ruined], 0.5):.1f}.")
+        else:
+            print(f"RUIN: none of {_n} paths failed to fund the requirement.")
+        print("\nRead p5 first. The median path is not the plan you are "
+              "buying insurance against.")
+        print(f"{_n} paths on {_w} worker(s) in {_el:.1f}s "
+              f"({_el / _n * 1000:.0f} ms a path).")
         return 0
 
     if a.conservative_sweep:
