@@ -255,10 +255,46 @@ raise its share and pays whatever tax falls out. That is arbitrary: it can take
 a rupee from personal debt at a 31% slab while the HUF's 5% bracket and both
 s.112A exemptions sit unused.
 
-`run_waterfill` draws every source's FREE capacity first, then fills the
-remaining shortfall one slice at a time from whichever source is cheapest AT
-THAT MOMENT, across four taps -- personal debt, HUF debt, personal equity, HUF
-equity. Ties go to the personal purse.
+`run_waterfill` draws each source's FREE capacity -- capped at what the year
+still needs, never more -- then fills the remaining shortfall one slice at a
+time from whichever source is cheapest AT THAT MOMENT, across four taps --
+personal debt, HUF debt, personal equity, HUF equity. Ties go to the personal
+purse.
+
+THE FREE DRAWS ARE CAPPED AT need -- and this is a third instance of the "every
+rupee must land somewhere" leak recorded above under SURPLUS ROUTING. The free
+draws once took each source's FULL tax-free capacity regardless of the year's
+need, routinely 8-16 above it (equity alone ~5). `run_waterfill` reinvests
+nothing (its surplus is 0), so that excess was liquidated straight out of the
+corpus and lost. It never showed as a wrong committed number, because the leak
+sank this candidate's TERMINAL VALUE below the plain path in exactly the late
+years where it had driven tax to zero -- so the water-filling branch quietly
+never won. Capping each free draw at the running shortfall keeps the spare
+capacity invested and lets the terminal comparison be honest. MEASURED: 2chunk
+/35yr tax 2.185 -> 0.169, corpus 2278.7 -> 2282.7; 3chunk/35yr 2.917 -> 0.323.
+When free capacity is SHORT of need -- the tax-paying case the water-fill loop
+exists for -- the gain cap binds first and the amount cap is inert, so nothing
+changes there.
+
+THE CAP CLOSED ONLY HALF OF IT. Stopping the draw at `need` stopped the corpus
+walking out of the door, but it also stopped this candidate doing the basis
+reset `run_year` does every year through fund_year's surplus -- so whatever was
+left of the personal band simply expired, and the two candidates were still not
+compared on equal footing. The residue is now harvested and put straight back
+through the same floor-then-equity routing. Small: 3chunk/35yr 0.323 -> 0.320,
+five of six scenario/horizon combos byte-identical, because in the years the
+water-fill runs at all the free draw has usually spent the band already.
+
+THE SAME HARVEST ON THE HUF SIDE IS NOT TAKEN, AND THE REASON IS MEASURED. It
+looks better at defaults -- 3chunk/35yr 0.320 -> 0.101 with corpus 2235.2 ->
+2240.5 -- but resetting the HUF's basis lowers its gain fraction, which raises
+the tax-free CASH its nil band buys, which makes it the cheapest tap in every
+year and drains it. At --taxable_other_income 12.0, 2chunk/35yr, the HUF is
+exhausted by FY33 instead of surviving with 53 of debt, and the last three
+years fall on the personal slab: tax 38.250 -> 51.336 and corpus 2944.0 ->
+2922.7. The harvest is not the defect -- the water-fill has no pacing rule for
+the HUF at all, where the plain path has RATION_K -- but until it has one, the
+harvest is a lever that makes the missing rule bite harder.
 
 TWO THINGS ABOUT IT ARE EASY TO GET WRONG.
 
@@ -414,7 +450,6 @@ The rotation-pointer claim WAS accepted and fixed -- see Folio.invest.
 from __future__ import annotations
 
 import argparse
-import copy
 import csv
 import sys
 
@@ -836,6 +871,15 @@ class Fund:
     def __init__(self):
         self.lots = []                      # [units, purchase_nav, buy_fy]
 
+    def clone(self):
+        """Shallow-structure deep-value copy. The grid searches clone state
+        hundreds of times per run; copy.deepcopy walks the object graph
+        reflectively and dominates runtime. Each lot is a 3-element list, so a
+        slice copies it fully -- no nested references to chase."""
+        f = Fund.__new__(Fund)
+        f.lots = [lot[:] for lot in self.lots]
+        return f
+
     def invest(self, amount, nav, fy):
         if amount > EPS:
             self.lots.append([amount / nav, nav, fy])
@@ -891,6 +935,12 @@ class Folio:
     def __init__(self, n_funds):
         self.funds = [Fund() for _ in range(n_funds)]
         self.ptr = 0
+
+    def clone(self):
+        fo = Folio.__new__(Folio)
+        fo.funds = [f.clone() for f in self.funds]
+        fo.ptr = self.ptr
+        return fo
 
     def value(self, navs):
         return sum(f.value(navs[k]) for k, f in enumerate(self.funds))
@@ -951,6 +1001,13 @@ class Sleeve:
         self.ptr = 0            # bucket currently being filled
         self.in_current = 0.0   # deployed into that bucket this cycle
 
+    def clone(self):
+        s = Sleeve.__new__(Sleeve)
+        s.funds = [f.clone() for f in self.funds]
+        s.ptr = self.ptr
+        s.in_current = self.in_current
+        return s
+
     def value(self, nav):
         return sum(f.value(nav) for f in self.funds)
 
@@ -994,7 +1051,14 @@ class Sleeve:
         much gain as the exemption allows per rupee churned.
         """
         cutoff = fy - EQUITY_MIN_HOLD
-        order = sorted(self.funds, key=lambda f: f.front_frac(nav),
+        # Empty funds report front_frac == +inf, which reverse=dearest would
+        # otherwise sort to the FRONT of the harvest queue. Mask them to the
+        # back in both directions so a real high-gain bucket is always reached
+        # first. Purely an ordering nicety -- Fund.sell no-ops on empties, so
+        # results are unchanged; this just skips dead work.
+        order = sorted(self.funds,
+                       key=lambda f: (f.front_frac(nav) if f.units() > EPS
+                                      else (-1.0 if dearest else float("inf"))),
                        reverse=dearest)
         gross = gain = 0.0
         for f in order:
@@ -1031,7 +1095,7 @@ class Sleeve:
 
     def capacity(self, nav, fy, gain_cap):
         """Cash raisable while keeping realised gain within `gain_cap`."""
-        probe = copy.deepcopy(self)
+        probe = self.clone()
         return probe.sell(nav, fy, gain_cap=gain_cap)[0]
 
 
@@ -1044,6 +1108,13 @@ class Book:
         self.cap, self.n_funds = cap, n_funds
         self.folios = [Folio(n_funds)]
         self.receiver = 0
+
+    def clone(self):
+        b = Book.__new__(Book)
+        b.cap, b.n_funds = self.cap, self.n_funds
+        b.folios = [fo.clone() for fo in self.folios]
+        b.receiver = self.receiver
+        return b
 
     def value(self, navs):
         return sum(f.value(navs) for f in self.folios)
@@ -1155,7 +1226,7 @@ class Book:
         # folio, which is the oldest and therefore the most gain-heavy. That
         # walled off fresh low-gain units sitting in the receiver folio, and is
         # the suspected cause of one folio beating four.
-        probe = copy.deepcopy(self)
+        probe = self.clone()
         got, gmin, _ = probe.draw(navs, fy, folio_idxs=lv, amount=need,
                                   prefer=prefer, high_gain_first=False,
                                   protect=protect)
@@ -1164,7 +1235,7 @@ class Book:
             lo, hi, best = 0.0, need, 0.0
             for _ in range(35):
                 mid = (lo + hi) / 2
-                trial = copy.deepcopy(self)
+                trial = self.clone()
                 a, ga, _ = trial.draw(navs, fy, folio_idxs=lv, amount=mid,
                                       prefer=prefer, high_gain_first=True,
                                       protect=protect)
@@ -1399,7 +1470,7 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
         # ---- the HUF offer, rationed over the remaining horizon ------------
         offer = 0.0
         if huf.value(hnavs) > EPS:
-            probe = copy.deepcopy(huf)
+            probe = huf.clone()
             capacity = probe.draw(hnavs, fy, amount=need, gain_cap=band_h)[0]
             offer = min(RATION_K * huf.value(hnavs) / (horizon + 1 - fy),
                         capacity)
@@ -1433,19 +1504,6 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
         eq_excess = max(0.0, joint_debt + joint_eq - _floor_x * need)
         bucket_target = EQ_BUCKET_SHARE * eq_excess
 
-        eligible = [k for k in base_eligible]
-        toi, exempt_c = lad["taxable_other"][i], lad["exempt"][i]
-
-        def _dest(book, nvs, year, default):
-            """Steer new money to whichever side is short of its target."""
-            if not target_share or not low_funds or not high_funds:
-                return default
-            tot = book.value(nvs)
-            if tot <= EPS:
-                return default
-            cur = book.group_value(nvs, low_funds) / tot
-            return low_funds if cur < target_share(year) else high_funds
-
         def run_year(huf_offer, eq_use=0.0):
             """Play the year out on copies, for a given HUF and equity draw.
 
@@ -1457,8 +1515,8 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
             Returns everything needed to commit the winner, so the chosen split
             is executed exactly once rather than replayed.
             """
-            p2, h2 = copy.deepcopy(personal), copy.deepcopy(huf)
-            e2p, e2h = copy.deepcopy(eq_p), copy.deepcopy(eq_h)
+            p2, h2 = personal.clone(), huf.clone()
+            e2p, e2h = eq_p.clone(), eq_h.clone()
             eq_cash = eq_gain_p = eq_gain_h = 0.0
             if eq_use > EPS:
                 g, gn = e2p.sell(nav_eq, fy, amount=eq_use,
@@ -1616,13 +1674,17 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
             can take a rupee from personal debt at a 31% slab while the HUF's
             5% bracket and both equity exemptions sit unused.
 
-            This draws every source's FREE capacity first, then water-fills the
-            remaining shortfall one slice at a time, always from whichever
-            source is cheapest per rupee of cash AT THAT MOMENT. Ties go to the
-            personal purse.
+            This draws each source's FREE capacity -- capped at what the
+            year still needs, never more -- then water-fills the remaining
+            shortfall one slice at a time, always from whichever source is
+            cheapest per rupee of cash AT THAT MOMENT. Ties go to the personal
+            purse. Whatever is left of the PERSONAL band afterwards is
+            harvested and put straight back, so the band is not wasted and no
+            rupee leaves the plan. The HUF band is deliberately left alone;
+            see the module docstring for the measurement that decided it.
             """
-            p2, h2 = copy.deepcopy(personal), copy.deepcopy(huf)
-            e2p, e2h = copy.deepcopy(eq_p), copy.deepcopy(eq_h)
+            p2, h2 = personal.clone(), huf.clone()
+            e2p, e2h = eq_p.clone(), eq_h.clone()
 
             # Cash is tracked PER PURSE, not as one total, so the reported
             # cash_p / cash_h split stays real. Lumping it into cash_p once
@@ -1630,19 +1692,40 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
             # book visibly drained.
             cash_p = cash_h = eq_cash = 0.0
             g_p = g_h = g_eqp = g_eqh = 0.0
-            c, gg, _ = p2.draw(navs, fy, gain_cap=band_left)
+            # Draw each source's FREE (tax-free) capacity to fund `need`,
+            # cheapest first -- but never MORE than the year needs. The amount
+            # cap is the point: an UNCAPPED free draw raised every source's
+            # full tax-free capacity, routinely 8-16 ABOVE need (equity alone
+            # ~5), and because run_waterfill reinvests nothing (surplus is 0)
+            # that excess was liquidated straight out of the corpus and simply
+            # lost. The leak sank this candidate's terminal value below the
+            # plain path in exactly the late years where it drove tax to zero,
+            # so the whole water-filling branch could never win. Capping each
+            # draw at the running shortfall keeps spare capacity invested and
+            # makes the terminal comparison fair. When free capacity is short
+            # of need -- the tax-paying case the water-fill loop below exists
+            # for -- the gain_cap binds first and the amount cap is inert, so
+            # this changes nothing there. Debt is tapped before equity so the
+            # higher-compounding sleeve is spent last.
+            c, gg, _ = p2.draw(navs, fy, amount=need, gain_cap=band_left)
             cash_p += c; g_p += gg
             if h2.value(hnavs) > EPS:
                 # Net off the HUF's transition gain, exactly as band_left does
                 # for the personal purse. Passing band_h raw let the free draw
                 # overshoot the nil band in transition years.
                 band_h_left = max(0.0, band_h - gain_turn_h)
-                c, gg, _ = h2.draw(hnavs, fy, gain_cap=band_h_left)
+                c, gg, _ = h2.draw(hnavs, fy,
+                                   amount=max(0.0, need - (cash_p + cash_h)),
+                                   gain_cap=band_h_left)
                 cash_h += c; g_h += gg
             if EQUITY_ENABLED:
-                c, gg = e2p.sell(nav_eq, fy, gain_cap=eq_exempt)
+                c, gg = e2p.sell(nav_eq, fy,
+                                 amount=max(0.0, need - (cash_p + cash_h)),
+                                 gain_cap=eq_exempt)
                 cash_p += c; eq_cash += c; g_eqp += gg
-                c, gg = e2h.sell(nav_eq, fy, gain_cap=eq_exempt)
+                c, gg = e2h.sell(nav_eq, fy,
+                                 amount=max(0.0, need - (cash_p + cash_h)),
+                                 gain_cap=eq_exempt)
                 cash_h += c; eq_cash += c; g_eqh += gg
             cash = cash_p + cash_h
 
@@ -1730,6 +1813,43 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                 cash += c
                 short = max(0.0, short - c)
 
+            # ---- residual personal free-band harvest, reinvested -------
+            # The draws above stop at `need`, so whatever is left of the
+            # personal band would otherwise expire unused. `run_year` spends
+            # that residue on a basis reset and routes the proceeds back
+            # through the debt floor into equity; this does the same, so the
+            # two candidates are compared on equal footing. Nothing leaves the
+            # plan: every rupee raised here is put straight back. min_gain_frac
+            # skips freshly seeded lots exactly as Book.fund_year does, so this
+            # is a reset and not churn. In a year that reached the water-fill
+            # loop the free draw has normally spent the band already and
+            # _rem_p is zero, which is why this moves so little.
+            _surp_p = 0.0
+            _rem_p = max(0.0, band_left - g_p)
+            if _rem_p > EPS and p2.value(navs) > EPS:
+                _pr, _pg, _ = p2.draw(navs, fy, gain_cap=_rem_p,
+                                      high_gain_first=True, min_gain_frac=0.01)
+                _surp_p, g_p = _pr, g_p + _pg
+            if _surp_p > EPS:
+                # Surplus routing, identical in shape to run_year: rebuild the
+                # debt floor first, then equity, then anything equity declines
+                # returns to debt. EVERY rupee must land somewhere. Note the
+                # name -- `short` is already the water-fill shortfall here.
+                _floor_short = max(0.0, _floor_x * need
+                                   - (p2.value(navs) + h2.value(hnavs)))
+                _to_eq_p = _surp_p - min(_surp_p, _floor_short)
+                if EQUITY_ENABLED:
+                    _room_p = max(0.0, EQUITY_MAX_SHARE
+                                  * (p2.value(navs) + e2p.value(nav_eq))
+                                  - e2p.value(nav_eq))
+                    _to_eq_p = min(_to_eq_p, _room_p)
+                else:
+                    _to_eq_p = 0.0
+                if _to_eq_p > EPS:
+                    e2p.invest(_to_eq_p, nav_eq, fy, bucket_target)
+                p2.put(_surp_p - _to_eq_p, navs, fy,
+                       _dest(p2, navs, fy, eligible))
+
             gpt = g_p + gain_turn
             ght = g_h + gain_turn_h
             txp0 = personal_tax(toi + gpt, exempt_c, band_h)
@@ -1749,7 +1869,8 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
             txe = (equity_tax(g_eqp, eq_exempt, eq_rate)
                    + equity_tax(g_eqh, eq_exempt, eq_rate))
             return dict(tax=txp + txh + txe, p=p2, h=h2, ep=e2p, eh=e2h,
-                        sold={}, cash_p=cash_p, cash_h=cash_h, surplus=0.0,
+                        sold={}, cash_p=cash_p, cash_h=cash_h,
+                        surplus=_surp_p,
                         gain_p=gpt, gain_h=ght,
                         txp=txp, txh=txh, txe=txe,
                         eq_cash=eq_cash, eq_gain=g_eqp + g_eqh,
