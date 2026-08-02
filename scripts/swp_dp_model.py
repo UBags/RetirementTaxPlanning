@@ -1010,6 +1010,13 @@ class Fund:
             self.lots.append([amount / nav, nav, fy])
 
     def units(self):
+        # The empty check earns its keep because MOST funds are empty most of
+        # the time -- 21 funds across up to 8 folios, only the live ones
+        # holding lots -- and sum() over a generator still builds the generator
+        # before discovering there is nothing in it. value() inherits the
+        # saving through units().
+        if not self.lots:
+            return 0.0
         return sum(l[0] for l in self.lots)
 
     def value(self, nav):
@@ -1017,6 +1024,8 @@ class Fund:
 
     def gain(self, nav):
         """Unrealised gain if every lot were sold at nav."""
+        if not self.lots:
+            return 0.0
         return sum(u * (nav - basis) for u, basis, _ in self.lots)
 
     def front_frac(self, nav):
@@ -1384,27 +1393,31 @@ class Book:
         # folio, which is the oldest and therefore the most gain-heavy. That
         # walled off fresh low-gain units sitting in the receiver folio, and is
         # the suspected cause of one folio beating four.
-        probe = self.clone()
-        got, gmin, _ = probe.draw(navs, fy, folio_idxs=lv, amount=need,
-                                  prefer=prefer, high_gain_first=False,
-                                  protect=protect)
+        # PROBE HIGH-GAIN-FIRST FIRST, and the ordering is not arbitrary. For
+        # a given amount of cash, high_gain_first realises the MOST gain any
+        # ordering can produce and low_gain_first the least. So if the whole
+        # need can be taken high-gain-first and still fits the band, two things
+        # follow at once and neither needs testing: the low-gain draw would
+        # also fit, and the bisection's answer is `need` exactly. That collapses
+        # two probes and twenty halvings into a single probe. Only when the
+        # high-gain draw BREACHES the band is the cheap ordering worth
+        # measuring, because only then is it in question whether ANY ordering
+        # fits.
+        _fp = self.clone()
+        _fa, _fga, _ = _fp.draw(navs, fy, folio_idxs=lv, amount=need,
+                                prefer=prefer, high_gain_first=True,
+                                protect=protect)
+        if _fa >= need - 1e-6 and _fga <= band + 1e-9:
+            _feasible, lo, hi, best = True, need, need, need
+        else:
+            probe = self.clone()
+            got, gmin, _ = probe.draw(navs, fy, folio_idxs=lv, amount=need,
+                                      prefer=prefer, high_gain_first=False,
+                                      protect=protect)
+            _feasible = got >= need - 1e-6 and gmin <= band + 1e-9
+            lo, hi, best = 0.0, need, 0.0
 
-        if got >= need - 1e-6 and gmin <= band + 1e-9:
-            # FAST PATH. The bisection searches for the largest high-gain-first
-            # slice whose total gain still fits the band. Test the TOP of the
-            # range first: if the whole need can be taken high-gain-first and
-            # still fits, the answer is `need` and twenty halvings would only
-            # crawl up to need minus 5e-5. One clone instead of twenty, and it
-            # hits in exactly the years where the band is not binding -- which
-            # on these parameters is most of them.
-            _fp = self.clone()
-            _fa, _fga, _ = _fp.draw(navs, fy, folio_idxs=lv, amount=need,
-                                    prefer=prefer, high_gain_first=True,
-                                    protect=protect)
-            if _fa >= need - 1e-6 and _fga <= band + 1e-9:
-                lo, hi, best = need, need, need
-            else:
-                lo, hi, best = 0.0, need, 0.0
+        if _feasible:
             # 20 halvings of a need of ~50 resolves to 5e-5, five thousand
             # times finer than PLAN_TOL. 35 was 1.5e-9 and cost 30% of the
             # runtime for precision nothing downstream can use; verified
