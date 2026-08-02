@@ -60,10 +60,25 @@ PARAMETERS
                     COMMA splits one pair from the next. The first pair must
                     start at FY1 and the years must strictly increase.
 
---starting_corpus   Personal corpus at FY1, in Rs LAKH. Every money figure in
---huf_corpus        this model is lakh, so 350 is 3.5 crore. A value under 25
-                    is rejected as a probable crore/lakh confusion rather than
-                    silently modelling a plan that cannot fund itself.
+--personal_corpus   Inflow amounts in Rs LAKH, slash separated, paired
+--personal_year     positionally with the years:
+--huf_corpus
+--huf_year              --personal_corpus 500/20/30/40 --personal_year 1/6/9/14
+                        --huf_corpus 190/60/40 --huf_year 5/8/12
+
+                    The FIRST personal inflow is the opening corpus and must be
+                    FY1; it seeds before FY1's growth, so it compounds through
+                    year one. Later inflows arrive DURING their year at that
+                    year's NAV -- they are contributions made partway through,
+                    not opening balances. Each is spread across the funds that
+                    purse already holds, in the same proportion.
+
+                    Every money figure here is LAKH, so 350 is 3.5 crore. A
+                    total under 25 is rejected as a probable crore/lakh
+                    confusion rather than silently modelling an unfundable plan.
+
+                    --starting_corpus is still accepted as an alias, and a
+                    single value with no year is taken as FY1.
 
 --huf_year          The FYs they land, paired positionally:
 
@@ -97,7 +112,13 @@ every low-rate result from before this change was optimistic.
                     never trimmed back, so it drifts above the cap as equity
                     outgrows debt. Forcing it back costs tax and corpus both.
 
---income_step       Flat annual increment on total other income.
+--income_step_absolute
+                    ABSOLUTE lakh added to total other income each year. 0.10
+                    is Rs 10,000/yr, NOT 10 percent, and it is linear rather
+                    than compound: 15.30 becomes 18.70 over 35 years, not 41.1
+                    as a 3% compound rate would give. Shared pro-rata across
+                    the four heads so the taxable fraction stays stable.
+                    --income_step is still accepted as an alias.
 
 --equity_cagr       Equity sleeve CAGR as a decimal, e.g. 0.12. DETERMINISTIC:
                     EQUITY_SIGMA exists but is unused, because a fixed model
@@ -402,7 +423,13 @@ import sys
 # ═══════════════════════════════════════════════════════════════════════════
 
 # ---- the money, in Rs lakh -------------------------------------------------
-PERSONAL_CORPUS = 350.0     # starting personal corpus, spread evenly on FY0
+# The personal purse, like the HUF, takes one or more external inflows:
+#   --personal_corpus 500/20/30/40 --personal_year 1/6/9/14
+# The FIRST is the OPENING corpus and is seeded before FY1's growth, so it
+# compounds through year one. Later inflows arrive DURING their year, at that
+# year's NAV, exactly as HUF inflows do -- they are contributions made partway
+# through, not opening balances.
+PERSONAL_INFLOWS = ((350.0, 1),)
 # The HUF receives one or more external inflows. Amounts and years are given
 # separately -- --huf_corpus 190/60/40 with --huf_year 5/8/12 -- and are zipped
 # into (amount, FY) pairs. Each inflow is spread across the funds the PERSONAL
@@ -444,8 +471,10 @@ SALARY_INCOME = 0.0             # taxable less the s.16(ia) standard deduction
 RENTAL_INCOME = 0.0             # taxable less the s.24(a) 30% deduction
 SALARY_STD_DEDUCTION = 0.75     # s.16(ia)
 RENTAL_DEDUCTION = 0.30         # s.24(a)
-OTHER_INCOME_STEP = 0.10        # flat annual increment on the TOTAL, shared
-                                # pro-rata so the taxable fraction is stable
+OTHER_INCOME_STEP = 0.10        # ABSOLUTE lakh added to total other income each
+                                # year -- 0.10 is Rs 10,000/yr, not 10%. Linear,
+                                # not compound. Shared pro-rata across the four
+                                # heads so the taxable fraction stays stable.
 
 # ---- transition timing ----------------------------------------------------
 BOUNDARY_GRACE = 3          # a transition's deadline sits this many years
@@ -1247,7 +1276,7 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
     navs = [1.0] * nf
 
     start_funds = [k for k in range(nf) if k < N_BASE_FUNDS]
-    personal.folios[0].seed(PERSONAL_CORPUS, navs, 0, start_funds)
+    personal.folios[0].seed(PERSONAL_INFLOWS[0][0], navs, 0, start_funds)
 
     wins = [dict(start=s, end=e, out=out, into=into, armed=False, still=0.0)
             for s, e, out, into in spec["transitions"]]
@@ -1264,6 +1293,20 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
         # same portfolio in a second pair of hands, so it earns the per-fund
         # rates and ages exactly as the personal purse does.
         hnavs = navs
+        for _amount, _fy in PERSONAL_INFLOWS[1:]:
+            if fy != _fy or _amount <= EPS:
+                continue
+            _held = {k: sum(fo.funds[k].value(navs[k]) for fo in personal.folios)
+                     for k in range(nf)}
+            _tot = sum(_held.values())
+            if _tot <= EPS:
+                personal.folios[personal.receiver].seed(_amount, navs, fy,
+                                                        start_funds)
+            else:
+                for k, v in _held.items():
+                    if v > EPS:
+                        personal.folios[personal.receiver].funds[k].invest(
+                            _amount * v / _tot, navs[k], fy)
         for _amount, _fy in HUF_INFLOWS:
             if fy != _fy or _amount <= EPS:
                 continue
@@ -1843,12 +1886,13 @@ def _echo_invocation(a):
         f"--max_folios {a.max_folios}",
         "--interest_rate " + "/".join(f"{r:g}" for r in INTEREST_RATES),
         f"--equity_cagr {EQUITY_RETURN:g}",
-        f"--starting_corpus {PERSONAL_CORPUS:g}",
+        "--personal_corpus " + "/".join(f"{amt:g}" for amt, _ in PERSONAL_INFLOWS),
+        "--personal_year " + "/".join(str(fy) for _, fy in PERSONAL_INFLOWS),
         "--huf_corpus " + "/".join(f"{amt:g}" for amt, _ in HUF_INFLOWS),
         "--huf_year " + "/".join(str(fy) for _, fy in HUF_INFLOWS),
         f"--ration_k {RATION_K:g}",
         f"--equity_max_share {EQUITY_MAX_SHARE:g}",
-        f"--income_step {OTHER_INCOME_STEP:g}",
+        f"--income_step_absolute {OTHER_INCOME_STEP:g}",
         f"--taxable_other_income {TAXABLE_OTHER_INCOME:.2f}",
         f"--taxfree_other_income {TAXFREE_OTHER_INCOME:.2f}",
         f"--salary_income {SALARY_INCOME:.2f}",
@@ -1925,9 +1969,16 @@ def main():
                     help="salary, Rs lakh/yr (s.16(ia) deduction applied)")
     ap.add_argument("--rental_income", type=float, default=None,
                     help="rent, Rs lakh/yr (s.24(a) 30%% deduction applied)")
-    ap.add_argument("--starting_corpus", "--starting-corpus", type=float,
-                    default=None, dest="starting_corpus",
-                    help="personal corpus at FY1, in Rs LAKH (350 = 3.5 crore)")
+    ap.add_argument("--personal_corpus", "--personal-corpus",
+                    "--starting_corpus", "--starting-corpus", type=str,
+                    default=None, dest="personal_corpus",
+                    help="personal inflow amounts in Rs LAKH, slash separated: "
+                         "500/20/30/40. The first is the opening corpus. "
+                         "Paired positionally with --personal_year.")
+    ap.add_argument("--personal_year", "--personal-year", type=str,
+                    default=None, dest="personal_year",
+                    help="FYs the personal inflows land: 1/6/9/14. The first "
+                         "must be FY1. Same count as --personal_corpus.")
     ap.add_argument("--huf_corpus", "--huf-corpus", type=str, default=None,
                     dest="huf_corpus",
                     help="HUF inflow amounts in Rs LAKH, slash separated: "
@@ -1943,9 +1994,11 @@ def main():
     ap.add_argument("--equity_max_share", "--equity-max-share", type=float,
                     default=None, dest="equity_max_share",
                     help="equity deployment cap as a share of the purse")
-    ap.add_argument("--income_step", "--income-step", type=float, default=None,
-                    dest="income_step",
-                    help="flat annual increment on total other income, Rs lakh")
+    ap.add_argument("--income_step_absolute", "--income-step-absolute",
+                    "--income_step", type=float, default=None,
+                    dest="income_step_absolute",
+                    help="ABSOLUTE lakh added to total other income each year. "
+                         "0.10 is Rs 10,000/yr, not 10 percent. Linear.")
     ap.add_argument("--equity_cagr", "--equity-cagr", type=float, default=None,
                     dest="equity_cagr",
                     help="equity sleeve CAGR as a decimal, e.g. 0.12. "
@@ -2005,41 +2058,52 @@ def main():
     # Money parameters are in LAKH throughout, like every other figure in this
     # model. A corpus entered in crore is a factor-of-100 error that would
     # quietly model a plan with no chance of funding itself, so it is caught.
-    if a.starting_corpus is not None:
-        if a.starting_corpus <= 0:
-            sys.exit("FATAL: --starting_corpus must be positive.")
-        if a.starting_corpus < 25.0:
-            sys.exit(f"FATAL: --starting_corpus {a.starting_corpus:g} is in Rs "
-                     f"LAKH, not crore. A corpus of {a.starting_corpus:g} lakh "
-                     f"cannot fund a retirement of tens of lakh a year. Did "
-                     f"you mean {a.starting_corpus * 100:g}?")
-        globals()["PERSONAL_CORPUS"] = a.starting_corpus
+    def _inflows(amounts_s, years_s, label, first_must_be_1):
+        try:
+            amounts = [float(x) for x in amounts_s.replace(",", "/").split("/")]
+            years = [int(x) for x in years_s.replace(",", "/").split("/")]
+        except ValueError:
+            sys.exit(f"FATAL: could not read --{label}_corpus {amounts_s!r} / "
+                     f"--{label}_year {years_s!r}. Expected 500/20/30 and 1/6/9.")
+        if len(amounts) != len(years):
+            sys.exit(f"FATAL: --{label}_corpus has {len(amounts)} amount(s) but "
+                     f"--{label}_year has {len(years)} year(s). They pair up "
+                     f"positionally, so the counts must match.")
+        if any(x <= 0 for x in amounts):
+            sys.exit(f"FATAL: {label} inflows must be positive.")
+        if any(y < 1 for y in years):
+            sys.exit(f"FATAL: --{label}_year values must be 1 or later.")
+        if len(set(years)) != len(years):
+            sys.exit(f"FATAL: --{label}_year has a repeated year: {years}.")
+        if sum(amounts) < 25.0:
+            sys.exit(f"FATAL: --{label}_corpus totals {sum(amounts):g}, which "
+                     f"is in Rs LAKH not crore. Did you mean "
+                     f"{sum(amounts) * 100:g}?")
+        pairs = tuple(sorted(zip(amounts, years), key=lambda t: t[1]))
+        if first_must_be_1 and pairs[0][1] != 1:
+            sys.exit(f"FATAL: the first --{label}_year must be 1. The plan has "
+                     f"no corpus to draw on before its opening balance "
+                     f"arrives.")
+        return pairs
+
+    if (a.personal_corpus is None) != (a.personal_year is None):
+        # one value with no year is the old single-corpus form; accept it
+        if a.personal_year is None and a.personal_corpus is not None \
+                and "/" not in a.personal_corpus:
+            a.personal_year = "1"
+        else:
+            sys.exit("FATAL: --personal_corpus and --personal_year go together. "
+                     "Give both, or give a single --personal_corpus alone.")
+    if a.personal_corpus is not None:
+        globals()["PERSONAL_INFLOWS"] = _inflows(
+            a.personal_corpus, a.personal_year, "personal", True)
 
     if (a.huf_corpus is None) != (a.huf_year is None):
         sys.exit("FATAL: --huf_corpus and --huf_year go together. Give both or "
                  "neither.")
     if a.huf_corpus is not None:
-        try:
-            amounts = [float(x) for x in a.huf_corpus.replace(",", "/").split("/")]
-            years = [int(x) for x in a.huf_year.replace(",", "/").split("/")]
-        except ValueError:
-            sys.exit(f"FATAL: could not read --huf_corpus {a.huf_corpus!r} / "
-                     f"--huf_year {a.huf_year!r}. Expected 190/60/40 and 5/8/12.")
-        if len(amounts) != len(years):
-            sys.exit(f"FATAL: --huf_corpus has {len(amounts)} amount(s) but "
-                     f"--huf_year has {len(years)} year(s). They pair up "
-                     f"positionally, so the counts must match.")
-        if any(x <= 0 for x in amounts):
-            sys.exit("FATAL: HUF inflows must be positive.")
-        if any(y < 1 for y in years):
-            sys.exit("FATAL: --huf_year values must be 1 or later.")
-        if len(set(years)) != len(years):
-            sys.exit(f"FATAL: --huf_year has a repeated year: {years}.")
-        if sum(amounts) < 25.0:
-            sys.exit(f"FATAL: --huf_corpus totals {sum(amounts):g}, which is in "
-                     f"Rs LAKH not crore. Did you mean {sum(amounts) * 100:g}?")
-        globals()["HUF_INFLOWS"] = tuple(sorted(zip(amounts, years),
-                                                key=lambda t: t[1]))
+        globals()["HUF_INFLOWS"] = _inflows(a.huf_corpus, a.huf_year, "huf",
+                                            False)
 
     for flag, name, lo, hi in (("equity_max_share", "EQUITY_MAX_SHARE", 0.0, 1.0),):
         val = getattr(a, flag)
@@ -2055,8 +2119,8 @@ def main():
                      "offers nothing and only backstops.")
         globals()["RATION_K"] = a.ration_k
 
-    if a.income_step is not None:
-        globals()["OTHER_INCOME_STEP"] = a.income_step
+    if a.income_step_absolute is not None:
+        globals()["OTHER_INCOME_STEP"] = a.income_step_absolute
 
     if a.equity_cagr is not None:
         if not (0.0 < a.equity_cagr < 1.0):
@@ -2147,9 +2211,11 @@ def main():
           + ", ".join(f"chunk {j + 1} {x:.4%}" for j, x in enumerate(_rt))
           + (f"   (from {'/'.join(f'{r:g}' for r in INTEREST_RATES)})"
              if len(INTEREST_RATES) != _n else ""))
-    print(f"corpus: personal {PERSONAL_CORPUS:g} at FY1; HUF "
+    print("corpus: personal "
+          + " + ".join(f"{amt:g} at FY{fy}" for amt, fy in PERSONAL_INFLOWS)
+          + f" (total {sum(x for x, _ in PERSONAL_INFLOWS):g}); HUF "
           + " + ".join(f"{amt:g} at FY{fy}" for amt, fy in HUF_INFLOWS)
-          + f" (total {sum(a for a, _ in HUF_INFLOWS):g})")
+          + f" (total {sum(x for x, _ in HUF_INFLOWS):g})")
     print("the HUF holds the same funds at the same NAVs as the personal purse "
           "and transitions with it")
     print(f"equity CAGR {EQUITY_RETURN:.2%}"
