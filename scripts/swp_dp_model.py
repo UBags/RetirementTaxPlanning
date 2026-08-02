@@ -73,7 +73,7 @@ PARAMETERS
                     not opening balances. Each is spread across the funds that
                     purse already holds, in the same proportion.
 
-                    Every money figure here is LAKH, so 350 is 3.5 crore. A
+                    Every money figure here is LAKH, so 100 is 1 crore. A
                     total under 25 is rejected as a probable crore/lakh
                     confusion rather than silently modelling an unfundable plan.
 
@@ -95,9 +95,9 @@ mid-transition lands in the mix that actually exists rather than an arbitrary
 one. Its transition gains are charged against the HUF's OWN nil band -- two
 assessees, two allowances.
 
-It was previously a flat-rate pool pinned at 7.0% that ignored --interest_rate
-and never transitioned. At --interest_rate 0.045 that was worth 313 of corpus
-and the difference between the second purse surviving and being exhausted, so
+It was previously a flat-rate pool that ignored --interest_rate and never
+transitioned. In a low-rate world that was worth a large slice of corpus and
+the difference between the second purse surviving and being exhausted, so
 every low-rate result from before this change was optimistic.
 
 --ration_k          HUF draw pacing: offer = k x huf_value / years_remaining,
@@ -115,22 +115,20 @@ every low-rate result from before this change was optimistic.
 --income_step_absolute
                     ABSOLUTE lakh added to total other income each year. 0.10
                     is Rs 10,000/yr, NOT 10 percent, and it is linear rather
-                    than compound: 15.30 becomes 18.70 over 35 years, not 41.1
-                    as a 3% compound rate would give. Shared pro-rata across
+                    than compound: over a 35-year horizon it adds 3.4 to the
+                    starting total, not the far larger figure a compound rate
+                    would give. Shared pro-rata across
                     the four heads so the taxable fraction stays stable.
                     --income_step is still accepted as an alias.
 
 --equity_cagr       Equity sleeve CAGR as a decimal, e.g. 0.12. DETERMINISTIC:
                     EQUITY_SIGMA exists but is unused, because a fixed model
                     cannot use a dispersion for anything but false precision.
-                    Measured on 2chunk/35yr, the sleeve is a corpus lever and
-                    barely a tax one -- above 9% the tax stops moving at all
-                    while the corpus roughly doubles:
-
-                        7%   tax 1.130  corpus 1995.3  equity 16.1% of it
-                        9%   tax 0.965  corpus 2238.5  equity 24.7%
-                       12%   tax 0.965  corpus 2894.0  equity 41.1%
-                       15%   tax 0.965  corpus 4196.7  equity 59.0%
+                    The sleeve is a CORPUS lever and barely a tax one: past
+                    the point where the s.112A exemption is fully used the tax
+                    stops responding to the rate altogether while the corpus
+                    keeps climbing, because the exemption is fixed in rupees
+                    and does not scale with the sleeve.
 
                     s.112A caps the tax-free drawdown at the annual exemption
                     regardless of sleeve size, so a bigger sleeve adds nothing
@@ -150,21 +148,16 @@ Four income heads, each with its own statutory treatment:
 --rental_income          taxable less the s.24(a) 30% deduction
 
 They sum to gross income; OTHER_INCOME_STEP grows the total pro-rata so the
-taxable fraction is stable. Defaults reproduce the previous 15.80 gross with
-5.95 taxable. The TAXABLE portion is the lever, not the gross -- it is
-subtracted from the s.87A ceiling to give the year's tax-free band, so moving
-4 of income from tax-free to salary costs about 3 of band every year.
+taxable fraction is stable. The TAXABLE portion is the lever, not the gross --
+it is subtracted from the s.87A ceiling to give the year's tax-free band, so
+moving income from a tax-free head to a taxable one costs band every year.
 
 BOUNDARY_GRACE  Every transition deadline sits this many years beyond its chunk
-                boundary. MEASURED at 35 years: no setting from 0 to 6 produces
-                any forced liquidation, so the grace is not buying safety. What
-                it buys is corpus -- money stays in the higher-rate chunk-1
-                funds longer -- at the cost of realising gain in later, more
-                contested years:
-
-                    3chunk 35yr   grace 0  tax 3.046  corpus 2133.2
-                                  grace 3  tax 3.848  corpus 2171.6
-                                  grace 6  tax 4.377  corpus 2198.5
+                boundary. No setting in the usable range produces a forced
+                liquidation, so the grace is not buying safety. What it buys is
+                corpus -- money stays in the higher-rate chunk-1 funds longer
+                -- at the cost of realising gain in later, more contested
+                years. Longer grace, more corpus and more tax, monotonically.
 
 Runtime is roughly 8s for a 35-year run and several minutes for --sweep, because
 the personal/HUF split is solved by replaying each year up to SPILL_GRID times.
@@ -186,28 +179,25 @@ which realises gain tax-free and resets the basis. Harvest proceeds land in the
 current receiver folio, rotating through triples of funds so each year forms an
 identifiable, separately sellable vintage.
 
-CURRENT RESULTS (all figures Rs lakh)
+RESULTS ARE NOT QUOTED IN THIS FILE. Every figure here was measured against a
+parameter set that has since moved, and a stale number in a docstring is worse
+than no number: it reads as a specification. Run the case you care about --
+`--sweep` for the scenario grid, `--conservative_sweep` for the risk trade,
+`--rate_regime_stress_test` for the rate one -- and read the output.
 
-    scenario  horizon    vintage       tax    corpus
-      1chunk       30        5yr     0.000    1498.6
-      1chunk       35        5yr     1.500    1907.6
-      2chunk       30        5yr     0.000    1502.2
-      2chunk       35        5yr     1.500    1908.3
-      3chunk       30        5yr     1.555    1512.3    <- see KNOWN BROKEN
-
-* 3chunk does not fully hold its allocation. The transitions are one-way
+KNOWN BROKEN: 3chunk does not fully hold its allocation. The transitions are one-way
   EMPTYING mandates ("f15-f21 must be empty by FY10"), so nothing keeps money
   in the destination funds afterwards. Three mechanisms now push back -- global
   drawing, protecting under-allocated funds from the cash draw, and aiming the
   harvest at the over-allocated side so its proceeds are a genuine transfer --
-  and together they lift the low-rate share from 15.4% to 41-43%.
+  and together they lift the low-rate share substantially.
 
-  Chunk 2 now essentially hits its target (36.1% against 33%). CHUNK 3 DOES
-  NOT: 41.1% at FY30 against 67%, and it is not reachable. Closing that gap
-  means shifting roughly 390 of value at a ~50% gain fraction, i.e. ~195 of
-  realised gain, against perhaps 130 of band across the whole decade. The
-  target is arithmetically out of reach tax-free, exactly as the FY4-FY10
-  liquidation mandate was in an earlier version.
+  Chunk 2 essentially hits its target. CHUNK 3 DOES NOT, and it is not
+  reachable: closing the gap means shifting a large block of value at a high
+  gain fraction, and the realised gain that implies is several times the band
+  available across the whole decade. The target is arithmetically out of reach
+  tax-free, exactly as the FY4-FY10 liquidation mandate was in an earlier
+  version.
 
   So 3chunk's tax and corpus remain NOT comparable to 1chunk and 2chunk. The
   honest options are to accept a slower drift into the target mix, or to price
@@ -218,33 +208,26 @@ SURPLUS ROUTING -- TWO CONSTRAINTS, GUARDING DIFFERENT THINGS
 Harvest surplus is routed by two rules that both bind:
 
   DEBT_FLOOR_X   liquidity. Surplus first rebuilds the combined debt corpus to
-                 25 years of net need. Only what is left over may go to equity.
-  EQUITY_MAX_SHARE  allocation. Equity is additionally capped at 10% of the
+                 a set number of years of net need. Only what is left over may
+                 go to equity.
+  EQUITY_MAX_SHARE  allocation. Equity is additionally capped as a share of the
                  purse on deployment.
 
-The floor alone is NOT sufficient, and the measurement is worth keeping:
-
-    floor      tax    corpus   equity  eq share  debt cover
-      25X   63.415    2344.5   1304.4    55.6%      31.2X
-      30X    1.380    2060.5    380.7    18.5%      50.4X
-      35X    1.239    1909.7      0.1     0.0%      57.3X
-    both     0.486    2145.0    539.9    25.2%
-
-At a 25X floor almost everything is spare -- the plan naturally runs at 57.3X
-cover -- so equity balloons to 55.6% and tax reaches 63.4. ALL of that 63.4 is
-SLAB tax on a starved debt book; equity tax is 0.000 throughout.
-
-The reason is the point of the whole sleeve, inverted: s.112A caps the tax-free
-equity drawdown at the ANNUAL EXEMPTION regardless of sleeve size. At FY35 a
-1304 sleeve draws 2.22 of cash -- exactly what a 200 sleeve would draw. Every
-rupee of equity past that adds ZERO tax-free capacity while displacing debt,
-whose capacity scales with the slab band and the harvest. So equity must be
-sized by what its exemption can absorb, not by what happens to be spare.
+THE FLOOR ALONE IS NOT SUFFICIENT, and the reason is the point of the whole
+sleeve, inverted. If a loose floor is the only constraint, almost everything is
+spare, equity balloons to over half the corpus, and the tax bill rises sharply
+-- ALL of it SLAB tax on a starved debt book, with equity tax at zero
+throughout. s.112A caps the tax-free equity drawdown at the ANNUAL EXEMPTION
+regardless of sleeve size, so a sleeve several times larger draws exactly the
+same tax-free cash as a small one. Every rupee of equity past that adds ZERO
+tax-free capacity while displacing debt, whose capacity scales with the slab
+band and the harvest. Equity must be sized by what its exemption can absorb,
+not by what happens to be spare.
 
 A GOTCHA WORTH REMEMBERING: every rupee of surplus must land somewhere. Two
 successive versions of the routing silently DISCARDED the above-floor remainder
-when equity declined it, which vanished 685 of corpus and produced a completely
-convincing false conclusion. The control that catches it is cheap: with
+when equity declined it, which vanished a large slice of corpus and produced a
+completely convincing false conclusion. The control that catches it is cheap: with
 EQUITY_ENABLED = False the routing must reproduce the no-equity run EXACTLY.
 Run it after any change here.
 
@@ -270,8 +253,7 @@ corpus and lost. It never showed as a wrong committed number, because the leak
 sank this candidate's TERMINAL VALUE below the plain path in exactly the late
 years where it had driven tax to zero -- so the water-filling branch quietly
 never won. Capping each free draw at the running shortfall keeps the spare
-capacity invested and lets the terminal comparison be honest. MEASURED: 2chunk
-/35yr tax 2.185 -> 0.169, corpus 2278.7 -> 2282.7; 3chunk/35yr 2.917 -> 0.323.
+capacity invested and lets the terminal comparison be honest.
 When free capacity is SHORT of need -- the tax-paying case the water-fill loop
 exists for -- the gain cap binds first and the amount cap is inert, so nothing
 changes there.
@@ -281,44 +263,36 @@ walking out of the door, but it also stopped this candidate doing the basis
 reset `run_year` does every year through fund_year's surplus -- so whatever was
 left of the personal band simply expired, and the two candidates were still not
 compared on equal footing. The residue is now harvested and put straight back
-through the same floor-then-equity routing. Small: 3chunk/35yr 0.323 -> 0.320,
-five of six scenario/horizon combos byte-identical, because in the years the
-water-fill runs at all the free draw has usually spent the band already.
+through the same floor-then-equity routing. It moves little, because in the
+years the water-fill runs at all the free draw has usually spent the band
+already.
 
-THE SAME HARVEST ON THE HUF SIDE IS NOT TAKEN, AND THE REASON IS MEASURED. It
-looks better at defaults -- 3chunk/35yr 0.320 -> 0.101 with corpus 2235.2 ->
-2240.5 -- but resetting the HUF's basis lowers its gain fraction, which raises
-the tax-free CASH its nil band buys, which makes it the cheapest tap in every
-year and drains it. At --taxable_other_income 12.0, 2chunk/35yr, the HUF is
-exhausted by FY33 instead of surviving with 53 of debt, and the last three
-years fall on the personal slab: tax 38.250 -> 51.336 and corpus 2944.0 ->
-2922.7. The harvest is not the defect -- the water-fill has no pacing rule for
-the HUF at all, where the plain path has RATION_K -- but until it has one, the
-harvest is a lever that makes the missing rule bite harder.
+THE SAME HARVEST ON THE HUF SIDE IS NOT TAKEN. It looks better where the plan
+is comfortable, but resetting the HUF's basis lowers its gain fraction, which
+raises the tax-free CASH its nil band buys, which makes it the cheapest tap in
+every year and drains it. Where other income is high the HUF is then exhausted
+years early and the last years fall on the personal slab, costing far more than
+the harvest gained. The harvest is not the defect -- the water-fill has no
+pacing rule for the HUF at all, where the plain path has RATION_K -- but until
+it has one, the harvest is a lever that makes the missing rule bite harder.
 
 AND THE MISSING PACING RULE WAS BUILT, MEASURED, AND NOT KEPT. Two versions
-were tried on the 2chunk/35yr 12.5%-equity set at 20/20/18, where the HUF
-empties at FY31 and the last four years fall on equity at 13%:
+were tried: RATION_K applied to the water-fill, and HUF_BAND_RESERVE turned on
+with an annuity present value. Both are worse than no rule at all, and the
+reason is structural rather than a tuning failure. The water-fill exists to
+take the cheapest marginal rupee; a pacing rule is a standing instruction to
+NOT take it. Holding the HUF back pushes the same cash onto the personal purse
+years earlier, into the s.87A claw-back, and the claw-back costs far more than
+the nil band that pacing preserves. The reserve version keeps the HUF alive a
+few years longer and still ends at zero, buying that reprieve with both tax and
+corpus.
 
-    lever                                    tax      corpus
-    none (shipped)                        17.452      1570.9
-    RATION_K applied to the water-fill    22.646      1554.7
-    HUF_BAND_RESERVE on, annuity PV       20.385      1566.4
-
-Both are worse, and the reason is structural rather than a tuning failure. The
-water-fill exists to take the cheapest marginal rupee; a pacing rule is a
-standing instruction to NOT take it. Holding the HUF back pushes the same cash
-onto the personal purse years earlier, into the s.87A claw-back, and the
-claw-back costs far more than the nil band that pacing preserves. The reserve
-version keeps the HUF alive to FY34 instead of FY31 and still ends at zero,
-buying three years of a 10.0 allowance for 2.9 of tax and 4.5 of corpus.
-
-It is NOT universally worse. At --taxable_other_income 12.0, where the
+It is NOT universally worse. Where other income is high enough that the
 personal purse is already deep in slab and the HUF is the only cheap source,
-the ration version wins: tax 38.093 -> 37.328, corpus 2957.3 -> 2986.2. No
-single rule dominates, so none is imposed. The HUF running dry at FY31 is the
-optimum on these parameters, not a defect -- which is the opposite of what it
-looks like in the trace, and is why it is written down here.
+the ration version wins on both tax and corpus. No single rule dominates, so
+none is imposed. The HUF running dry before the horizon is usually the optimum,
+not a defect -- which is the opposite of what it looks like in the trace, and
+is why it is written down here.
 
 TWO THINGS ABOUT IT ARE EASY TO GET WRONG.
 
@@ -334,32 +308,32 @@ automatically rather than needing a special case.
 
 AND IT IS CHOSEN ON TERMINAL VALUE, NOT ON TAX. Minimising tax alone will spend
 equity compounding at EQUITY_RETURN to avoid a smaller bill on debt compounding
-at the chunk rate. Measured on 2chunk/35yr at defaults, the tax-minimising path
-saved 1.166 of tax and cost 40.6 of corpus. Each purse is projected forward at
+at the chunk rate. Measured, the tax-minimising path can save tax and cost
+several times as much corpus. Each purse is projected forward at
 its own rate to the end of the plan and the larger total wins, so that trade is
 correctly refused.
 
 TAX_EPS guards the trigger. EPS is 1e-12, and a tax bill of nine nanopaise --
 which a 35-year run really does produce -- once triggered a restructure that
-cost 25 of corpus to save nothing.
+cost real corpus to save nothing.
 
 THE EQUITY SLEEVE (s.112A)
 
 MEASURED CONFIGURATION SWEEP -- do not re-tune without a reason. Bucket share
-(6 values from 5% to 0.25%), cap basis (market vs cost), one-bucket-per-year,
-20 vs 40 buckets, and an annual deployment throttle (6 values) were all tested.
-NONE moves the 35-year answer beyond the ~0.3 noise floor, and the simplest
+across a wide range, cap basis (market vs cost), one-bucket-per-year, bucket
+count, and an annual deployment throttle were all tested.
+NONE moves the 35-year answer beyond the noise floor, and the simplest
 configuration wins. The sleeve's internal structure is inert here because the
-surplus that would feed fresh cohorts is concentrated in FY5-FY8; by FY27 the
-annual surplus is under 1. Sequential filling cannot separate vintages that
+surplus that would feed fresh cohorts is concentrated in the first decade and
+has all but dried up long before the horizon. Sequential filling cannot
+separate vintages that
 were never created, and a throttle can only redistribute money that is not
 there. This is the same constraint that made a late vintage cadence inert on
 the debt side.
 
 Capping on cumulative COST rather than market value keeps the door open and
-admits far more equity (929 against 569, corpus +102) but costs 3.0 of tax,
-because surplus routed to equity starves the debt purse. Market-value capping
-is the better trade.
+admits far more equity, and buys corpus, but costs tax -- surplus routed to
+equity starves the debt purse. Market-value capping is the better trade.
 
 A separate folio F_EQ per purse, N_EQ_FUNDS buckets, funded from harvest
 surplus only -- never by selling debt to buy equity. No lot is sold before it
@@ -367,74 +341,55 @@ qualifies as long term. Equity LTCG is a SEPARATE tax head: a flat rate above
 its own annual exemption, and not eligible for the s.87A rebate, so it neither
 consumes the slab band nor is sheltered by it.
 
-    1chunk 35yr 5yr:   no sleeve  tax 1.500  corpus 1907.6
-                       with       tax 0.486  corpus 2161.8   (+254, +13%)
-
 THE TRIGGER IS JOINT, AND THAT IS WHERE THE VALUE IS. Personal + HUF corpus
 must exceed EQUITY_TRIGGER_X years of the post-tax amount the two purses
 jointly fund by redemption. An earlier per-purse version never opened the HUF
-sleeve at all (it held ~290 against 25 x its ~12 draw), so only one s.112A
-exemption was ever in play. Moving to the joint test was worth 1.239 -> 0.655.
+sleeve at all -- its own corpus never cleared the multiple of its own draw --
+so only one s.112A exemption was ever in play. Moving to the joint test was
+where most of the sleeve's value turned out to be.
 
 SEQUENTIAL BUCKET FILLING IS INERT HERE, and the reason is worth recording.
 Buckets are filled one at a time to EQ_BUCKET_SHARE of the excess over the
 trigger, the pointer carrying across years and a filled bucket never topped up
 until the cycle wraps. The intent was vintage separation inside the sleeve, so
-a draw could take a one- or two-year-old bucket at a ~16% gain fraction instead
-of the sleeve average at ~72%.
+a draw could take a one- or two-year-old bucket at a low gain fraction instead
+of the sleeve average.
 
-Measured, it is worth 0.169 -- below the noise floor:
-
-    joint trigger + equal spread   tax 0.655   corpus 2162.5
-    joint trigger + sequential     tax 0.486   corpus 2161.8
-
-It fails for the same reason the accelerated late vintage cadence failed on the
-debt side: THE SLEEVE STOPS BEING FED AT FY8. All deployment happens in FY5-FY8
-and never resumes, so every bucket is filled inside a four-year window and all
-of them are 24+ years old by FY32. Observed gain fractions on equity draws run
-78-91%, not the 16% the design intended. The machinery is correct; there is
+Measured, it lands below the noise floor. It fails for the same reason the accelerated late vintage cadence failed on the
+debt side: THE SLEEVE STOPS BEING FED AT FY8. All deployment happens in a short
+early window and never resumes, so every bucket is filled inside a few years of
+its neighbours and all of them are decades old by the time they are drawn.
+Observed gain fractions on equity draws are near the sleeve average, not the
+low figure the design intended. The machinery is correct; there is
 simply nothing for it to separate. It would start to matter if the sleeve were
 topped up through the horizon.
 
-THE 10% CAP IS A DEPLOYMENT CAP, NOT A HOLDING. EQUITY_MAX_SHARE limits what is
-paid IN; nothing trims back. Equity compounds at 9% against debt's 7% for three
-decades, so a 10% deployment cap produces a 26.3% holding by FY35. Raising it
-trades tax for corpus, and 10% is already close to the tax optimum:
-
-    cap    tax    corpus   end share
-    10%  0.486   2161.8       26.3%
-    15%  0.810   2241.1       35.0%
-    20%  1.077   2283.3       39.4%
-    30%  2.889   2360.2       48.2%
-
-Tax rises with the cap because money in equity is money the debt purse cannot
-use to manage its band, while the s.112A exemption stays fixed regardless of
-sleeve size. Whether a 26% equity holding at age 90 is acceptable is a risk
-question this model cannot answer -- see below.
+EQUITY_MAX_SHARE IS A DEPLOYMENT CAP, NOT A HOLDING. It limits what is paid IN;
+nothing trims back. Equity compounds faster than debt for three decades, so the
+holding drifts well above the cap. Raising the cap trades tax for corpus
+monotonically, and the shipped value sits close to the tax optimum: tax rises
+with the cap because money in equity is money the debt purse cannot use to
+manage its band, while the s.112A exemption stays fixed regardless of sleeve
+size. Whether the resulting equity holding is acceptable at the end of a plan
+is a risk question this model cannot answer -- see below.
 
 AND THERE IS NO HOLDING CEILING AT ALL. THIS IS DELIBERATE, AND IT IS THE ONE
-THING ABOUT THIS MODEL MOST LIKELY TO MISLEAD ITS OWNER. The 26.3% above is a
-mild case because equity beats debt by only 2 points there. Run the same plan
-with a 12.5% sleeve against 6.00%/5.25% debt and the drift is not mild:
-
-    FY6   equity  6% of corpus       debt cover 20.5 years
-    FY15          15%                           16.3
-    FY21          26%                           14.1
-    FY27          43%                           12.4
-    FY30          52%                           12.1
-    FY35          64%                           11.5
-
-`--equity_max_share 0.125` ends holding 64% equity. Both numbers are true and
-they are not in conflict: the cap governs INFLOW and the debt floor governs
-LIQUIDITY IN YEARS OF SPENDING, and the floor is satisfied throughout -- debt
-never drops below eleven years of need. Nothing is broken. But nobody reading
-`--equity_max_share 0.125` expects a two-thirds equity book at the horizon,
-so it is written down here rather than left to be discovered.
+THING ABOUT THIS MODEL MOST LIKELY TO MISLEAD ITS OWNER. The drift is mild only
+when equity barely beats debt. Widen that gap -- a low-rate debt world against
+a healthy equity assumption -- and a deployment cap around an eighth of the
+purse ends holding something closer to two thirds of it, climbing past a
+quarter around the third decade and past half in the last few years. Both
+numbers are true and they are not in conflict: the cap governs INFLOW and the
+debt floor governs LIQUIDITY IN YEARS OF SPENDING, and the floor is satisfied
+throughout -- debt cover stays comfortably above a decade of need the whole
+way. Nothing is broken. But nobody setting a one-eighth deployment cap expects
+a two-thirds equity book at the horizon, so it is written down here rather
+than left to be discovered.
 
 WHY NO CEILING IS ADDED. A holding ceiling means trimming, trimming means
 realising gain on the way down, and the s.112A exemption is fixed per year, so
-a forced trim in the late years is bought at 13% on the excess plus the loss
-of whatever the trimmed capital would have compounded to. The model would also
+a forced trim in the late years is bought at the full s.112A rate on the
+excess plus the loss of whatever the trimmed capital would have compounded to. The model would also
 choose the trim points using a projection with NO DRAWDOWN IN IT, which is the
 one input that would justify a ceiling in the first place. A deterministic
 model cannot price sequence risk, so it must not be the thing that sets the
@@ -442,12 +397,12 @@ equity ceiling. That is an owner's judgement, expressed today through the debt
 floor -- which is denominated in years of spending and therefore does bite --
 and it should stay that way until the model can simulate a bad decade.
 
-IT MAKES 3chunk WORSE (1.555 -> 2.610 at 30 years). Surplus diverted into
-equity is surplus the debt purse no longer has for its transitions. Corpus
-still rises, so this is a genuine trade rather than a defect.
+IT MAKES 3chunk WORSE ON TAX. Surplus diverted into equity is surplus the debt
+purse no longer has for its transitions. Corpus still rises, so this is a
+genuine trade rather than a defect.
 
 SIGMA IS NOT MODELLED. EQUITY_SIGMA is carried as a documented constant and
-used nowhere. This model is deterministic; a 12.5% standard deviation cannot do
+used nowhere. This model is deterministic; a standard deviation cannot do
 anything here except create false precision. Using it properly needs a Monte
 Carlo wrapper that re-runs the horizon over sampled return paths and reports a
 distribution of tax and corpus -- at which point the interesting question stops
@@ -465,10 +420,9 @@ RESOLVED, AND WHY IT MATTERS
   cheaply, and walled off the low-basis stock the transition had just placed in
   the receiver. Drawing globally across all live folios fixed it.
 
-  The fix costs tax where the band binds -- 1chunk/35/5yr 1.166 -> 1.500,
-  3chunk/35/5yr 2.214 -> 3.331 before allocation work. Most of that is at or
-  under the noise floor; 3chunk/35 is not, and 3chunk is the scenario already
-  flagged above.
+  The fix costs tax where the band binds. Most of that is at or under the
+  noise floor; 3chunk at the long horizon is not, and 3chunk is the scenario
+  already flagged above.
 
   Worth recording: this is the third time in this model's history that "draw
   from the oldest holding first" has lost. It is an intuitive rule and it has
@@ -518,13 +472,13 @@ import sys
 # compounds through year one. Later inflows arrive DURING their year, at that
 # year's NAV, exactly as HUF inflows do -- they are contributions made partway
 # through, not opening balances.
-PERSONAL_INFLOWS = ((350.0, 1),)
+PERSONAL_INFLOWS = ((390.0, 1),)
 # The HUF receives one or more external inflows. Amounts and years are given
 # separately -- --huf_corpus 190/60/40 with --huf_year 5/8/12 -- and are zipped
 # into (amount, FY) pairs. Each inflow is spread across the funds the PERSONAL
 # purse holds in that year, in the same proportion, so the HUF starts life with
 # the same portfolio shape rather than an arbitrary one.
-HUF_INFLOWS = ((190.0, 5),)
+HUF_INFLOWS = ((190.0, 4),)
 
 # ---- the horizon -----------------------------------------------------------
 HORIZON = 30                # 30 or 35; ladders below extend to 35
@@ -547,17 +501,16 @@ REQUIREMENT_SCHEDULE = ((35.0, 1), (37.5, 6), (42.5, 11), (45.0, 16),
 # The rate is a property of the FUND, fixed for its life, set by the chunk the
 # fund was first chosen for. The portfolio rate then falls as the transitions
 # shift the mix -- the blend is an OUTPUT, not an input.
-INTEREST_RATES = (0.070,)   # one, two or three rates. What each chunk's funds
+INTEREST_RATES = (0.06, 0.0525)   # one, two or three rates. What each chunk's funds
 CHUNK_SPREAD = 0.0025       # earn is resolved by chunk_rates() below.
 
 # ---- income, by head ------------------------------------------------------
-# Split so each head carries its own statutory treatment. The defaults sum to
-# the previous total of 15.80 with a taxable portion of 5.95, so an
-# out-of-the-box run is unchanged.
-TAXABLE_OTHER_INCOME = 4.85     # interest and the like -- fully taxable
-TAXFREE_OTHER_INCOME = 10.45    # PPF, tax-free bonds, return of capital
-SALARY_INCOME = 0.0             # taxable less the s.16(ia) standard deduction
-RENTAL_INCOME = 0.0             # taxable less the s.24(a) 30% deduction
+# Split so each head carries its own statutory treatment. Only the TAXABLE
+# portion matters to the band; the gross is what OTHER_INCOME_STEP grows.
+TAXABLE_OTHER_INCOME = 0.50     # interest and the like -- fully taxable
+TAXFREE_OTHER_INCOME = 10.50    # PPF, tax-free bonds, return of capital
+SALARY_INCOME = 1.35            # taxable less the s.16(ia) standard deduction
+RENTAL_INCOME = 1.80            # taxable less the s.24(a) 30% deduction
 SALARY_STD_DEDUCTION = 0.75     # s.16(ia)
 RENTAL_DEDUCTION = 0.30         # s.24(a)
 OTHER_INCOME_STEP = 0.10        # ABSOLUTE lakh added to total other income each
@@ -598,7 +551,7 @@ PLAN_TOL = 1e-2             # tolerance the yearly conservation identity must
 # slab band nor is sheltered by it -- the exemption is additive capacity on top
 # of everything else, once per assessee.
 EQUITY_ENABLED = True
-EQUITY_RETURN = 0.090       # deterministic CAGR, --equity_cagr
+EQUITY_RETURN = 0.100       # deterministic CAGR, --equity_cagr
 EQUITY_SIGMA = 0.125        # NOT USED -- deterministic model. See docstring.
 N_EQ_FUNDS = 20             # eq_f1 .. eq_f20, filled SEQUENTIALLY not equally
 EQ_BUCKET_SHARE = 0.05      # each bucket is filled to this share of the excess
@@ -607,11 +560,12 @@ EQ_BUCKET_SHARE = 0.05      # each bucket is filled to this share of the excess
 # The rates used to SCORE candidates, which need not be the rates the world
 # is modelled to deliver. terminal() pays real tax today to buy projected
 # growth tomorrow, so the projection's rate is a policy input in its own
-# right. MEASURED across realised equity CAGR 7% to 14%: scoring at 8%/5%
-# instead of the modelled rates gains 17.1 of corpus at 7% and 4.5 at 8%,
-# costs 7.9 at 11%, 21.1 at 12.5% and 38.4 at 14%, and holds lifetime tax
-# near 9 across the whole range instead of 3 to 29. Insurance, with the
-# premium paid in the states where the plan is already comfortable.
+# right. Scoring at a conservative floor instead of the modelled rates GAINS
+# corpus in the low-return states and gives some back in the high ones, and
+# holds lifetime tax roughly flat across the whole range instead of climbing
+# with the return. Insurance, with the premium paid in the states where the
+# plan is already comfortable. --conservative_sweep prices it for a given
+# parameter set; the numbers move with the plan, so they are not quoted here.
 #
 # LAMBDA blends the two. terminal() is LINEAR in the projection multipliers,
 # so blending the multipliers is identical to blending the two scores and
@@ -644,9 +598,9 @@ MIN_HORIZON = 20            # below this the tier arithmetic stops meaning
 # the first two are min(10, N//3) years each, the third is the remainder.
 #     20yr -> 6 / 6 / 8      25yr -> 8 / 8 / 9
 #     30yr -> 10 / 10 / 10   35yr -> 10 / 10 / 15
-DEBT_FLOOR_MULTIPLES = (25.0, 22.0, 18.0)
+DEBT_FLOOR_MULTIPLES = (20.0, 20.0, 18.0)
 
-DEBT_FLOOR_X = 25.0         # retained for reference. The combined DEBT corpus
+DEBT_FLOOR_X = 20.0         # retained for reference. The combined DEBT corpus
                             # fall below this many years of net cash need.
                             # Surplus rebuilds debt to the floor FIRST; only
                             # what is left over goes to equity. This replaces
@@ -664,10 +618,11 @@ EQUITY_MAX_SHARE = 0.10     # ...and equity is ALSO capped as a share of the
                             # equity drawdown at the exemption regardless of
                             # sleeve size, so equity past a point adds no
                             # capacity while displacing debt that has some.
-                            # MEASURED at 35yr: floor alone at 25X gives 55.6%
-                            # equity and tax 63.4, of which 63.4 is SLAB tax on
-                            # a starved debt book while the 1304 sleeve draws
-                            # just 2.22/yr. Both constraints together: 0.486.
+                            # A loose floor alone lets equity past half the
+                            # corpus and the bill is then almost all SLAB tax
+                            # on a starved debt book, while the oversized
+                            # sleeve draws no more tax-free cash than a small
+                            # one would. Both constraints together, far less.
 EQUITY_MIN_HOLD = 1         # years before a lot qualifies as LTCG (s.2(42A))
 
 # per 5-year block, so both can be re-projected like the slab ladders
@@ -806,15 +761,11 @@ EPS = 1e-12
 HUF_BAND_RESERVE = False
 """Hold back enough HUF debt to use its nil band every remaining year.
 
-Without it the HUF debt is exhausted around FY31 and 40.0 of nil band is
-wasted over the last five years. With it, that capacity is preserved.
+Without it the HUF debt is exhausted before the horizon and the last years of
+nil band go unused. With it, that capacity is preserved.
 
-OFF BY DEFAULT, because it loses money. MEASURED on a 35-year run:
-
-    off   tax 14.620   corpus 1755.3
-    on    tax 12.345   corpus 1747.4
-
-Corpus is already NET of tax, so the version with less tax is the worse plan.
+OFF BY DEFAULT, because it loses money: turning it on lowers tax and lowers
+corpus. Corpus is already NET of tax, so the version with less tax is the worse plan.
 Holding debt to use the band means not holding equity compounding 6-7 points
 faster, and the foregone growth exceeds the tax saved. Kept as a switch because
 the reasoning is not obvious and someone will propose it again.
@@ -826,13 +777,8 @@ EQ_GRID = 4      # search resolution for the equity draw
 HOLD_ALLOCATION = True
 """Protect the destination funds so the chunk's target mix is held.
 
-MEASURED, 3chunk / 30yr / 5yr vintages:
-
-    off   tax 1.448   low-rate share at FY30  15.4%
-    on    tax 2.421   low-rate share at FY30  19.9%   (target 67%)
-
-So it buys 4.5 points of allocation fidelity for 0.97 of tax, and still falls
-far short. Left OFF by default because a partial fix that costs real money is
+Measured on 3chunk, it buys a few points of allocation fidelity for real tax,
+and still falls far short of the target. Left OFF by default because a partial fix that costs real money is
 worse than an honest gap. The reason it cannot get there: the transitions are
 one-way EMPTYING mandates, and most of the exiting funds are drained by the
 ordinary withdrawal (which sends the money out as cash) rather than by the
@@ -1219,8 +1165,8 @@ class Sleeve:
 
         The exemption is annual, per assessee, and use-it-or-lose-it. Without
         this the sleeve only ever realises gain in the years it is called on
-        for cash -- MEASURED at 27% utilisation over 35 years, with 72.7 of 100
-        simply forfeited.
+        for cash, which over a long horizon leaves most of the cumulative
+        exemption simply forfeited.
 
         Churning is free here: proceeds are rebought at the same NAV, so value
         is unchanged and the basis steps up by exactly the gain extinguished.
@@ -1451,11 +1397,11 @@ def pay_external_bill(book, bill, base_gain, navs, fy,
     bill those two are the same quantity, so the loop is sound. When it is an
     equity bill they are different tax heads, and the first pass leaves
     `current_tax_needed` equal to the entire slab bill -- which the caller has
-    already settled -- so the book is drained a second time for it. MEASURED:
-    at 2chunk/35yr with --taxable_other_income 12.0 a residual bill of
-    0.000006 drew 1.7750 of debt and realised 1.1903 of gain. Conservation did
-    not catch it, and could not: the over-draw is reported as tax, so the
-    identity still closes. It is tax charged for no reason, not value lost.
+    already settled -- so the book is drained a second time for it. Measured,
+    a residual bill of a few millionths of a rupee could drag well over a lakh
+    of debt out behind it. Conservation did not catch it, and could not: the
+    over-draw is reported as tax, so the identity still closes. It is tax
+    charged for no reason, not value lost.
 
     Here the target is the bill PLUS only the incremental slab tax the debt
     sales themselves create, measured against the slab tax already standing at
@@ -1490,9 +1436,9 @@ def pay_tax_bill(book, initial_tax, base_gain, navs, fy, is_huf=False,
 
     `base_gain` is the gain the year has ALREADY realised. It must be passed in:
     an earlier version recomputed the bill from the tax-sale gain alone, so the
-    loop exited after one pass and up to 7.4 of tax was recorded but never
-    removed from the corpus. Conservation now holds to ~4e-6, which is the
-    10-iteration tolerance rather than a leak.
+    loop exited after one pass and real tax was recorded but never removed
+    from the corpus. Conservation now holds to the 10-iteration tolerance
+    rather than leaking.
     """
     if initial_tax <= EPS or book.value(navs) <= EPS:
         return 0.0, 0.0
@@ -1817,10 +1763,10 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
             txh = huf_tax(gain_h2 + egh, band_h)
             # A bill charged against an EXHAUSTED book was reported and never
             # taken out of the corpus: pay_tax_bill returns (0, 0) the moment
-            # book.value is zero. MEASURED, 2chunk/35yr at 12.5% equity: the
-            # HUF emptied at FY31 and 0.369 of HUF slab tax was logged but
-            # never paid. The sleeve settles the balance, and the gain that
-            # raises feeds the s.112A computation immediately below.
+            # book.value is zero. Measured, a purse that empties late in the
+            # plan logged slab tax that never left the corpus. The sleeve
+            # settles the balance, and the gain that raises feeds the s.112A
+            # computation immediately below.
             _sp = max(0.0, txp - _dp)
             if _sp > EPS and e2p.value(nav_eq) > EPS:
                 _c, _gn = e2p.sell(nav_eq, fy, amount=_sp)
@@ -2135,10 +2081,10 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
             txh = huf_tax(ght, band_h)
             # A bill charged against an EXHAUSTED book was reported and never
             # taken out of the corpus: pay_tax_bill returns (0, 0) the moment
-            # book.value is zero. MEASURED, 2chunk/35yr at 12.5% equity: the
-            # HUF emptied at FY31 and 0.369 of HUF slab tax was logged but
-            # never paid. The sleeve settles the balance, and the gain that
-            # raises feeds the s.112A computation immediately below.
+            # book.value is zero. Measured, a purse that empties late in the
+            # plan logged slab tax that never left the corpus. The sleeve
+            # settles the balance, and the gain that raises feeds the s.112A
+            # computation immediately below.
             _sp = max(0.0, txp - _dp)
             if _sp > EPS and e2p.value(nav_eq) > EPS:
                 _c, _gn = e2p.sell(nav_eq, fy, amount=_sp)
@@ -2191,10 +2137,9 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
             # DIMENSIONS. band_h is measured in realised GAIN; huf.value is
             # measured in portfolio VALUE. Subtracting one from the other
             # assumes a 100% gain fraction and over-reserves by 1/frac -- at a
-            # 50% gain fraction it holds back twice what is needed. With
-            # band_h = 10 and 30 years left that reserved 300 against an HUF
-            # worth ~190, so spill_max was zero and the spillover search never
-            # ran at all for most of the horizon.
+            # 50% gain fraction it holds back twice what is needed. That
+            # reserved more than the HUF was worth, so spill_max was zero and
+            # the spillover search never ran at all for most of the horizon.
             _hf = 1.0
             _hpool = [(k, f) for fo in huf.folios
                       for k, f in enumerate(fo.funds) if f.units() > EPS]
@@ -2207,11 +2152,11 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
             # of gain every remaining year -- so it is an annuity present
             # value, not a plain sum. The plain sum ignored that the HUF goes
             # on compounding while it is drawn, and over-reserved by roughly
-            # 1/annuity-factor: at FY22 it demanded 200.9 against a purse
-            # worth 160.0, so spill_max was zero and the spillover search did
-            # not run at all from FY10 to FY24. MEASURED on the 2chunk/35yr
-            # 12.5%-equity set: personal slab tax 8.872 -> 0.000, total
-            # 17.692 -> 12.995, corpus 1574.3 -> 1581.1.
+            # 1/annuity-factor -- demanding more than the purse held, so
+            # spill_max was zero and the spillover search did not run at all
+            # across most of the middle of the plan. Fixing
+            # it can remove the personal slab bill outright in the years the
+            # HUF still has room.
             _n = max(0, horizon - fy)
             _r = _dr
             _ann = ((1.0 - (1.0 + _r) ** -_n) / _r) if _n > 0 and _r > EPS else _n
@@ -2463,7 +2408,7 @@ def _echo_invocation(a):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--scenario", default="1chunk", choices=sorted(SCENARIO_NAMES))
+    ap.add_argument("--scenario", default="2chunk", choices=sorted(SCENARIO_NAMES))
     ap.add_argument("--horizon", type=int, default=HORIZON)
     ap.add_argument("--max_folios", "--max-folios", "--cap",
                     type=int, default=MAX_FOLIOS, dest="max_folios",
