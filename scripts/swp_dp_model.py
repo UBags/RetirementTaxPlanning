@@ -945,17 +945,37 @@ def slab_tax(income, basic_exemption=BRACKET_WIDTH):
     return tax + max(0.0, rem) * TOP_RATE
 
 
-def personal_tax(total_income, exempt_ceiling, basic_exemption=BRACKET_WIDTH):
+def personal_tax(slab_income, exempt_ceiling, basic_exemption=BRACKET_WIDTH,
+                 special_income=0.0):
     """Slab tax with the s.87A rebate and its marginal relief.
 
     Two separate thresholds, and they are not the same number: the BASIC
     EXEMPTION anchors the slab ladder, while the s.87A CEILING is the income
     below which the rebate wipes the bill out entirely.
+
+    `special_income` is s.112A gain. It is NOT slab-taxed and never enters
+    slab_tax -- but it DOES count toward TOTAL INCOME for the rebate's
+    eligibility test, and that asymmetry is the whole point of this argument.
+    s.112A gain is excluded from the rebate OFFSET and included in the
+    THRESHOLD, so it acts purely as ballast: it can drag total income past the
+    ceiling and disqualify the rebate on ordinary income, while never being
+    relievable itself. Slab income of 11 with 1.5 of equity gain loses the
+    rebate on the whole 11.
+
+    THE ONE PART THAT IS NOT SETTLED. The marginal relief proviso caps the tax
+    at the excess of TOTAL income over the ceiling, and total income includes
+    the s.112A gain -- so the excess is measured on the full figure here. Any
+    reading that measured it on slab income alone would give MORE relief.
+    Confirm with a professional before relying on the narrow band just above
+    the ceiling; everywhere else the two readings agree.
+
+    Rebate and surcharge can never both apply: the ceiling reaches 20 on the
+    projected ladder and the first surcharge threshold is 50.
     """
-    if total_income <= exempt_ceiling:
+    if slab_income + special_income <= exempt_ceiling:
         return 0.0
-    return min(slab_tax(total_income, basic_exemption),
-               total_income - exempt_ceiling) * CESS
+    return min(slab_tax(slab_income, basic_exemption),
+               slab_income + special_income - exempt_ceiling) * CESS
 
 
 def equity_tax(gain, exemption, rate):
@@ -1487,7 +1507,7 @@ class Book:
 
 def pay_external_bill(book, bill, base_gain, navs, fy,
                       exempt_ceiling=0.0, taxable_other=0.0,
-                      basic_exemption=BRACKET_WIDTH):
+                      basic_exemption=BRACKET_WIDTH, special_income=0.0):
     """Sell debt units to pay a bill that is NOT slab tax -- an s.112A bill the
     sleeves could not cover.
 
@@ -1510,7 +1530,7 @@ def pay_external_bill(book, bill, base_gain, navs, fy,
     if bill <= EPS or book.value(navs) <= EPS:
         return 0.0, 0.0
     base_slab = personal_tax(taxable_other + base_gain, exempt_ceiling,
-                             basic_exemption)
+                             basic_exemption, special_income)
     drawn_tot = gain_tot = 0.0
     want = bill
     for _ in range(10):
@@ -1523,7 +1543,8 @@ def pay_external_bill(book, bill, base_gain, navs, fy,
         drawn_tot += drawn
         gain_tot += add_gain
         inc_slab = max(0.0, personal_tax(taxable_other + base_gain + gain_tot,
-                                         exempt_ceiling, basic_exemption)
+                                         exempt_ceiling, basic_exemption,
+                                         special_income)
                        - base_slab)
         want = max(0.0, bill + inc_slab - drawn_tot)
     return drawn_tot, gain_tot
@@ -1531,7 +1552,7 @@ def pay_external_bill(book, bill, base_gain, navs, fy,
 
 def pay_tax_bill(book, initial_tax, base_gain, navs, fy, is_huf=False,
                  nil_band=0.0, exempt_ceiling=0.0, taxable_other=0.0,
-                 basic_exemption=BRACKET_WIDTH):
+                 basic_exemption=BRACKET_WIDTH, special_income=0.0):
     """Sell units to pay `initial_tax`, converging on the tax-on-tax circularity.
 
     `base_gain` is the gain the year has ALREADY realised. It must be passed in:
@@ -1879,15 +1900,16 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                 h2.put(to_debt_h, hnavs, fy, eligible)
 
             gpt = gain_p2 + gain_turn
-            txp0 = personal_tax(toi + gpt, exempt_c, band_h)
+            txp0 = personal_tax(toi + gpt, exempt_c, band_h, eq_gain_p)
             gain_h2 += gain_turn_h
             txh0 = huf_tax(gain_h2, band_h)
             _dp, egp = pay_tax_bill(p2, txp0, gpt, navs, fy, is_huf=False,
                                     exempt_ceiling=exempt_c, taxable_other=toi,
-                                    basic_exemption=band_h)
+                                    basic_exemption=band_h,
+                                    special_income=eq_gain_p)
             _dh, egh = pay_tax_bill(h2, txh0, gain_h2, hnavs, fy, is_huf=True,
                                     nil_band=band_h)
-            txp = personal_tax(toi + gpt + egp, exempt_c, band_h)
+            txp = personal_tax(toi + gpt + egp, exempt_c, band_h, eq_gain_p)
             txh = huf_tax(gain_h2 + egh, band_h)
             # A bill charged against an EXHAUSTED book was reported and never
             # taken out of the corpus: pay_tax_bill returns (0, 0) the moment
@@ -1924,9 +1946,10 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                     _d2, _e2 = pay_external_bill(
                         p2, txe - _pd, gpt, navs, fy,
                         exempt_ceiling=exempt_c, taxable_other=toi,
-                        basic_exemption=band_h)
+                        basic_exemption=band_h, special_income=eq_gain_p)
                     gpt += _e2
-                    txp = personal_tax(toi + gpt, exempt_c, band_h)
+                    txp = personal_tax(toi + gpt, exempt_c, band_h,
+                                       eq_gain_p)
             return dict(tax=txp + txh + txe, p=p2, h=h2, ep=e2p, eh=e2h,
                         sold=sold2, cash_p=cash_p2 + eq_cash, cash_h=cash_h2,
                         surplus=surp2, gain_p=gpt + egp, gain_h=gain_h2 + egh,
@@ -2000,8 +2023,8 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
             seen and avoided automatically instead of having to be special-cased.
             """
             if kind == "p_debt":
-                r = (personal_tax(toi + g_p + d, exempt_c, band_h)
-                     - personal_tax(toi + g_p, exempt_c, band_h)) / d
+                r = (personal_tax(toi + g_p + d, exempt_c, band_h, g_eqp)
+                     - personal_tax(toi + g_p, exempt_c, band_h, g_eqp)) / d
             elif kind == "h_debt":
                 r = (huf_tax(g_h + d, band_h) - huf_tax(g_h, band_h)) / d
             elif kind == "p_eq":
@@ -2198,19 +2221,20 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
 
             gpt = g_p + gain_turn
             ght = g_h + gain_turn_h
-            txp0 = personal_tax(toi + gpt, exempt_c, band_h)
+            txp0 = personal_tax(toi + gpt, exempt_c, band_h, g_eqp)
             txh0 = huf_tax(ght, band_h)
             # The tax must come OUT of the books, exactly as the plain path
             # does it. Reporting a bill without paying it is the conservation
             # leak that test_surplus_is_never_discarded exists to catch.
             _dp, egp = pay_tax_bill(p2, txp0, gpt, navs, fy, is_huf=False,
                                     exempt_ceiling=exempt_c, taxable_other=toi,
-                                    basic_exemption=band_h)
+                                    basic_exemption=band_h,
+                                    special_income=g_eqp)
             _dh, egh = pay_tax_bill(h2, txh0, ght, hnavs, fy, is_huf=True,
                                     nil_band=band_h)
             gpt += egp
             ght += egh
-            txp = personal_tax(toi + gpt, exempt_c, band_h)
+            txp = personal_tax(toi + gpt, exempt_c, band_h, g_eqp)
             txh = huf_tax(ght, band_h)
             # A bill charged against an EXHAUSTED book was reported and never
             # taken out of the corpus: pay_tax_bill returns (0, 0) the moment
@@ -2247,9 +2271,9 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                     _d2, _e2 = pay_external_bill(
                         p2, txe - _pd, gpt, navs, fy,
                         exempt_ceiling=exempt_c, taxable_other=toi,
-                        basic_exemption=band_h)
+                        basic_exemption=band_h, special_income=g_eqp)
                     gpt += _e2
-                    txp = personal_tax(toi + gpt, exempt_c, band_h)
+                    txp = personal_tax(toi + gpt, exempt_c, band_h, g_eqp)
             return dict(tax=txp + txh + txe, p=p2, h=h2, ep=e2p, eh=e2h,
                         sold={}, cash_p=cash_p, cash_h=cash_h,
                         surplus=_surp_p,
@@ -2488,14 +2512,14 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
             _egh0 = best.get("eq_gain_h", 0.0) + _harv["h"]
             liq_p += max(0.0, personal_tax(
                 toi + gain_p_total + tax_p_extra_gain + _gp,
-                exempt_c, band_h) - tax_p_final)
+                exempt_c, band_h, _egp0 + _gep) - tax_p_final)
             liq_h += max(0.0, huf_tax(gain_h + tax_h_extra_gain + _gh,
                                       band_h) - tax_h_final)
             liq_e += max(0.0, (equity_tax(_egp0 + _gep, eq_exempt, eq_rate)
                                + equity_tax(_egh0 + _geh, eq_exempt, eq_rate))
                          - best.get("txe", 0.0))
         else:
-            liq_p += personal_tax(_wtoi + _gp, _wexc, _wnb)
+            liq_p += personal_tax(_wtoi + _gp, _wexc, _wnb, _gep)
             liq_h += huf_tax(_gh, _wnb)
             liq_e += (equity_tax(_gep, _wee, _wer)
                       + equity_tax(_geh, _wee, _wer))
