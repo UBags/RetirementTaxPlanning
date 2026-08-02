@@ -981,7 +981,7 @@ def huf_tax(gain, nil_band):
 # ═══════════════════════════════════════════════════════════════════════════
 
 class Fund:
-    __slots__ = ("lots", "loss")
+    __slots__ = ("lots", "loss", "total_units")
 
     def __init__(self):
         self.lots = []                      # [units, purchase_nav, buy_fy]
@@ -991,6 +991,11 @@ class Fund:
         # clone inherits the running total, so close-minus-open across a
         # committed substitution is exactly the load that really happened.
         self.loss = 0.0
+        # units() is called about a MILLION times in a 35-year run -- profiling
+        # puts it and value(), which calls it, at over half the runtime. The
+        # running total makes it O(1). Every mutation of `lots` must maintain
+        # it, which is why lots must never be appended to from outside.
+        self.total_units = 0.0
 
     def clone(self):
         """Shallow-structure deep-value copy. The grid searches clone state
@@ -1003,21 +1008,16 @@ class Fund:
         # pays for itself many times over across a Monte Carlo run.
         f.lots = [lot[:] for lot in self.lots] if self.lots else []
         f.loss = self.loss
+        f.total_units = self.total_units
         return f
 
     def invest(self, amount, nav, fy):
         if amount > EPS:
             self.lots.append([amount / nav, nav, fy])
+            self.total_units += amount / nav
 
     def units(self):
-        # The empty check earns its keep because MOST funds are empty most of
-        # the time -- 21 funds across up to 8 folios, only the live ones
-        # holding lots -- and sum() over a generator still builds the generator
-        # before discovering there is nothing in it. value() inherits the
-        # saving through units().
-        if not self.lots:
-            return 0.0
-        return sum(l[0] for l in self.lots)
+        return self.total_units
 
     def value(self, nav):
         return self.units() * nav
@@ -1061,7 +1061,13 @@ class Fund:
             if lot[2] == fy:
                 load += take * EXIT_LOAD
             lot[0] -= take / nav
+            self.total_units -= take / nav
         self.lots = [l for l in self.lots if l[0] > EPS]
+        if not self.lots:
+            # Re-anchor on empty. Decrementing accumulates float drift over
+            # thirty-five years of partial sales; emptying the fund is the
+            # natural place to reset it to a figure that cannot drift.
+            self.total_units = 0.0
         self.loss += load
         return gross, gain, load
 
@@ -2374,9 +2380,13 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
             value_open=_v_open,
             value_close=_v_close,
             exit_load=_year_load,
+            # The trailing + 0.0 canonicalises negative zero. Without it the
+            # column prints -0.0 on some paths and 0.0 on others for the same
+            # arithmetic, which breaks byte-for-byte snapshot comparison for
+            # no reason at all.
             residual=(_v_open - cash_p - cash_h
                       - (tax_p_final + tax_h_final + best.get("txe", 0.0))
-                      - _year_load - _v_close),
+                      - _year_load - _v_close) + 0.0,
             requirement=lad["requirement"][i],
             other_income=lad["other_income"][i],
             net_need=need,

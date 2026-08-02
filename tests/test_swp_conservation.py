@@ -236,7 +236,10 @@ def test_pay_external_bill_draws_only_what_the_bill_needs():
     """
     book = m.Book(cap=1, n_funds=1)
     navs = [2.0]
-    book.folios[0].funds[0].lots.append([500.0, 1.0, 0])   # 100% gain at nav 2
+    # invest(), never lots.append(): Fund keeps a running unit total and a
+    # hand-built lot would leave it stale, which is exactly the failure mode
+    # the running total introduces.
+    book.folios[0].funds[0].invest(500.0, 1.0, 0)          # 100% gain at nav 2
     bill = 0.01
     base_gain = 30.0            # the year has already realised a lot
     standing = m.personal_tax(2.0 + base_gain, 20.0, 8.0)
