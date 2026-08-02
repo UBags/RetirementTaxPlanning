@@ -69,21 +69,49 @@ WORKING_SET = dict(
 
 
 def _residuals(**overrides):
-    """Run one simulation and return its per-year conservation residuals."""
+    """Run one simulation and return its per-year conservation residuals.
+
+    The leading-underscore keys are run controls, not module globals, so they
+    come out BEFORE anything is saved or patched -- an earlier version of this
+    helper tried to getattr("_horizon") off the module and would have raised.
+    """
+    scenario = overrides.pop("_scenario", "2chunk")
+    horizon = overrides.pop("_horizon", 35)
     saved = {k: getattr(m, k) for k in overrides}
     try:
         for k, v in overrides.items():
             setattr(m, k, v)
-        scenario = overrides.pop("_scenario", "2chunk")
-        horizon = overrides.pop("_horizon", 35)
         r = m.simulate(scenario, horizon, m.MAX_FOLIOS, vintage_every=5)
     finally:
         for k, v in saved.items():
             setattr(m, k, v)
-    return [(row["fy"], row["residual"]) for row in r["rows"]]
+    return r
 
 
-def _check(rows, label):
+def _check(r, label):
+    """Two identities, not one.
+
+    CONSERVATION says nothing left the plan except cash, tax and load. It is
+    blind to a year that was never FUNDED, because raising no cash conserves
+    perfectly -- which is exactly how the plan came to stop paying the
+    requirement from FY42 at a 50-year horizon while its corpus climbed. So
+    funding is asserted separately.
+    """
+    rows = [(row["fy"], row["residual"]) for row in r["rows"]]
+    unfunded = [(row["fy"],
+                 row["net_need"] - row["personal_cash"] - row["huf_cash"])
+                for row in r["rows"]
+                if abs(row["net_need"] - row["personal_cash"]
+                       - row["huf_cash"]) > m.PLAN_TOL]
+    assert not unfunded, (
+        f"{label}: the requirement went unfunded in {len(unfunded)} year(s), "
+        f"first FY{unfunded[0][0]} short by {unfunded[0][1]:.3f}. A year that "
+        f"raises no cash still conserves, so this is invisible to the "
+        f"residual."
+    )
+    assert r["shortfall"] <= m.PLAN_TOL, (
+        f"{label}: reported shortfall {r['shortfall']:.3f}"
+    )
     bad = [(fy, res) for fy, res in rows if abs(res) > m.PLAN_TOL]
     assert not bad, (
         f"{label}: conservation broken in {len(bad)} year(s), worst "
@@ -96,8 +124,7 @@ def _check(rows, label):
 
 @pytest.mark.parametrize("scenario,horizon", DEFAULT_CASES)
 def test_conservation_holds_on_the_defaults(scenario, horizon):
-    r = m.simulate(scenario, horizon, m.MAX_FOLIOS, vintage_every=5)
-    _check([(row["fy"], row["residual"]) for row in r["rows"]],
+    _check(m.simulate(scenario, horizon, m.MAX_FOLIOS, vintage_every=5),
            f"{scenario}/{horizon}")
 
 
@@ -158,6 +185,29 @@ def test_conservation_holds_when_the_sleeves_cannot_pay_the_equity_bill():
                              TAXABLE_OTHER_INCOME=18.0,
                              DEBT_FLOOR_MULTIPLES=(10.0, 9.0, 8.0))),
            "sleeve cannot pay")
+    # The same shape at 60 years on the shipped income and corpus, where the
+    # fallback fires with a bill large enough to matter.
+    _check(_residuals(_horizon=60, EQUITY_RETURN=0.07,
+                      TAXABLE_OTHER_INCOME=18.0,
+                      DEBT_FLOOR_MULTIPLES=(10.0, 9.0, 8.0)),
+           "sleeve cannot pay, 60 years")
+
+
+def test_conservation_holds_at_a_long_horizon():
+    """Fifty years, where the debt books empty and equity funds the plan.
+
+    This is the case that closes the run_year coverage gap noted above. Once
+    the last-resort draw exists, run_year realises UNCAPPED equity gain to
+    fund the year, so its s.112A bill is no longer bounded by the annual
+    exemption and no longer sits under PLAN_TOL.
+    """
+    _check(_residuals(_horizon=50, **WORKING_SET), "50 years, working set")
+    # AND at the shipped defaults, which is a materially different plan: this
+    # is the run where the PLAIN path, not the water-fill, commits s.112A
+    # bills of several lakh. Mutation-tested -- removing run_year's settlement
+    # is caught here and by nothing else.
+    _check(_residuals(_horizon=50), "50 years, defaults")
+    _check(_residuals(_horizon=60, _scenario="3chunk"), "60 years, 3chunk")
 
 
 def test_conservation_holds_without_equity():
@@ -168,6 +218,38 @@ def test_conservation_holds_without_equity():
     discarded it.
     """
     _check(_residuals(EQUITY_ENABLED=False), "no equity")
+
+
+def test_pay_external_bill_draws_only_what_the_bill_needs():
+    """A UNIT test, because no end-to-end fixture can catch this one.
+
+    pay_external_bill exists because pay_tax_bill converges on the whole slab
+    bill, which the caller has already settled, and so drains the book a
+    second time. That over-draw is REPORTED AS TAX -- the caller adds the gain
+    to gpt and recomputes txp -- so the yearly conservation identity closes
+    perfectly and every scenario fixture passes. Mutation-tested: reverting
+    the convergence rule is caught by nothing else in this file.
+
+    The assertion is therefore on the CASH, not on an identity: settling a
+    trivial bill against a book carrying a large standing slab liability must
+    draw the bill and the incremental slab tax it creates, and nothing more.
+    """
+    book = m.Book(cap=1, n_funds=1)
+    navs = [2.0]
+    book.folios[0].funds[0].lots.append([500.0, 1.0, 0])   # 100% gain at nav 2
+    bill = 0.01
+    base_gain = 30.0            # the year has already realised a lot
+    standing = m.personal_tax(2.0 + base_gain, 20.0, 8.0)
+    assert standing > 1.0, "fixture is not exercising a standing slab bill"
+
+    drawn, gain = m.pay_external_bill(book, bill, base_gain, navs, 1,
+                                      exempt_ceiling=20.0, taxable_other=2.0,
+                                      basic_exemption=8.0)
+    assert drawn >= bill - m.EPS, f"under-drew: {drawn} against a bill of {bill}"
+    assert drawn < bill + 1.0, (
+        f"over-drew: {drawn:.4f} for a bill of {bill}. The standing slab bill "
+        f"is {standing:.4f}; drawing that again is the pay_tax_bill defect."
+    )
 
 
 def test_exit_load_is_the_only_thing_that_leaves_unaccounted():
