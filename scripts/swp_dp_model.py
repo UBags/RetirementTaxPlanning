@@ -599,6 +599,52 @@ TURNOVER = (1.0 / 3.0, 1.0 / 3.0)
 # now carries both.
 EMERGENCY_SHOCK = None
 
+# ── THE OLD REGIME ─────────────────────────────────────────────────────────
+# A dictionary so it can be lifted into a database later without touching the
+# code that reads it. Every figure is LAKH.
+#
+# The old regime is not simply "the new regime with deductions". It has a
+# narrower basic exemption, a much steeper ladder -- 20% at 5 where the new
+# regime is still at 10 -- a far smaller s.87A, a smaller standard deduction,
+# and a surcharge that runs to 37% where the new one stops at 25%. Deductions
+# have to overcome all five of those before it wins.
+OLD_REGIME = {
+    "basic_exemption": 2.5,          # under 60
+    "basic_exemption_60": 3.0,       # s.2 proviso: 60 to 79
+    "basic_exemption_80": 5.0,       # 80 and over
+    "bands": ((5.0, 0.05), (10.0, 0.20)),   # (upper edge, rate) above basic
+    "top_rate": 0.30,
+    "rebate_ceiling": 5.0,           # s.87A, old regime
+    "rebate_cap": 0.125,             # 12,500
+    "std_deduction": 0.50,           # s.16(ia) old, against SALARY only
+    "surcharge": ((50.0, 0.10), (100.0, 0.15), (200.0, 0.25), (500.0, 0.37)),
+    # Statutory ceilings. A declared figure above these is CLAMPED rather than
+    # believed: declaring 3.0 of 80C must not shelter 3.0.
+    "cap_80c": 1.5,
+    "cap_80d": 0.25,                 # 0.50 if any member is 60 or over
+    "cap_80d_senior": 0.50,
+    "cap_80ttb": 0.50,               # individuals aged 60+ only, never an HUF
+    "cap_80ddb": 0.40,               # 1.00 if the patient is 60 or over
+    "cap_80ddb_senior": 1.00,
+    "cap_home_loan": 2.0,            # s.24(b), self-occupied
+}
+
+# Declared deductions, per purse. Zero means "not claimed", which is also what
+# every new-regime year sees regardless.
+DEDUCTIONS = {
+    "personal": {"80c": 0.0, "80d": 0.0, "80ttb": 0.0, "80ddb": 0.0,
+                 "home_loan": 0.0},
+    "huf": {"80c": 0.0, "80d": 0.0, "80ddb": 0.0},
+}
+EXPLORE_BOTH_REGIMES = False
+ITR_TYPE = "itr1"           # itr3 / itr4 carry business income: new regime only
+PLAN_DOB = None             # (year, month, day), set by --dob
+_FY_NOW = 0                 # the financial year being priced. A module global
+                            # because personal_tax and equity_tax are called
+                            # from a dozen places that have no reason to know
+                            # about ages, and threading fy through all of them
+                            # to reach one age lookup would be worse than this.
+
 PLAN_TO_AGE = 90            # what --dob models to. Not a life expectancy --
                             # a plan that runs out at the median age fails half
                             # the time, so this is deliberately past it.
@@ -1000,9 +1046,18 @@ def surcharged(slab_amt, special_amt, slab_income, special_income,
     WHICH INCOME IS SHAVED to bring the total down to T: slab before special.
     That matters, because slab income at the margin is taxed at 30% and s.112A
     at 12.5%, so shaving slab gives a SMALLER threshold bill, a smaller cap,
-    and therefore MORE relief. It is the taxpayer-favourable reading and the
-    one in the worked examples this was verified against. Shaving
-    proportionally, or special first, both yield a larger bill.
+    and therefore MORE relief. Shaving proportionally, or special first, both
+    yield a larger bill.
+
+    SETTLED, AND THIS IS THE REFERENCE. The Income Tax Department utility
+    computes marginal relief above 2 crore on AGGREGATE total income, and
+    establishes the threshold bill by reducing the excess entirely from the
+    highest ordinary slab income while leaving s.112A gain untouched -- which
+    is exactly slab-before-special. See
+    https://support.kdksoftware.com/portal/en/kb/articles/
+    marginal-relief-calculation-above-2-crore
+    (a vendor knowledge base rather than statute, but utility behaviour is
+    what a return is assessed against, which is the more useful standard.)
 
     THE SPECIAL-RATE TAX IS SCALED PRO-RATA when special income has to be
     shaved too, which happens only when the excess above T exceeds the whole
@@ -1055,6 +1110,136 @@ def _split_bill(slab_amt, special_amt, slab_income, special_income,
     return total * share, total * (1.0 - share)
 
 
+def age_in(fy):
+    """Age at the START of plan year `fy`, or None if no date of birth."""
+    if not PLAN_DOB or fy < 1:
+        return None
+    import datetime as _dt
+    _y, _m, _d = PLAN_DOB
+    _today = _dt.date.today()
+    _fy0 = _dt.date(_today.year if _today.month >= 4 else _today.year - 1, 4, 1)
+    _start = _dt.date(_fy0.year + fy - 1, 4, 1)
+    return _start.year - _y - ((_start.month, _start.day) < (_m, _d))
+
+
+def _old_basic_exemption(age):
+    if age is not None and age >= 80:
+        return OLD_REGIME["basic_exemption_80"]
+    if age is not None and age >= 60:
+        return OLD_REGIME["basic_exemption_60"]
+    return OLD_REGIME["basic_exemption"]
+
+
+def _old_deductions(purse, age):
+    """Declared deductions, CLAMPED to their statutory ceilings.
+
+    Clamping rather than believing is deliberate: a declared 3.0 of 80C must
+    shelter 1.5, not 3.0, or the comparison is rigged in favour of the old
+    regime by exactly the amount over-declared.
+    """
+    d = DEDUCTIONS[purse]
+    senior = age is not None and age >= 60
+    total = min(d.get("80c", 0.0), OLD_REGIME["cap_80c"])
+    total += min(d.get("80d", 0.0), OLD_REGIME["cap_80d_senior"] if senior
+                 else OLD_REGIME["cap_80d"])
+    total += min(d.get("80ddb", 0.0), OLD_REGIME["cap_80ddb_senior"] if senior
+                 else OLD_REGIME["cap_80ddb"])
+    if purse == "personal":
+        # s.80TTB is for "an assessee, being an individual" aged 60 or over.
+        # An HUF cannot claim it at any age, which is why there is no
+        # --huf_80ttb and why this branch exists.
+        if senior:
+            total += min(d.get("80ttb", 0.0), OLD_REGIME["cap_80ttb"])
+        total += min(d.get("home_loan", 0.0), OLD_REGIME["cap_home_loan"])
+    return total
+
+
+def _old_slab_tax(income, basic):
+    """Old-regime ladder: 5% to 5, 20% to 10, 30% above."""
+    rem = max(0.0, income - basic)
+    tax = 0.0
+    lo = basic
+    for edge, rate in OLD_REGIME["bands"]:
+        width = max(0.0, edge - lo)
+        take = min(rem, width)
+        tax += take * rate
+        rem -= take
+        lo = edge
+        if rem <= EPS:
+            return tax
+    return tax + rem * OLD_REGIME["top_rate"]
+
+
+def _old_surcharge_rate(total_income):
+    rate = 0.0
+    for threshold, band in OLD_REGIME["surcharge"]:
+        if total_income > threshold:
+            rate = band
+    return rate
+
+
+def _old_regime_parts(slab_income, special_income, is_huf, age,
+                      eq_exemption, eq_rate):
+    """(slab tax, special tax) under the OLD regime, after cess.
+
+    Surcharge uses the old ladder, which runs to 37%, with the same 15% cap on
+    the s.112A head. Marginal relief reuses the new-regime machinery because
+    the mechanics are identical -- only the band table differs -- and the
+    shave-slab-before-special rule is the same.
+    """
+    basic = OLD_REGIME["basic_exemption"] if is_huf else _old_basic_exemption(age)
+    ded = _old_deductions("huf" if is_huf else "personal", age)
+    taxable = max(0.0, slab_income - ded)
+    slab_amt = _old_slab_tax(taxable, basic)
+    if not is_huf and taxable + special_income <= OLD_REGIME["rebate_ceiling"]:
+        # s.87A old regime: 12,500 cap, and HUFs are barred as they are under
+        # the new one.
+        slab_amt = max(0.0, slab_amt - OLD_REGIME["rebate_cap"])
+    special_amt = max(0.0, special_income - eq_exemption) * eq_rate
+    gross = slab_amt + special_amt
+    if gross <= EPS:
+        return 0.0, 0.0
+    rate = _old_surcharge_rate(taxable + special_income)
+    total = (slab_amt * (1.0 + rate)
+             + special_amt * (1.0 + min(rate, SPECIAL_SURCHARGE_CAP))) * CESS
+    share = slab_amt / gross
+    return total * share, total * (1.0 - share)
+
+
+def assessee_bill(slab_income, special_income, is_huf, exempt_ceiling,
+                  basic_exemption, eq_exemption, eq_rate):
+    """(slab part, special part) for ONE assessee, under the CHEAPER regime.
+
+    THE CHOICE IS MADE ON THE COMBINED BILL, not head by head. A return is
+    filed under one regime or the other; there is no filing slab income under
+    the old regime and capital gains under the new.
+
+    OPTION A, and the limitation is worth stating. The optimiser still SIZES
+    its withdrawals against the new-regime band. This function only decides
+    which regime the resulting income is FILED under. A fuller version would
+    re-optimise the withdrawal itself, because the old regime's band is a
+    different number and so the best amount to realise differs -- that is
+    roughly five times the work and only worth it if the old regime turns out
+    to win often enough to matter.
+
+    ITR-3 and ITR-4 carry business or professional income, where s.115BAC(6)
+    allows the choice to be exercised only once in a lifetime. The model does
+    not track a lifetime state, so it does the safe thing and stays in the
+    default new regime throughout.
+    """
+    new = _split_bill(
+        _slab_after_rebate(slab_income, exempt_ceiling, basic_exemption,
+                           special_income) if not is_huf
+        else slab_tax(slab_income, basic_exemption),
+        max(0.0, special_income - eq_exemption) * eq_rate,
+        slab_income, special_income, basic_exemption)
+    if not EXPLORE_BOTH_REGIMES or ITR_TYPE in ("itr3", "itr4"):
+        return new
+    old = _old_regime_parts(slab_income, special_income, is_huf,
+                            age_in(_FY_NOW), eq_exemption, eq_rate)
+    return old if sum(old) < sum(new) - EPS else new
+
+
 def personal_tax(slab_income, exempt_ceiling, basic_exemption=BRACKET_WIDTH,
                  special_income=0.0, eq_exemption=0.0, eq_rate=0.0):
     """Slab tax with the s.87A rebate and its marginal relief.
@@ -1072,21 +1257,22 @@ def personal_tax(slab_income, exempt_ceiling, basic_exemption=BRACKET_WIDTH,
     relievable itself. Slab income of 11 with 1.5 of equity gain loses the
     rebate on the whole 11.
 
-    THE ONE PART THAT IS NOT SETTLED. The marginal relief proviso caps the tax
-    at the excess of TOTAL income over the ceiling, and total income includes
-    the s.112A gain -- so the excess is measured on the full figure here. Any
-    reading that measured it on slab income alone would give MORE relief.
-    Confirm with a professional before relying on the narrow band just above
-    the ceiling; everywhere else the two readings agree.
+    THE MARGINAL RELIEF EXCESS is measured on TOTAL income, s.112A gain
+    included, because that is the figure the eligibility test uses and there
+    is no reading on which the two would differ. A reading that measured the
+    excess on slab income alone would give MORE relief, and it bites only in
+    the narrow band just above the ceiling.
+
+    NOT DIRECTLY AUTHORITY-BACKED, and worth saying so. The inclusion of
+    s.112A gain in the THRESHOLD is settled; that the same total drives the
+    EXCESS follows by consistency rather than from a worked example anyone has
+    published. If a return is ever filed in that band, check it.
 
     Rebate and surcharge can never both apply: the ceiling reaches 20 on the
     projected ladder and the first surcharge threshold is 50.
     """
-    return _split_bill(
-        _slab_after_rebate(slab_income, exempt_ceiling, basic_exemption,
-                           special_income),
-        max(0.0, special_income - eq_exemption) * eq_rate,
-        slab_income, special_income, basic_exemption)[0]
+    return assessee_bill(slab_income, special_income, False, exempt_ceiling,
+                         basic_exemption, eq_exemption, eq_rate)[0]
 
 
 def _slab_after_rebate(slab_income, exempt_ceiling,
@@ -1112,10 +1298,10 @@ def equity_tax(gain, exemption, rate, slab_income=0.0, exempt_ceiling=0.0,
     degrades to the pre-surcharge behaviour, which is exactly correct whenever
     total income is under 50.
     """
-    return _split_bill(
-        _slab_after_rebate(slab_income, exempt_ceiling, basic_exemption, gain),
-        max(0.0, gain - exemption) * rate,
-        slab_income, gain, basic_exemption)[1]
+    # is_huf is inferred from the ceiling: the HUF is passed 0.0 because it has
+    # no s.87A under either regime, and no individual ever has a ceiling of 0.
+    return assessee_bill(slab_income, gain, exempt_ceiling <= EPS,
+                         exempt_ceiling, basic_exemption, exemption, rate)[1]
 
 
 def huf_tax(gain, nil_band, special_income=0.0, eq_exemption=0.0,
@@ -1126,9 +1312,8 @@ def huf_tax(gain, nil_band, special_income=0.0, eq_exemption=0.0,
     own total income -- which is why the equity terms are here too. The ladder
     is anchored on nil_band, so this is continuous at the threshold.
     """
-    return _split_bill(slab_tax(gain, nil_band),
-                       max(0.0, special_income - eq_exemption) * eq_rate,
-                       gain, special_income, nil_band)[0]
+    return assessee_bill(gain, special_income, True, 0.0, nil_band,
+                         eq_exemption, eq_rate)[0]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1843,6 +2028,7 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
         _l_open = (personal.loss() + huf.loss()
                    + eq_p.loss() + eq_h.loss())
 
+        globals()["_FY_NOW"] = fy
         need = lad["requirement"][i] - lad["other_income"][i]
         if EMERGENCY_SHOCK and fy == EMERGENCY_SHOCK[1]:
             # On TOP of the year's living requirement, and funded through the
@@ -2659,6 +2845,7 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
     _lq_gain = _lq_cash = 0.0
     for _wk in range(_ln):
         _wi = i + _wk
+        globals()["_FY_NOW"] = fy + _wk
         if _wk:
             # a year passes; whatever is still held keeps earning. The sampled
             # path has run out by definition, so the wind-down uses the flat
@@ -2734,11 +2921,40 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
         # for. The model can price a shock; it cannot price not having to
         # take one out of the corpus at all.
         print()
-        print("Health is Wealth : Prudent advice to the user is to a) take "
-              "family medical")
-        print("insurance cover of 5 lakh, and a top-up of a further 20 lakhs "
-              "on it, and")
-        print("b) Buy a SuperHealth VIP Pass subscription for Rs 4999")
+        print("HEALTH IS WEALTH")
+        print("  a) Take family medical insurance cover of 5 lakh, and a "
+              "top-up of a further")
+        print("     20 lakhs on it.")
+        print("  b) Buy a SuperHealth VIP Pass subscription for Rs 4999.")
+        print()
+        print("SPLITTING THE DEDUCTIONS BETWEEN THE TWO PURSES")
+        print("  1) Open a PPF in the names of the HUF members, funded from "
+              "personal money.")
+        print("     Fund it to a combined 1.5 lakh, which the HUF then claims "
+              "under s.80C.")
+        print("  2) Pay the SuperHealth VIP Pass from the HUF. Pay 25K of the "
+              "health insurance")
+        print("     premium from the HUF if every member is under 60, or 50K "
+              "if any member is")
+        print("     60 or over, to claim s.80D.")
+        print("  3) For treatment of the s.80DDB specified ailments -- "
+              "malignant cancers,")
+        print("     chronic renal failure, AIDS, thalassaemia, haemophilia, "
+              "and advanced")
+        print("     neurological disorders such as Parkinson's or dementia -- "
+              "up to 40K for a")
+        print("     member under 60 and up to 1 lakh for a member 60 or over "
+              "is deductible")
+        print("     under s.80DDB. (NOT 80TTB, which is 50K of DEPOSIT "
+              "INTEREST for an")
+        print("     individual aged 60 or over, and is not available to an "
+              "HUF at all.)")
+        print()
+        print("  All three are OLD-REGIME deductions. They are worth nothing "
+              "under s.115BAC,")
+        print("  so they only bite in a year the old regime is actually "
+              "chosen.")
+        print("     (s.80DDB only if genuinely paid and supported by bills.)")
 
     # A plan can simply run out. Silence would be the worst possible answer:
     # an exhausted plan reports a small corpus and a small tax bill, both of
@@ -2986,6 +3202,28 @@ def main():
     ap.add_argument("--horizon", type=int, default=None,
                     help=f"years to model (default {HORIZON}). Ignored if "
                          f"--dob is given.")
+    for _p, _sec in (("personal", "80c"), ("personal", "80d"),
+                     ("personal", "80ttb"), ("personal", "80ddb"),
+                     ("huf", "80c"), ("huf", "80d"), ("huf", "80ddb")):
+        ap.add_argument(f"--{_p}_{_sec}", type=float, default=0.0,
+                        dest=f"ded_{_p}_{_sec}", metavar="LAKH",
+                        help=f"s.{_sec.upper()} claimed by the {_p} purse. "
+                             f"Old regime only, and clamped to the statutory "
+                             f"ceiling.")
+    ap.add_argument("--personal_home_loan_interest", type=float, default=0.0,
+                    dest="ded_personal_home_loan", metavar="LAKH",
+                    help="s.24(b) interest on a self-occupied property, "
+                         "capped at 2.0. Old regime only.")
+    ap.add_argument("--explore_both_tax_regimes", default="no",
+                    metavar="yes|no",
+                    help="price each year under BOTH regimes and file the "
+                         "cheaper. Default no, meaning the new regime "
+                         "throughout.")
+    ap.add_argument("--itr_type", default="itr1", metavar="itrN",
+                    help="itr3 or itr4 carry business or professional "
+                         "income, where s.115BAC(6) allows the choice once in "
+                         "a lifetime. The model does not track a lifetime "
+                         "state, so those force the new regime throughout.")
     ap.add_argument("--emergency_shock", "--emergency-shock", default=None,
                     metavar="AMOUNT/FY",
                     help="a one-off capital drain, e.g. 80/15 for 80 lakh in "
@@ -3330,6 +3568,22 @@ def main():
                   f"away.")
         globals()["DEBT_FLOOR_MULTIPLES"] = tuple(parts)
 
+    for _p in ("personal", "huf"):
+        for _sec in ("80c", "80d", "80ttb", "80ddb"):
+            _v = getattr(a, f"ded_{_p}_{_sec}", None)
+            if _v:
+                if _v < 0:
+                    sys.exit(f"FATAL: --{_p}_{_sec} cannot be negative.")
+                DEDUCTIONS[_p][_sec] = _v
+    if a.ded_personal_home_loan:
+        DEDUCTIONS["personal"]["home_loan"] = a.ded_personal_home_loan
+    globals()["ITR_TYPE"] = a.itr_type.strip().lower()
+    _both = a.explore_both_tax_regimes.strip().lower()
+    if _both not in ("yes", "no", "y", "n", "true", "false"):
+        sys.exit(f"FATAL: --explore_both_tax_regimes takes yes or no. "
+                 f"Got {a.explore_both_tax_regimes!r}.")
+    globals()["EXPLORE_BOTH_REGIMES"] = _both in ("yes", "y", "true")
+
     if a.emergency_shock:
         _parts = a.emergency_shock.replace(",", "/").split("/")
         if len(_parts) != 2:
@@ -3368,10 +3622,13 @@ def main():
                      f"FY start, which is already {PLAN_TO_AGE} or more. "
                      f"There is no horizon left to model.")
         a.horizon = PLAN_TO_AGE - _age
-        if not a.quiet:
-            print(f"--dob {a.dob}: age {_age} at the start of FY"
-                  f"{_fy_start.year}-{(_fy_start.year + 1) % 100:02d}, so the "
-                  f"horizon is {a.horizon} years to age {PLAN_TO_AGE}.")
+        globals()["PLAN_DOB"] = (_y, _m, _d)
+        # NOT behind --quiet. A flag that silently moves the horizon by a
+        # decade has to say so; the echoed parameter line further down shows
+        # the resulting --horizon but not where it came from.
+        print(f"--dob {a.dob}: age {_age} at the start of FY"
+              f"{_fy_start.year}-{(_fy_start.year + 1) % 100:02d}, so the "
+              f"horizon is {a.horizon} years to age {PLAN_TO_AGE}.")
     if a.horizon is None:
         a.horizon = HORIZON
     if a.horizon < MIN_HORIZON:
@@ -3387,6 +3644,14 @@ def main():
               f"s.87A ceiling, the HUF nil band and the s.112A exemption stop "
               f"growing. Extend EXEMPT_BLOCKS, NILBAND_BLOCKS, "
               f"EQ_EXEMPT_BLOCKS and EQ_RATE_BLOCKS to change that.")
+    if EXPLORE_BOTH_REGIMES and ITR_TYPE in ("itr3", "itr4"):
+        print(f"NOTE: --itr_type {ITR_TYPE} carries business or professional "
+              f"income. Under s.115BAC(6)")
+        print("  the regime choice is exercisable only once in a lifetime, "
+              "which this model does")
+        print("  not track, so it stays in the default NEW regime throughout "
+              "and the declared")
+        print("  deductions are ignored.")
 
     _tot = (TAXABLE_OTHER_INCOME + TAXFREE_OTHER_INCOME
             + SALARY_INCOME + RENTAL_INCOME)
