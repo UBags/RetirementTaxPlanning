@@ -1092,6 +1092,79 @@ SURCHARGE_BANDS = ((50.0, 0.10), (100.0, 0.15), (200.0, 0.25))
 SPECIAL_SURCHARGE_CAP = 0.15
 
 
+def _redemption_snapshot(personal, huf, eq_p, eq_h):
+    """Every fund's cumulative units sold and gain, keyed by where it sits.
+
+    Read on the COMMITTED books at the open and close of a year; the difference
+    is that year's redemptions. Reading the counters rather than recording
+    events is what keeps this free of the clone problem -- a discarded
+    candidate takes its counters with it.
+    """
+    snap = {}
+    for purse, book in (("personal_debt", personal), ("huf_debt", huf)):
+        for fi, fo in enumerate(book.folios):
+            for k, f in enumerate(fo.funds):
+                snap[(purse, fi, k)] = (f.sold_units, f.sold_gain, f.loss,
+                                        f.bought_units)
+    for purse, sleeve in (("personal_equity", eq_p), ("huf_equity", eq_h)):
+        for k, f in enumerate(sleeve.funds):
+            snap[(purse, 0, k)] = (f.sold_units, f.sold_gain, f.loss,
+                                   f.bought_units)
+    return snap
+
+
+def _redemptions_between(before, after, fy, navs, nav_eq):
+    """One row per fund that was actually redeemed this year.
+
+    Price is the year's NAV for that fund, because at annual resolution a fund
+    HAS one price. That is the assumption the monthly engine will remove.
+    """
+    rows = []
+    for key, (u1, g1, l1, b1) in after.items():
+        u0, g0, l0, b0 = before.get(key, (0.0, 0.0, 0.0, 0.0))
+        sold, bought = u1 - u0, b1 - b0
+        if sold <= EPS and bought <= EPS:
+            continue
+        purse, fi, k = key
+        nav = nav_eq if purse.endswith("equity") else navs[k]
+        rows.append(dict(fy=fy, purse=purse, folio=fi + 1,
+                         fund=fund_identifier(k),
+                         units_sold=sold, units_bought=bought, nav=nav,
+                         proceeds=sold * nav, invested=bought * nav,
+                         gain=g1 - g0, exit_load=l1 - l0))
+    rows.sort(key=lambda r: (r["purse"], r["folio"], r["fund"]))
+    return rows
+
+
+def fund_identifier(k):
+    """The name of base fund k, as it will appear on a redemption instruction.
+
+    AN INJECTION POINT. Today it returns a positional label; tomorrow it
+    returns a scheme code, an ISIN and a folio number pulled from wherever
+    those live. Everything downstream -- the redemption ledger, the CSV, any
+    instruction printed for a human -- goes through here, so replacing this one
+    function is the whole change.
+    """
+    return f"Fund {k + 1:02d}"
+
+
+def advance_navs(navs, fy, spec, nf, shift=0.0):
+    """Move every base fund's NAV on by one financial year, in place.
+
+    THE OTHER INJECTION POINT. Today each fund compounds at its own modelled
+    rate plus whatever the sampled path shifts it by. Tomorrow this fetches the
+    real NAV for each scheme at the real date and assigns it. The engine never
+    computes a NAV anywhere else, so a real-price version of this function is
+    the whole of that change too.
+
+    Returns navs so a future version is free to build a new list rather than
+    mutate, without the caller caring which.
+    """
+    for k in range(nf):
+        navs[k] *= (1.0 + spec["rate"](k) + shift)
+    return navs
+
+
 def surcharge_rate(total_income):
     """Band rate for a total income. Strict >: at exactly 50 the rate is 0."""
     rate = 0.0
@@ -1403,7 +1476,8 @@ def huf_tax(gain, nil_band, special_income=0.0, eq_exemption=0.0,
 # ═══════════════════════════════════════════════════════════════════════════
 
 class Fund:
-    __slots__ = ("lots", "loss", "total_units")
+    __slots__ = ("lots", "loss", "total_units", "sold_units", "sold_gain",
+                 "bought_units")
 
     def __init__(self):
         self.lots = []                      # [units, purchase_nav, buy_fy]
@@ -1418,6 +1492,28 @@ class Fund:
         # running total makes it O(1). Every mutation of `lots` must maintain
         # it, which is why lots must never be appended to from outside.
         self.total_units = 0.0
+        # Cumulative UNITS redeemed and gain realised on this fund, carried
+        # through clone() for the same reason `loss` is: the grid searches
+        # sell against hundreds of clones a year and only the winning lineage
+        # is committed, so a global counter would count every discarded
+        # candidate too. Close-minus-open across a committed substitution is
+        # what really happened, and that IS the redemption instruction.
+        #
+        # SCALARS, NOT A LIST OF SALES. A per-lot history would be copied on
+        # every clone and grow without bound -- millions of list copies a run
+        # by FY35, undoing the work that took a 35-year run from 681ms to 177.
+        # Within a year a fund has ONE nav, so units and gain are the whole of
+        # the detail at this resolution. When the engine goes monthly the price
+        # varies within the year and this becomes a list, bounded to a month.
+        self.sold_units = 0.0
+        self.sold_gain = 0.0
+        # And the other side of the instruction. The harvest sells and rebuys
+        # to step up basis, so a year's GROSS redemptions exceed the cash the
+        # plan actually needs -- 2108 against 1245 on a 35-year run. Both legs
+        # are real orders placed with a fund house, so both are reported. A
+        # ledger with only the sells would have the reader redeem the gross and
+        # sit on the difference in cash.
+        self.bought_units = 0.0
 
     def clone(self):
         """Shallow-structure deep-value copy. The grid searches clone state
@@ -1431,12 +1527,16 @@ class Fund:
         f.lots = [lot[:] for lot in self.lots] if self.lots else []
         f.loss = self.loss
         f.total_units = self.total_units
+        f.sold_units = self.sold_units
+        f.sold_gain = self.sold_gain
+        f.bought_units = self.bought_units
         return f
 
     def invest(self, amount, nav, fy):
         if amount > EPS:
             self.lots.append([amount / nav, nav, fy])
             self.total_units += amount / nav
+            self.bought_units += amount / nav
 
     def units(self):
         return self.total_units
@@ -1484,6 +1584,8 @@ class Fund:
                 load += take * EXIT_LOAD
             lot[0] -= take / nav
             self.total_units -= take / nav
+            self.sold_units += take / nav
+            self.sold_gain += take * frac
         self.lots = [l for l in self.lots if l[0] > EPS]
         if not self.lots:
             # Re-anchor on empty. Decrementing accumulates float drift over
@@ -2055,13 +2157,13 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
 
     tax_p_tot = tax_h_tot = tax_eq_tot = 0.0
     rows = []
+    redemptions = []
 
     for fy in range(1, horizon + 1):
         i = fy - 1
         _base_r = chunk_rates(1)[0]
         _shift = (DEBT_PATH[i] - _base_r) if DEBT_PATH else 0.0
-        for k in range(nf):
-            navs[k] *= (1.0 + spec["rate"](k) + _shift)
+        navs = advance_navs(navs, fy, spec, nf, _shift)
         # The HUF holds the SAME funds at the SAME NAVs as the personal purse.
         # It is not a separate asset class with its own flat return; it is the
         # same portfolio in a second pair of hands, so it earns the per-fund
@@ -2111,6 +2213,7 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                    + eq_p.loss() + eq_h.loss())
 
         globals()["_FY_NOW"] = fy
+        _red0 = _redemption_snapshot(personal, huf, eq_p, eq_h)
         need = lad["requirement"][i] - lad["other_income"][i]
         if EMERGENCY_SHOCK and fy == EMERGENCY_SHOCK[1]:
             # On TOP of the year's living requirement, and funded through the
@@ -2846,6 +2949,9 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                     + eq_p.value(nav_eq) + eq_h.value(nav_eq))
         _year_load = (personal.loss() + huf.loss()
                       + eq_p.loss() + eq_h.loss()) - _l_open
+        redemptions.extend(_redemptions_between(
+            _red0, _redemption_snapshot(personal, huf, eq_p, eq_h),
+            fy, navs, nav_eq))
         rows.append(dict(
             fy=fy,
             value_open=_v_open,
@@ -2932,8 +3038,7 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
             # a year passes; whatever is still held keeps earning. The sampled
             # path has run out by definition, so the wind-down uses the flat
             # assumption with the final year's spread preserved.
-            for _wf in range(nf):
-                _wnv[_wf] *= (1.0 + spec["rate"](_wf) + _shift0)
+            _wnv = advance_navs(_wnv, fy + _wk, spec, nf, _shift0)
             if EQUITY_ENABLED:
                 _wne *= (1.0 + EQUITY_RETURN)
         _rem = _ln - _wk
@@ -3079,6 +3184,7 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
     return dict(tax=tax_p_tot + tax_h_tot + tax_eq_tot,
                 tax_personal=tax_p_tot, tax_huf=tax_h_tot,
                 tax_equity=tax_eq_tot,
+                redemptions=redemptions,
                 shortfall=sum(_sf),
                 exhausted_fy=exhausted_fy, exhausted_month=exhausted_month,
                 shortfall_years=sum(1 for v in _sf if v > PLAN_TOL),
@@ -3387,6 +3493,13 @@ def main():
                          "nil band and s.112A exemption, and what is not yet "
                          "sold goes on earning. Nothing is spent during the "
                          "wind-down.")
+    ap.add_argument("--redemption_csv", "--redemption-csv", default=None,
+                    metavar="PATH",
+                    help="write the redemption instruction: one row per fund "
+                         "per year that was traded, with units sold, units "
+                         "bought, the NAV and the gain. Both legs, because "
+                         "the basis-reset harvest genuinely sells and rebuys "
+                         "and both are orders you would place.")
     ap.add_argument("--mc_csv", "--mc-csv", default=None, metavar="PATH",
                     help="write one row per path: seed, corpus, tax, liq_tax, "
                          "cover, shortfall. Rows are ordered by seed, so two "
@@ -4046,6 +4159,20 @@ def main():
           f" gain, {_when})")
     print(f"Cash in hand after liquidation = {r['liq_net']:.1f}"
           f"   (proceeds {r['liq_proceeds']:.1f} less the tax above)")
+    if a.redemption_csv:
+        _rf = ["fy", "purse", "folio", "fund", "units_sold", "units_bought",
+               "nav", "proceeds", "invested", "gain", "exit_load"]
+        with open(a.redemption_csv, "w", newline="") as _fh:
+            _w = csv.DictWriter(_fh, fieldnames=_rf)
+            _w.writeheader()
+            for _row in r["redemptions"]:
+                _w.writerow({k: (f"{_row[k]:.6f}"
+                                 if isinstance(_row[k], float) else _row[k])
+                             for k in _rf})
+        print(f"wrote {a.redemption_csv} -- {len(r['redemptions'])} rows. "
+              f"Gross redeemed less reinvested equals cash raised plus tax "
+              f"plus exit load, exactly.")
+
     if a.csv:
         write_csv(r, a.csv)
         print(f"wrote {a.csv}")

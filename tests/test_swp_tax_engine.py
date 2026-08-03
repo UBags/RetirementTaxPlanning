@@ -406,6 +406,38 @@ def test_one_year_liquidation_matches_the_single_shot_charge():
     )
 
 
+def test_the_redemption_ledger_reconciles_to_the_cash_it_raised():
+    """SLOW. The instruction set must add up to what the plan actually did.
+
+    Gross redeemed, less what was reinvested, must equal the cash raised plus
+    the tax paid plus the exit load. Any other number and the ledger is
+    describing a different plan from the one the table reports -- which for an
+    instruction someone acts on is worse than useless.
+
+    BOTH LEGS ARE REPORTED because the basis-reset harvest genuinely sells and
+    rebuys: gross redemptions run well ahead of the cash needed, 2108 against
+    1245 on a 35-year run. A ledger with only the sells would have the reader
+    redeem the gross and sit on the difference.
+    """
+    r = M.simulate("3chunk", 35, M.MAX_FOLIOS, vintage_every=5)
+    red = r["redemptions"]
+    assert red, "no redemptions recorded at all"
+
+    net_out = (sum(x["proceeds"] for x in red)
+               - sum(x["invested"] for x in red))
+    accounted = (sum(x["personal_cash"] + x["huf_cash"] for x in r["rows"])
+                 + r["tax"] + sum(x["exit_load"] for x in r["rows"]))
+    assert net_out == pytest.approx(accounted, abs=M.PLAN_TOL), (
+        f"ledger net {net_out:.4f} against cash plus tax plus load "
+        f"{accounted:.4f}"
+    )
+    for x in red:
+        assert x["units_sold"] >= 0.0 and x["units_bought"] >= 0.0
+        assert x["nav"] > 0.0
+        assert x["proceeds"] == pytest.approx(x["units_sold"] * x["nav"],
+                                              abs=1e-9)
+
+
 def test_an_exhausted_plan_reports_when_and_zeroes_what_follows():
     """SLOW. A plan that runs out must say so and stop reporting fiction.
 
