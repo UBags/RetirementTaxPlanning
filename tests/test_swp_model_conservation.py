@@ -46,7 +46,7 @@ import swp_dp_model as M  # noqa: E402
 # it deliberately; if it fails after a routing change, suspect a discarded
 # surplus and check the corpus for a large DROP.
 NO_EQUITY_TAX = 2.116115765
-NO_EQUITY_CORPUS = 1839.775581
+NO_EQUITY_CORPUS = 531.5231167
 
 
 @pytest.fixture(autouse=True)

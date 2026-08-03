@@ -10,6 +10,7 @@ Root pytest configuration.
   4. Redirect monte_carlo's NAV caches into a session tmpdir, so a test run
      neither reads nor overwrites the owner's mc_nifty50_nav.csv.
 """
+
 import os
 import sys
 from pathlib import Path
