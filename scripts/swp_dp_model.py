@@ -294,6 +294,83 @@ none is imposed. The HUF running dry before the horizon is usually the optimum,
 not a defect -- which is the opposite of what it looks like in the trace, and
 is why it is written down here.
 
+OBSERVATIONS FROM RUNS
+======================
+
+Findings from actual runs on THESE parameters, recorded so nobody rediscovers
+them. Every one is measured, and the parameter set is named because none of it
+generalises for free: change the requirement ladder or the corpus and several
+of these flip.
+
+1. THE BILL IS AT THE DOOR, NOT ALONG THE WAY. 3chunk/35yr pays 1.930 of
+   lifetime tax and 168.530 to close -- eighty-seven times as much, and 16% of
+   the corpus. Across 10,000 sampled paths the median is 1.2 against 140.6.
+   Every optimisation in this file works on the small number.
+
+2. SPREADING THE WIND-DOWN IS A TAIL HEDGE, NOT AN OPTIMISATION. Paired across
+   2,000 paths on one seed, --liquidation_years 5 against 1: mean +24.31 of
+   tax, t = +19.8, so unambiguous -- but the sign FLIPS across the
+   distribution. Worst fifth by corpus -6.37, best fifth +101.94. Five extra
+   sets of annual allowances are a FIXED quantity; five extra years of
+   compounding on an unsold sleeve is PROPORTIONAL to the sleeve. On a small
+   corpus the allowances dominate, on a large one the compounding does.
+   Deterministically the minimum is around three years and worth about 7.
+
+3. SEQUENCE RISK SITS AT THE END OF THIS PLAN, NOT THE START, which inverts
+   the textbook. Worst fifth of 10,000 paths by first-five-year return: p5
+   corpus 188.1, cover 3.1. By LAST-five-year return: p5 134.1, cover 2.2.
+   The debt floor keeps the corpus in debt early, so a bad opening hits a
+   small sleeve while the floor carries the spending; by the last five years
+   equity is around 60% of the corpus, so a bad ending hits nearly everything.
+   The floor does not absorb sequence risk -- it RELOCATES it to the end,
+   where the liquidation also lands.
+
+4. RUIN IS NOT THE NUMBER TO READ. 0.3% of paths fail to fund the requirement,
+   and they fail at FY33-35, never mid-plan, short by a median of 15 to 20.
+   But 1.74% of paths END with under two years of cover and 3.35% with under
+   three. A plan that finishes with nothing has not "failed" by the model's
+   definition and is the same thing to the person living in it.
+
+5. THE DEBT FLOOR IS A FIRST-TIER PARAMETER. At 10,000 paths, 20/20/18 and
+   20/18/16 are identical in every cell -- by FY11 there is no surplus left
+   for tiers two and three to route. 22/20/18 is a CLIFF: at 22x the sleeve
+   never opens at all, halving the median corpus and cutting p5 cover from 3.5
+   to 2.6 years. Low tax there is a symptom of a poorer plan.
+
+6. THE CONSERVATIVE WEIGHTAGE IS IDLE ON THIS PLAN. --conservative_sweep is
+   flat in all three panels, because the plan pays almost no tax and the knob
+   trades tax against corpus. Where it does bite it is real but small: paired
+   over 500 paths, W=0.6 against 0.0 saves 0.0606 of tax for 0.0579 of corpus,
+   t = -9.1 on the tax and -1.9 on the corpus. Statistically certain,
+   economically nothing.
+
+7. THE OLD REGIME NEVER WINS HERE. With every deduction at its ceiling the
+   lifetime tax is unchanged. The HUF only pays tax in years it realises 13 to
+   16, and the crossover is around 7 -- below that the old regime's 2.5 basic
+   plus deductions beats the nil band, above it the 20% band at 5.0 overtakes.
+
+8. A CAPITAL SHOCK DWARFS EVERYTHING ELSE. 80 lakh at FY15 costs 287 of
+   terminal corpus, three and a half times the drain, and adds 16.4 of tax.
+   150 at FY8 leaves 120 of corpus at the horizon. Against a lifetime tax bill
+   of 1.930, this is the exposure that matters.
+
+9. TAIL ESTIMATES NEED THOUSANDS OF PATHS, AND 100 WILL MISLEAD YOU. At 100
+   paths the upper tail was overstated by 66% and ruin came back zero; at 500
+   the sequence-of-returns split looked like a NULL and was written up as one.
+   At 10,000 it is a 29% gap in p5. The median is fine at 100; the tails, which
+   are the only reason to run this, are not.
+
+10. PERCENTILES CANNOT SEE A PAIRED EFFECT. Two runs of the weightage agreed to
+    the decimal across p5 to p95 and looked like a broken flag. Use --mc_csv
+    with a fixed --mc_seed and difference on the seed column: the paired
+    variance is far smaller than either run's own spread, and 200 paired paths
+    resolve what 1,000 unpaired cannot.
+
+11. liq_tax ALONE CANNOT DECIDE THE WIND-DOWN. A longer wind-down leaves more
+    invested for longer, so a bigger bill on a bigger pot may be the better
+    outcome. That is why --mc_csv carries liq_proceeds and liq_net: difference
+    liq_net, not liq_tax.
+
 TWO THINGS ABOUT IT ARE EASY TO GET WRONG.
 
 The ordering is by tax cost per rupee of CASH, not per rupee of GAIN. Cash is
@@ -3067,7 +3144,8 @@ def _mc_run(job):
     _k = min(5, len(eq))
     return (r["corpus"], r["tax"], r["liq_tax"], r["cover_end"],
             r["shortfall"], r["first_shortfall_fy"], seed,
-            sum(eq[:_k]) / _k, sum(eq[-_k:]) / _k)
+            sum(eq[:_k]) / _k, sum(eq[-_k:]) / _k,
+            r["liq_proceeds"], r["liq_net"])
 
 
 def _mc_progress(done, total, t0, width=32):
@@ -3785,11 +3863,21 @@ def main():
             # are the same world under two strategies.
             with open(a.mc_csv, "w", newline="") as _fh:
                 _wr = csv.writer(_fh)
-                _wr.writerow(["seed", "corpus", "tax", "liq_tax", "cover",
+                # liq_proceeds and liq_net are here because liq_tax ALONE
+                # cannot decide the wind-down question: a longer wind-down
+                # leaves more invested for longer, so a bigger bill on a
+                # bigger pot may still be the better outcome. Differencing
+                # liq_net across two --liquidation_years runs on the same
+                # --mc_seed answers "am I better off"; differencing liq_tax
+                # only answers "did I pay less tax", which is not the same
+                # question and points the other way on rich paths.
+                _wr.writerow(["seed", "corpus", "tax", "liq_tax",
+                              "liq_proceeds", "liq_net", "cover",
                               "shortfall"])
                 for _x in sorted(_res, key=lambda t: t[6]):
                     _wr.writerow([_x[6], f"{_x[0]:.6f}", f"{_x[1]:.6f}",
-                                  f"{_x[2]:.6f}", f"{_x[3]:.6f}",
+                                  f"{_x[2]:.6f}", f"{_x[9]:.6f}",
+                                  f"{_x[10]:.6f}", f"{_x[3]:.6f}",
                                   f"{_x[4]:.6f}"])
             print(f"wrote {a.mc_csv} -- {_n} rows, ordered by seed\n")
         if _ruined:
