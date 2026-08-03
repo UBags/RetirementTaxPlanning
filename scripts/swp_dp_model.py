@@ -593,6 +593,12 @@ CONSERVATIVE_WEIGHT = 0.6     # 0.0 = score purely at the modelled rates,
 N_BASE_FUNDS = 21
 TURNOVER = (1.0 / 3.0, 1.0 / 3.0)
 
+# A one-off capital drain, as (amount, fy). NOT the same thing as a bad return
+# path: a Monte Carlo draw of -30% recovers over twenty years, but capital that
+# leaves never comes back. The two failure modes are independent and the model
+# now carries both.
+EMERGENCY_SHOCK = None
+
 PLAN_TO_AGE = 90            # what --dob models to. Not a life expectancy --
                             # a plan that runs out at the median age fails half
                             # the time, so this is deliberately past it.
@@ -1838,6 +1844,13 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                    + eq_p.loss() + eq_h.loss())
 
         need = lad["requirement"][i] - lad["other_income"][i]
+        if EMERGENCY_SHOCK and fy == EMERGENCY_SHOCK[1]:
+            # On TOP of the year's living requirement, and funded through the
+            # ordinary machinery -- the same purses, the same bands, the same
+            # last-resort equity draw. A shock is not a special case; it is a
+            # very large need, and the interesting question is what the plan
+            # does with one.
+            need += EMERGENCY_SHOCK[0]
         band_p = lad["exempt"][i] - lad["taxable_other"][i]
         band_h = lad["nilband"][i]
 
@@ -2716,6 +2729,16 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                   f"{r['huf_debt']:>9.1f}{r['huf_eq']:>8.1f}"
                   f"{r['equity_cash']:>7.2f}"
                   f"{r['tax_total']:>7.2f}{r['tax_cumulative']:>8.2f}")
+        # Printed whether or not a shock was modelled, because the years
+        # when nobody has modelled one are exactly the years the advice is
+        # for. The model can price a shock; it cannot price not having to
+        # take one out of the corpus at all.
+        print()
+        print("Health is Wealth : Prudent advice to the user is to a) take "
+              "family medical")
+        print("insurance cover of 5 lakh, and a top-up of a further 20 lakhs "
+              "on it, and")
+        print("b) Buy a SuperHealth VIP Pass subscription for Rs 4999")
 
     # A plan can simply run out. Silence would be the worst possible answer:
     # an exhausted plan reports a small corpus and a small tax bill, both of
@@ -2815,8 +2838,15 @@ def _mc_run(job):
                      no_vintage=no_vintage)
     finally:
         globals()["EQUITY_PATH"] = globals()["DEBT_PATH"] = None
+    # Mean equity return over the FIRST five years and the LAST five. This is
+    # what makes sequence risk visible: two paths with the same average return
+    # over thirty-five years end in very different places depending on which
+    # end the bad years sat, because a drawdown early is compounded by every
+    # withdrawal that follows it.
+    _k = min(5, len(eq))
     return (r["corpus"], r["tax"], r["liq_tax"], r["cover_end"],
-            r["shortfall"], r["first_shortfall_fy"], seed)
+            r["shortfall"], r["first_shortfall_fy"], seed,
+            sum(eq[:_k]) / _k, sum(eq[-_k:]) / _k)
 
 
 def _mc_progress(done, total, t0, width=32):
@@ -2956,6 +2986,11 @@ def main():
     ap.add_argument("--horizon", type=int, default=None,
                     help=f"years to model (default {HORIZON}). Ignored if "
                          f"--dob is given.")
+    ap.add_argument("--emergency_shock", "--emergency-shock", default=None,
+                    metavar="AMOUNT/FY",
+                    help="a one-off capital drain, e.g. 80/15 for 80 lakh in "
+                         "FY15. Added to that year's requirement and funded "
+                         "the ordinary way. Default: none.")
     ap.add_argument("--dob", default=None, metavar="YYYY-MM-DD",
                     help=f"date of birth. The horizon becomes the number of "
                          f"years from the START OF THE CURRENT FINANCIAL YEAR "
@@ -3295,6 +3330,21 @@ def main():
                   f"away.")
         globals()["DEBT_FLOOR_MULTIPLES"] = tuple(parts)
 
+    if a.emergency_shock:
+        _parts = a.emergency_shock.replace(",", "/").split("/")
+        if len(_parts) != 2:
+            sys.exit(f"FATAL: --emergency_shock takes AMOUNT/FY, e.g. 80/15. "
+                     f"Got {a.emergency_shock!r}.")
+        try:
+            _amt, _sfy = float(_parts[0]), int(_parts[1])
+        except ValueError:
+            sys.exit(f"FATAL: --emergency_shock takes AMOUNT/FY, e.g. 80/15. "
+                     f"Got {a.emergency_shock!r}.")
+        if _amt <= 0:
+            sys.exit(f"FATAL: --emergency_shock amount must be positive. "
+                     f"Got {_amt}.")
+        globals()["EMERGENCY_SHOCK"] = (_amt, _sfy)
+
     if a.dob:
         try:
             _y, _m, _d = (int(p) for p in a.dob.replace("/", "-").split("-"))
@@ -3455,6 +3505,31 @@ def main():
                   f"{_pct([x[4] for x in _ruined], 0.5):.1f}.")
         else:
             print(f"RUIN: none of {_n} paths failed to fund the requirement.")
+        # ---- SEQUENCE OF RETURNS ------------------------------------------
+        # Split the same paths by WHEN the bad years landed rather than by how
+        # bad they were overall. Worst quintile of the first five years
+        # against worst quintile of the last five: same sample, same mean
+        # return distribution, and the difference between the two rows is
+        # sequence risk with everything else held constant.
+        _early = sorted(_res, key=lambda t: t[7])[:max(1, _n // 5)]
+        _late = sorted(_res, key=lambda t: t[8])[:max(1, _n // 5)]
+        print("SEQUENCE OF RETURNS -- the worst fifth of paths, "
+              "by WHEN the bad years fell")
+        print(f"{'':>22}{'p5':>10}{'p50':>10}{'mean':>10}{'ruin':>8}"
+              f"{'cover p5':>10}")
+        print("-" * 70)
+        for _label, _grp in (("bad START (first 5y)", _early),
+                             ("bad END (last 5y)", _late)):
+            _c = [x[0] for x in _grp]
+            _r = sum(1 for x in _grp if x[4] > PLAN_TOL)
+            print(f"{_label:>22}{_pct(_c, 0.05):>10.1f}{_pct(_c, 0.5):>10.1f}"
+                  f"{sum(_c) / len(_c):>10.1f}"
+                  f"{_r / len(_grp):>7.1%}"
+                  f"{_pct([x[3] for x in _grp], 0.05):>10.1f}")
+        print("Same paths, same return distribution, only the ORDER differs. "
+              "A gap here is")
+        print("sequence risk; no gap means this plan's debt floor is already "
+              "absorbing it.\n")
         print("\nRead p5 first. The median path is not the plan you are "
               "buying insurance against.")
         print(f"{_n} paths on {_w} worker(s) in {_el:.1f}s "
