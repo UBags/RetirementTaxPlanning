@@ -80,6 +80,42 @@ def test_112a_gain_disqualifies_the_rebate_on_ordinary_income():
     )
 
 
+def test_87a_relief_with_capital_gains_reproduces_all_three_cases():
+    """The published example that HAS capital gains in it.
+
+    Every earlier reference demonstrated marginal relief on pure slab income,
+    which left one question open: whether the EXCESS is measured on total
+    income or on slab income alone. This source answers it. FY24-25 ladder --
+    3.00 basic, 7.00 ceiling, s.112A at 10% over a 1.00 exemption -- with 2.00
+    of taxable gain throughout:
+
+        at the threshold   slab 5.00, total 7.00: rebate holds, slab tax nil
+        just past it       slab 5.05, total 7.05: gross slab 0.1025, capped at
+                           the 0.05 EXCESS OF TOTAL INCOME, not of slab income
+        relief expired     slab 5.20, total 7.20: excess 0.20 exceeds the
+                           gross slab tax, so the full 0.11 is payable
+
+    In all three the s.112A tax of 0.20 is untouched: s.112A(6) puts it outside
+    the rebate and outside the relief.
+    """
+    for slab, expect_slab in ((5.00, 0.0), (5.05, 0.05), (5.20, 0.11)):
+        got = M.personal_tax(slab, 7.0, 3.0, 2.0)
+        assert got == pytest.approx(expect_slab * M.CESS, abs=1e-6), (
+            f"slab income {slab} with 2.00 of s.112A gain: got {got:.4f}, "
+            f"published {expect_slab * M.CESS:.4f}"
+        )
+        ltcg = M.equity_tax(3.0, 1.0, 0.10, slab, 7.0, 3.0)
+        assert ltcg == pytest.approx(0.20 * M.CESS, abs=1e-6), (
+            f"s.112A tax moved to {ltcg:.4f}; it is outside the rebate and "
+            f"outside the relief and must not"
+        )
+    total = (M.personal_tax(5.05, 7.0, 3.0, 2.0)
+             + M.equity_tax(3.0, 1.0, 0.10, 5.05, 7.0, 3.0))
+    assert total == pytest.approx(0.26, abs=1e-6), (
+        f"the published total is 0.26 including cess; got {total:.4f}"
+    )
+
+
 def test_huf_never_gets_the_rebate():
     """s.87A is for a resident INDIVIDUAL. An HUF pays from the nil band up."""
     assert M.huf_tax(12.0, 4.0) > 0.5

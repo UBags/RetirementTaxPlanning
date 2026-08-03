@@ -1263,10 +1263,15 @@ def personal_tax(slab_income, exempt_ceiling, basic_exemption=BRACKET_WIDTH,
     excess on slab income alone would give MORE relief, and it bites only in
     the narrow band just above the ceiling.
 
-    NOT DIRECTLY AUTHORITY-BACKED, and worth saying so. The inclusion of
-    s.112A gain in the THRESHOLD is settled; that the same total drives the
-    EXCESS follows by consistency rather than from a worked example anyone has
-    published. If a return is ever filed in that band, check it.
+    SETTLED, against a worked example that HAS capital gains in it -- which is
+    what every earlier reference was missing. Slab income 5.05 with 2.00 of
+    taxable s.112A gain, on the FY24-25 ladder with a 7.00 ceiling: total
+    income 7.05, excess 0.05, gross slab tax 0.1025, and the slab bill capped
+    at the excess to give 0.05. The s.112A tax of 0.20 is untouched by the
+    relief, so the whole bill is 0.26 including cess. All three of that
+    source's cases -- at the threshold, just past it, and past the point where
+    relief expires -- reproduce here to the paisa, and the case is pinned in
+    tests/test_swp_tax_engine.py.
 
     Rebate and surcharge can never both apply: the ceiling reaches 20 on the
     projected ladder and the first surcharge threshold is 50.
@@ -3193,6 +3198,32 @@ def _echo_invocation(a):
         else:
             line += " " + p
     print(line)
+    print()
+    print("the sweeps and stress runs available, each taking every parameter "
+          "above:")
+    print("  --sweep                      scenario x horizon x vintage rule, "
+          "one deterministic")
+    print("                               run per cell")
+    print("  --conservative_sweep         conservative weightage x realised "
+          "equity CAGR, with")
+    print("                               corpus, tax and years of cover per "
+          "cell. Parallel.")
+    print("  --rate_regime_stress_test    flat debt rates from 7.0% down, "
+          "chunking and turnover")
+    print("                               switched off so the rate is the "
+          "only thing moving")
+    print("  --monte_carlo [N]            N sampled return paths, 500 if "
+          "bare, with percentiles,")
+    print("                               a ruin count and a "
+          "sequence-of-returns split. Parallel.")
+    print("  --liquidation_years N        spread the closing wind-down over "
+          "N years instead of one")
+    print("  --emergency_shock AMT/FY     a one-off capital drain, e.g. "
+          "80/15")
+    print("  --mc_csv PATH                one row per Monte Carlo path, "
+          "ordered by seed, so two")
+    print("                               runs on the same --mc_seed can be "
+          "differenced")
     print()
 
 
