@@ -459,6 +459,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import datetime
 import multiprocessing
 import random
 import sys
@@ -592,6 +593,9 @@ CONSERVATIVE_WEIGHT = 0.6     # 0.0 = score purely at the modelled rates,
 N_BASE_FUNDS = 21
 TURNOVER = (1.0 / 3.0, 1.0 / 3.0)
 
+PLAN_TO_AGE = 90            # what --dob models to. Not a life expectancy --
+                            # a plan that runs out at the median age fails half
+                            # the time, so this is deliberately past it.
 MAX_HORIZON = 60            # the statutory ladders are projected only as far
                             # as LADDER_PROJECTED_YEARS (computed below, once
                             # the blocks exist) and are frozen at their last
@@ -2837,6 +2841,22 @@ def _mc_progress(done, total, t0, width=32):
               file=sys.stderr)
 
 
+def _cw_run(job):
+    """One (weightage, realised equity rate) cell of the conservative sweep.
+
+    Top level so multiprocessing can pickle it. The 49 cells are independent
+    of one another for exactly the reason the Monte Carlo paths are, so the
+    same pool does the job -- the only difference is that each cell sets two
+    globals rather than a sampled path.
+    """
+    weight, eq, scenario, horizon, cap, vintage, no_vintage = job
+    globals()["CONSERVATIVE_WEIGHT"] = weight
+    globals()["EQUITY_RETURN"] = eq
+    r = simulate(scenario, horizon, cap, vintage_every=vintage,
+                 no_vintage=no_vintage)
+    return weight, eq, r["corpus"], r["tax"], r["liq_tax"], r["cover_end"]
+
+
 def _pct(vals, q):
     """Nearest-rank percentile. No interpolation: with 100 paths an
     interpolated p5 invents a number no path actually produced."""
@@ -2933,7 +2953,14 @@ def _echo_invocation(a):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--scenario", default="2chunk", choices=sorted(SCENARIO_NAMES))
-    ap.add_argument("--horizon", type=int, default=HORIZON)
+    ap.add_argument("--horizon", type=int, default=None,
+                    help=f"years to model (default {HORIZON}). Ignored if "
+                         f"--dob is given.")
+    ap.add_argument("--dob", default=None, metavar="YYYY-MM-DD",
+                    help=f"date of birth. The horizon becomes the number of "
+                         f"years from the START OF THE CURRENT FINANCIAL YEAR "
+                         f"to age {PLAN_TO_AGE}, so the plan is modelled to "
+                         f"that age and no further. Overrides --horizon.")
     ap.add_argument("--max_folios", "--max-folios", "--cap",
                     type=int, default=MAX_FOLIOS, dest="max_folios",
                     help="maximum debt cohorts per purse")
@@ -3268,6 +3295,35 @@ def main():
                   f"away.")
         globals()["DEBT_FLOOR_MULTIPLES"] = tuple(parts)
 
+    if a.dob:
+        try:
+            _y, _m, _d = (int(p) for p in a.dob.replace("/", "-").split("-"))
+            _born = datetime.date(_y, _m, _d)
+        except (ValueError, TypeError):
+            sys.exit(f"FATAL: --dob must be YYYY-MM-DD. Got {a.dob!r}.")
+        # Age at the START of the current Indian financial year, which begins
+        # on 1 April. A plan is modelled in whole financial years, so this is
+        # the only anchor that makes the horizon an integer without inventing
+        # a part-year.
+        _today = datetime.date.today()
+        _fy_start = datetime.date(_today.year if _today.month >= 4
+                                  else _today.year - 1, 4, 1)
+        _age = (_fy_start.year - _born.year
+                - ((_fy_start.month, _fy_start.day)
+                   < (_born.month, _born.day)))
+        if _age < 0:
+            sys.exit(f"FATAL: --dob {a.dob} is in the future.")
+        if _age >= PLAN_TO_AGE:
+            sys.exit(f"FATAL: --dob {a.dob} gives an age of {_age} at "
+                     f"FY start, which is already {PLAN_TO_AGE} or more. "
+                     f"There is no horizon left to model.")
+        a.horizon = PLAN_TO_AGE - _age
+        if not a.quiet:
+            print(f"--dob {a.dob}: age {_age} at the start of FY"
+                  f"{_fy_start.year}-{(_fy_start.year + 1) % 100:02d}, so the "
+                  f"horizon is {a.horizon} years to age {PLAN_TO_AGE}.")
+    if a.horizon is None:
+        a.horizon = HORIZON
     if a.horizon < MIN_HORIZON:
         sys.exit(f"FATAL: --horizon {a.horizon} is below the minimum of "
                  f"{MIN_HORIZON}.")
@@ -3419,14 +3475,29 @@ def main():
         print("parameter is as printed above; only the REALISED equity CAGR")
         print("moves across the columns.\n")
         _res = {}
-        for _w in _ws:
-            globals()["CONSERVATIVE_WEIGHT"] = _w
-            for _eq in _eqs:
-                globals()["EQUITY_RETURN"] = _eq
-                _res[(_w, _eq)] = simulate(
-                    a.scenario, a.horizon, a.max_folios,
-                    vintage_every=a.vintage, no_vintage=a.no_vintage)
+        _cw_jobs = [(_w, _eq, a.scenario, a.horizon, a.max_folios,
+                     a.vintage, a.no_vintage)
+                    for _w in _ws for _eq in _eqs]
+        _cw_workers = a.mc_workers or max(
+            1, (multiprocessing.cpu_count() or 2) // 2)
+        _t0cw = time.time()
+        if _cw_workers > 1 and len(_cw_jobs) > 1:
+            with multiprocessing.Pool(_cw_workers) as _pool:
+                for _done, _one in enumerate(
+                        _pool.imap_unordered(_cw_run, _cw_jobs, chunksize=1), 1):
+                    _res[(_one[0], _one[1])] = dict(
+                        corpus=_one[2], tax=_one[3], liq_tax=_one[4],
+                        cover_end=_one[5])
+                    _mc_progress(_done, len(_cw_jobs), _t0cw)
+        else:
+            for _done, _job in enumerate(_cw_jobs, 1):
+                _one = _cw_run(_job)
+                _res[(_one[0], _one[1])] = dict(
+                    corpus=_one[2], tax=_one[3], liq_tax=_one[4],
+                    cover_end=_one[5])
+                _mc_progress(_done, len(_cw_jobs), _t0cw)
         globals()["EQUITY_RETURN"], globals()["CONSERVATIVE_WEIGHT"] = _true, _tw
+        _cw_el = time.time() - _t0cw
         for _title, _key, _wd, _p in (("END CORPUS", "corpus", 10, 1),
                                      ("LIFETIME TAX", "tax", 10, 3),
                                      ("YEARS OF COVER AT HORIZON",
@@ -3446,6 +3517,8 @@ def main():
         print("number that says whether it ran aground. A weightage that")
         print("gives up a little in the 12.5% and 14% columns to buy cover in")
         print("the 7% and 8% ones is the trade this sweep exists to price.")
+        print(f"{len(_cw_jobs)} cells on {_cw_workers} worker(s) in "
+              f"{_cw_el:.1f}s.")
         return 0
 
     if a.sweep:
