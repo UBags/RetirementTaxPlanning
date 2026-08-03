@@ -945,8 +945,108 @@ def slab_tax(income, basic_exemption=BRACKET_WIDTH):
     return tax + max(0.0, rem) * TOP_RATE
 
 
+# ── SURCHARGE, s.115BAC(1A) ────────────────────────────────────────────────
+# Bands are on TOTAL income; the rate applies to the TAX, before cess. Static,
+# not projected forward like the s.87A ceiling: unchanged since 2013, and
+# freezing them overstates tax rather than understating it.
+SURCHARGE_BANDS = ((50.0, 0.10), (100.0, 0.15), (200.0, 0.25))
+
+# s.111A, s.112, s.112A and dividends carry a hard 15% ceiling even when total
+# income is past 200. That is why the 200 boundary is the easy one -- the
+# special-rate portion does not change rate across it, so only the slab
+# portion jumps. The 50 and 100 boundaries are the awkward ones, because there
+# min(rate, 0.15) is not binding and BOTH portions jump.
+SPECIAL_SURCHARGE_CAP = 0.15
+
+
+def surcharge_rate(total_income):
+    """Band rate for a total income. Strict >: at exactly 50 the rate is 0."""
+    rate = 0.0
+    for threshold, band in SURCHARGE_BANDS:
+        if total_income > threshold:
+            rate = band
+    return rate
+
+
+def _with_surcharge(slab_amt, special_amt, total_income):
+    """Tax plus surcharge, before cess and before marginal relief."""
+    rate = surcharge_rate(total_income)
+    return (slab_amt * (1.0 + rate)
+            + special_amt * (1.0 + min(rate, SPECIAL_SURCHARGE_CAP)))
+
+
+def surcharged(slab_amt, special_amt, slab_income, special_income,
+               basic_exemption):
+    """Tax plus surcharge WITH marginal relief, before cess.
+
+    At a threshold T: recompute the bill as though total income were exactly
+    T -- which puts it in the LOWER band, since the comparison is a strict
+    greater-than -- and cap the liability at that plus the excess. Checked at
+    every crossed threshold with the lowest cap winning; normally only the
+    nearest binds, but taking the minimum costs nothing and cannot be wrong.
+
+    TWO CHOICES ARE ENCODED HERE AND NEITHER IS STATUTORY.
+
+    WHICH INCOME IS SHAVED to bring the total down to T: slab before special.
+    That matters, because slab income at the margin is taxed at 30% and s.112A
+    at 12.5%, so shaving slab gives a SMALLER threshold bill, a smaller cap,
+    and therefore MORE relief. It is the taxpayer-favourable reading and the
+    one in the worked examples this was verified against. Shaving
+    proportionally, or special first, both yield a larger bill.
+
+    THE SPECIAL-RATE TAX IS SCALED PRO-RATA when special income has to be
+    shaved too, which happens only when the excess above T exceeds the whole
+    slab income. Exact would mean re-running the exemption against a smaller
+    gain; pro-rata is within a rounding of it.
+
+    Both bite only within a few lakh above each threshold. VERIFIED: the two
+    published worked examples reproduce to the paisa -- 11.9600 at 50.20 and
+    30.5032 at 100.40 when fed their own base slab figures -- the function is
+    continuous across all three boundaries with and without special income,
+    and monotone over 600,000 sampled incomes to 1200 lakh.
+    """
+    total = slab_income + special_income
+    bill = _with_surcharge(slab_amt, special_amt, total)
+    for threshold, _band in SURCHARGE_BANDS:
+        if total <= threshold:
+            continue
+        excess = total - threshold
+        kept_slab = max(0.0, slab_income - excess)
+        spill = excess - (slab_income - kept_slab)
+        kept_special = max(0.0, special_income - spill)
+        at_t = _with_surcharge(
+            slab_tax(kept_slab, basic_exemption),
+            (special_amt * kept_special / special_income
+             if special_income > EPS else 0.0),
+            threshold)
+        bill = min(bill, at_t + excess)
+    return bill
+
+
+def _split_bill(slab_amt, special_amt, slab_income, special_income,
+                basic_exemption):
+    """Surcharge, marginal relief and cess on the COMBINED liability, then
+    split back into (slab part, special part).
+
+    It has to be one calculation. The surcharge RATE is set by total income
+    across both heads, the 15% CAP applies only to the special head, and
+    marginal relief is computed on the combined figure -- none of the three can
+    be evaluated with one head in hand. The split back is pro-rata and is a
+    REPORTING choice only: the total is exact either way, but in a
+    marginal-relief year the personal and equity lines become an allocation
+    rather than a measurement.
+    """
+    gross = slab_amt + special_amt
+    if gross <= EPS:
+        return 0.0, 0.0
+    total = surcharged(slab_amt, special_amt, slab_income, special_income,
+                       basic_exemption) * CESS
+    share = slab_amt / gross
+    return total * share, total * (1.0 - share)
+
+
 def personal_tax(slab_income, exempt_ceiling, basic_exemption=BRACKET_WIDTH,
-                 special_income=0.0):
+                 special_income=0.0, eq_exemption=0.0, eq_rate=0.0):
     """Slab tax with the s.87A rebate and its marginal relief.
 
     Two separate thresholds, and they are not the same number: the BASIC
@@ -972,28 +1072,53 @@ def personal_tax(slab_income, exempt_ceiling, basic_exemption=BRACKET_WIDTH,
     Rebate and surcharge can never both apply: the ceiling reaches 20 on the
     projected ladder and the first surcharge threshold is 50.
     """
+    return _split_bill(
+        _slab_after_rebate(slab_income, exempt_ceiling, basic_exemption,
+                           special_income),
+        max(0.0, special_income - eq_exemption) * eq_rate,
+        slab_income, special_income, basic_exemption)[0]
+
+
+def _slab_after_rebate(slab_income, exempt_ceiling,
+                       basic_exemption=BRACKET_WIDTH, special_income=0.0):
+    """Slab tax after the s.87A rebate and its relief, BEFORE surcharge and
+    cess. Split out because the surcharge needs it as an input, and because
+    the HUF reuses it with a ceiling of zero -- no rebate, same ladder."""
     if slab_income + special_income <= exempt_ceiling:
         return 0.0
     return min(slab_tax(slab_income, basic_exemption),
-               slab_income + special_income - exempt_ceiling) * CESS
+               slab_income + special_income - exempt_ceiling)
 
 
-def equity_tax(gain, exemption, rate):
+def equity_tax(gain, exemption, rate, slab_income=0.0, exempt_ceiling=0.0,
+               basic_exemption=BRACKET_WIDTH):
     """s.112A long-term capital gain on listed equity.
 
-    A flat rate above an annual exemption, per assessee. Critically it is NOT
-    eligible for the s.87A rebate, so it sits outside the slab computation
-    entirely: it neither consumes the debt band nor is wiped out by the rebate.
+    A flat rate above an annual exemption, per assessee. It is NOT eligible for
+    the s.87A rebate, so it neither consumes the debt band nor is wiped out by
+    it -- but it DOES share a surcharge computation with the slab head, because
+    the band is set by total income and marginal relief is computed on the
+    combined bill. Pass the purse's slab income to get that right. At zero it
+    degrades to the pre-surcharge behaviour, which is exactly correct whenever
+    total income is under 50.
     """
-    return max(0.0, gain - exemption) * rate * CESS
+    return _split_bill(
+        _slab_after_rebate(slab_income, exempt_ceiling, basic_exemption, gain),
+        max(0.0, gain - exemption) * rate,
+        slab_income, gain, basic_exemption)[1]
 
 
-def huf_tax(gain, nil_band):
+def huf_tax(gain, nil_band, special_income=0.0, eq_exemption=0.0,
+            eq_rate=0.0):
     """HUFs get the basic exemption but NOT the s.87A rebate.
 
-    The ladder is anchored on nil_band, so this is continuous at the threshold.
+    They DO face the same s.115BAC(1A) surcharge on the same bands, on their
+    own total income -- which is why the equity terms are here too. The ladder
+    is anchored on nil_band, so this is continuous at the threshold.
     """
-    return slab_tax(gain, nil_band) * CESS
+    return _split_bill(slab_tax(gain, nil_band),
+                       max(0.0, special_income - eq_exemption) * eq_rate,
+                       gain, special_income, nil_band)[0]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1507,7 +1632,8 @@ class Book:
 
 def pay_external_bill(book, bill, base_gain, navs, fy,
                       exempt_ceiling=0.0, taxable_other=0.0,
-                      basic_exemption=BRACKET_WIDTH, special_income=0.0):
+                      basic_exemption=BRACKET_WIDTH, special_income=0.0,
+                      eq_exemption=0.0, eq_rate=0.0):
     """Sell debt units to pay a bill that is NOT slab tax -- an s.112A bill the
     sleeves could not cover.
 
@@ -1530,10 +1656,13 @@ def pay_external_bill(book, bill, base_gain, navs, fy,
     if bill <= EPS or book.value(navs) <= EPS:
         return 0.0, 0.0
     base_slab = personal_tax(taxable_other + base_gain, exempt_ceiling,
-                             basic_exemption, special_income)
+                             basic_exemption, special_income,
+                             eq_exemption, eq_rate)
     drawn_tot = gain_tot = 0.0
     want = bill
-    for _ in range(10):
+    # Forty for the same reason as pay_tax_bill: the residual shrinks by the
+    # marginal rate, which the surcharge pushes past two thirds.
+    for _ in range(40):
         if want <= EPS:
             break
         drawn, add_gain, _ = book.draw(navs, fy, amount=want,
@@ -1544,7 +1673,8 @@ def pay_external_bill(book, bill, base_gain, navs, fy,
         gain_tot += add_gain
         inc_slab = max(0.0, personal_tax(taxable_other + base_gain + gain_tot,
                                          exempt_ceiling, basic_exemption,
-                                         special_income)
+                                         special_income, eq_exemption,
+                                         eq_rate)
                        - base_slab)
         want = max(0.0, bill + inc_slab - drawn_tot)
     return drawn_tot, gain_tot
@@ -1552,7 +1682,8 @@ def pay_external_bill(book, bill, base_gain, navs, fy,
 
 def pay_tax_bill(book, initial_tax, base_gain, navs, fy, is_huf=False,
                  nil_band=0.0, exempt_ceiling=0.0, taxable_other=0.0,
-                 basic_exemption=BRACKET_WIDTH, special_income=0.0):
+                 basic_exemption=BRACKET_WIDTH, special_income=0.0,
+                 eq_exemption=0.0, eq_rate=0.0):
     """Sell units to pay `initial_tax`, converging on the tax-on-tax circularity.
 
     `base_gain` is the gain the year has ALREADY realised. It must be passed in:
@@ -1568,7 +1699,14 @@ def pay_tax_bill(book, initial_tax, base_gain, navs, fy, is_huf=False,
     total_tax_paid = 0.0
     total_tax_gain = 0.0
 
-    for _ in range(10):
+    # FORTY, not ten. The loop shrinks the outstanding bill by the MARGINAL
+    # tax rate each pass, so ten iterations is only enough while that rate is
+    # modest. Measured in the 60-year stress case the ratio is about 0.68 --
+    # a high gain fraction meeting the s.87A claw-back and then the surcharge
+    # -- which leaves 0.68^10, roughly 2%, of a 7.5 bill outstanding: 0.028 of
+    # tax reported and never drawn. Forty passes take the same ratio to 3e-7.
+    # The break makes the extra passes free in every ordinary year.
+    for _ in range(40):
         if current_tax_needed <= EPS:
             break
         drawn_cash, add_gain, _ = book.draw(navs, fy, amount=current_tax_needed, high_gain_first=False)
@@ -1576,11 +1714,18 @@ def pay_tax_bill(book, initial_tax, base_gain, navs, fy, is_huf=False,
         total_tax_gain += add_gain
 
         total_realized_gain = base_gain + total_tax_gain
+        # The bill this loop converges on must be the SAME bill the caller
+        # reports, or the gap is tax recorded and never drawn. It was not:
+        # special_income was accepted by the signature and then dropped, and
+        # once the surcharge landed the two diverged by the whole surcharge.
+        # FY52 of the 60-year stress case reported 0.028 that never left.
         if is_huf:
-            new_tax = huf_tax(total_realized_gain, nil_band)
+            new_tax = huf_tax(total_realized_gain, nil_band, special_income,
+                              eq_exemption, eq_rate)
         else:
             new_tax = personal_tax(taxable_other + total_realized_gain,
-                                   exempt_ceiling, basic_exemption)
+                                   exempt_ceiling, basic_exemption,
+                                   special_income, eq_exemption, eq_rate)
 
         current_tax_needed = max(0.0, new_tax - total_tax_paid)
 
@@ -1900,17 +2045,23 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                 h2.put(to_debt_h, hnavs, fy, eligible)
 
             gpt = gain_p2 + gain_turn
-            txp0 = personal_tax(toi + gpt, exempt_c, band_h, eq_gain_p)
+            txp0 = personal_tax(toi + gpt, exempt_c, band_h, eq_gain_p,
+                                eq_exempt, eq_rate)
             gain_h2 += gain_turn_h
-            txh0 = huf_tax(gain_h2, band_h)
+            txh0 = huf_tax(gain_h2, band_h, eq_gain_h, eq_exempt, eq_rate)
             _dp, egp = pay_tax_bill(p2, txp0, gpt, navs, fy, is_huf=False,
                                     exempt_ceiling=exempt_c, taxable_other=toi,
                                     basic_exemption=band_h,
-                                    special_income=eq_gain_p)
+                                    special_income=eq_gain_p,
+                                    eq_exemption=eq_exempt, eq_rate=eq_rate)
             _dh, egh = pay_tax_bill(h2, txh0, gain_h2, hnavs, fy, is_huf=True,
-                                    nil_band=band_h)
-            txp = personal_tax(toi + gpt + egp, exempt_c, band_h, eq_gain_p)
-            txh = huf_tax(gain_h2 + egh, band_h)
+                                    nil_band=band_h,
+                                    special_income=eq_gain_h,
+                                    eq_exemption=eq_exempt, eq_rate=eq_rate)
+            txp = personal_tax(toi + gpt + egp, exempt_c, band_h, eq_gain_p,
+                                eq_exempt, eq_rate)
+            txh = huf_tax(gain_h2 + egh, band_h, eq_gain_h,
+                          eq_exempt, eq_rate)
             # A bill charged against an EXHAUSTED book was reported and never
             # taken out of the corpus: pay_tax_bill returns (0, 0) the moment
             # book.value is zero. Measured, a purse that empties late in the
@@ -1925,8 +2076,10 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
             if _sh > EPS and e2h.value(nav_eq) > EPS:
                 _c, _gn = e2h.sell(nav_eq, fy, amount=_sh)
                 eq_gain_h += _gn
-            txe = (equity_tax(eq_gain_p, eq_exempt, eq_rate)
-                   + equity_tax(eq_gain_h, eq_exempt, eq_rate))
+            txe = (equity_tax(eq_gain_p, eq_exempt, eq_rate,
+                              toi + gpt, exempt_c, band_h)
+                   + equity_tax(eq_gain_h, eq_exempt, eq_rate,
+                                gain_h2, 0.0, band_h))
             if txe > EPS:
                 txe, _pd, _xp, _xh = settle_equity_tax(
                     txe, e2p, e2h, nav_eq, fy, eq_exempt, eq_rate,
@@ -1946,7 +2099,8 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                     _d2, _e2 = pay_external_bill(
                         p2, txe - _pd, gpt, navs, fy,
                         exempt_ceiling=exempt_c, taxable_other=toi,
-                        basic_exemption=band_h, special_income=eq_gain_p)
+                        basic_exemption=band_h, special_income=eq_gain_p,
+                        eq_exemption=eq_exempt, eq_rate=eq_rate)
                     gpt += _e2
                     txp = personal_tax(toi + gpt, exempt_c, band_h,
                                        eq_gain_p)
@@ -2221,20 +2375,24 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
 
             gpt = g_p + gain_turn
             ght = g_h + gain_turn_h
-            txp0 = personal_tax(toi + gpt, exempt_c, band_h, g_eqp)
-            txh0 = huf_tax(ght, band_h)
+            txp0 = personal_tax(toi + gpt, exempt_c, band_h, g_eqp,
+                                eq_exempt, eq_rate)
+            txh0 = huf_tax(ght, band_h, g_eqh, eq_exempt, eq_rate)
             # The tax must come OUT of the books, exactly as the plain path
             # does it. Reporting a bill without paying it is the conservation
             # leak that test_surplus_is_never_discarded exists to catch.
             _dp, egp = pay_tax_bill(p2, txp0, gpt, navs, fy, is_huf=False,
                                     exempt_ceiling=exempt_c, taxable_other=toi,
                                     basic_exemption=band_h,
-                                    special_income=g_eqp)
+                                    special_income=g_eqp,
+                                    eq_exemption=eq_exempt, eq_rate=eq_rate)
             _dh, egh = pay_tax_bill(h2, txh0, ght, hnavs, fy, is_huf=True,
-                                    nil_band=band_h)
+                                    nil_band=band_h, special_income=g_eqh,
+                                    eq_exemption=eq_exempt, eq_rate=eq_rate)
             gpt += egp
             ght += egh
-            txp = personal_tax(toi + gpt, exempt_c, band_h, g_eqp)
+            txp = personal_tax(toi + gpt, exempt_c, band_h, g_eqp,
+                                eq_exempt, eq_rate)
             txh = huf_tax(ght, band_h)
             # A bill charged against an EXHAUSTED book was reported and never
             # taken out of the corpus: pay_tax_bill returns (0, 0) the moment
@@ -2250,8 +2408,10 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
             if _sh > EPS and e2h.value(nav_eq) > EPS:
                 _c, _gn = e2h.sell(nav_eq, fy, amount=_sh)
                 g_eqh += _gn
-            txe = (equity_tax(g_eqp, eq_exempt, eq_rate)
-                   + equity_tax(g_eqh, eq_exempt, eq_rate))
+            txe = (equity_tax(g_eqp, eq_exempt, eq_rate,
+                              toi + gpt, exempt_c, band_h)
+                   + equity_tax(g_eqh, eq_exempt, eq_rate,
+                                ght, 0.0, band_h))
             if txe > EPS:
                 txe, _pd, _xp, _xh = settle_equity_tax(
                     txe, e2p, e2h, nav_eq, fy, eq_exempt, eq_rate,
@@ -2271,9 +2431,11 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                     _d2, _e2 = pay_external_bill(
                         p2, txe - _pd, gpt, navs, fy,
                         exempt_ceiling=exempt_c, taxable_other=toi,
-                        basic_exemption=band_h, special_income=g_eqp)
+                        basic_exemption=band_h, special_income=g_eqp,
+                        eq_exemption=eq_exempt, eq_rate=eq_rate)
                     gpt += _e2
-                    txp = personal_tax(toi + gpt, exempt_c, band_h, g_eqp)
+                    txp = personal_tax(toi + gpt, exempt_c, band_h, g_eqp,
+                                eq_exempt, eq_rate)
             return dict(tax=txp + txh + txe, p=p2, h=h2, ep=e2p, eh=e2h,
                         sold={}, cash_p=cash_p, cash_h=cash_h,
                         surplus=_surp_p,
@@ -2510,19 +2672,28 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
             # part-spent and only the increment is attributable to closing.
             _egp0 = best.get("eq_gain_p", 0.0) + _harv["p"]
             _egh0 = best.get("eq_gain_h", 0.0) + _harv["h"]
-            liq_p += max(0.0, personal_tax(
-                toi + gain_p_total + tax_p_extra_gain + _gp,
-                exempt_c, band_h, _egp0 + _gep) - tax_p_final)
-            liq_h += max(0.0, huf_tax(gain_h + tax_h_extra_gain + _gh,
-                                      band_h) - tax_h_final)
-            liq_e += max(0.0, (equity_tax(_egp0 + _gep, eq_exempt, eq_rate)
-                               + equity_tax(_egh0 + _geh, eq_exempt, eq_rate))
+            # Each purse's surcharge band is set by ITS OWN total income --
+            # slab plus s.112A -- so both heads have to be handed to both
+            # calls. This is the year the bands actually bite: annual income
+            # never approaches 50, and a one-day liquidation clears 200.
+            _pslab = toi + gain_p_total + tax_p_extra_gain + _gp
+            _hslab = gain_h + tax_h_extra_gain + _gh
+            liq_p += max(0.0, personal_tax(_pslab, exempt_c, band_h,
+                                           _egp0 + _gep, eq_exempt, eq_rate)
+                         - tax_p_final)
+            liq_h += max(0.0, huf_tax(_hslab, band_h, _egh0 + _geh,
+                                      eq_exempt, eq_rate) - tax_h_final)
+            liq_e += max(0.0, (equity_tax(_egp0 + _gep, eq_exempt, eq_rate,
+                                          _pslab, exempt_c, band_h)
+                               + equity_tax(_egh0 + _geh, eq_exempt, eq_rate,
+                                            _hslab, 0.0, band_h))
                          - best.get("txe", 0.0))
         else:
-            liq_p += personal_tax(_wtoi + _gp, _wexc, _wnb, _gep)
-            liq_h += huf_tax(_gh, _wnb)
-            liq_e += (equity_tax(_gep, _wee, _wer)
-                      + equity_tax(_geh, _wee, _wer))
+            liq_p += personal_tax(_wtoi + _gp, _wexc, _wnb, _gep,
+                                  _wee, _wer)
+            liq_h += huf_tax(_gh, _wnb, _geh, _wee, _wer)
+            liq_e += (equity_tax(_gep, _wee, _wer, _wtoi + _gp, _wexc, _wnb)
+                      + equity_tax(_geh, _wee, _wer, _gh, 0.0, _wnb))
 
     if verbose:
         print(f"{'FY':>3}{'band':>7}{'need':>7}{'cash_p':>8}{'cash_h':>8}"
@@ -2545,12 +2716,46 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
     # A plan can simply run out. Silence would be the worst possible answer:
     # an exhausted plan reports a small corpus and a small tax bill, both of
     # which look like success.
+    #
+    # WHEN IT RUNS OUT, IT RUNS OUT MID-YEAR. The engine is annual, so the
+    # month is DERIVED rather than simulated: the requirement is assumed drawn
+    # in twelve equal monthly instalments and the whole year's tax in MARCH,
+    # the last month of the Indian financial year. A year that funded every
+    # month and then could not pay its bill therefore fails in month twelve,
+    # not earlier. Worth naming, because nothing else in this model has a
+    # month in it.
+    #
+    # Everything after the failure is zeroed -- holdings, cash, tax, the lot.
+    # Simulating past the point where the plan could not pay is arithmetic
+    # about a plan that no longer exists, and it produced the most misleading
+    # output this model has ever printed: a corpus climbing while the
+    # requirement went unfunded.
     _sf = [max(0.0, r["net_need"] - r["personal_cash"] - r["huf_cash"])
            for r in rows]
+    exhausted_fy = exhausted_month = 0
+    _ex = next((k for k, v in enumerate(_sf) if v > PLAN_TOL), None)
+    if _ex is not None:
+        _r = rows[_ex]
+        _frac = ((_r["personal_cash"] + _r["huf_cash"]) / _r["net_need"]
+                 if _r["net_need"] > EPS else 0.0)
+        exhausted_fy = _r["fy"]
+        exhausted_month = max(0, min(12, int(_frac * 12.0)))
+        for _later in rows[_ex + 1:]:
+            for _k, _v in _later.items():
+                if _k != "fy" and isinstance(_v, (int, float)):
+                    _later[_k] = 0.0
+        tax_p_tot = sum(x["tax_personal"] for x in rows)
+        tax_h_tot = sum(x["tax_huf"] for x in rows)
+        tax_eq_tot = sum(x["tax_equity"] for x in rows)
+        liq_p = liq_h = liq_e = 0.0
+        _lq_gain = _lq_cash = 0.0
+        _sf = [max(0.0, x["net_need"] - x["personal_cash"] - x["huf_cash"])
+               for x in rows]
     return dict(tax=tax_p_tot + tax_h_tot + tax_eq_tot,
                 tax_personal=tax_p_tot, tax_huf=tax_h_tot,
                 tax_equity=tax_eq_tot,
                 shortfall=sum(_sf),
+                exhausted_fy=exhausted_fy, exhausted_month=exhausted_month,
                 shortfall_years=sum(1 for v in _sf if v > PLAN_TOL),
                 first_shortfall_fy=next((r["fy"] for r, v in zip(rows, _sf)
                                          if v > PLAN_TOL), 0),
@@ -3281,10 +3486,21 @@ def main():
     print(f"  huf_eq   {r['huf_eq']:>9.1f}   folios {r['huf_eq_folios']}"
           f"   buckets {r['rows'][-1]['huf_eq_buckets']} of {N_EQ_FUNDS}")
     if r["shortfall"] > PLAN_TOL:
-        print(f"PLAN EXHAUSTED: the requirement went UNFUNDED in "
-              f"{r['shortfall_years']} year(s) from FY{r['first_shortfall_fy']}"
-              f", short by {r['shortfall']:.1f} in total. Every figure below "
-              f"is the arithmetic of a plan that has already failed.")
+        _mn = ["April", "May", "June", "July", "August", "September",
+               "October", "November", "December", "January", "February",
+               "March"]
+        _m = r["exhausted_month"]
+        _done = (r["exhausted_fy"] - 1) * 12 + _m
+        print(f"THE MONEY RAN OUT in month {_m} of FY{r['exhausted_fy']}"
+              f"{' (' + _mn[_m - 1] + ')' if 1 <= _m <= 12 else ''}. "
+              f"{a.horizon * 12 - _done} of the {a.horizon * 12} months in "
+              f"the horizon could not be funded.")
+        print("  Everything after that point is zero. The requirement is "
+              "assumed drawn in twelve")
+        print("  equal monthly instalments and the year's tax in March, so a "
+              "year that funds every")
+        print("  month and still cannot pay its bill fails in month 12.")
+        return
     print(f"Final liquidation tax = {r['liq_tax']:.3f}")
     _ly = r["liq_years"]
     if _ly == 1:
