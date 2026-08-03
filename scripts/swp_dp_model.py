@@ -674,6 +674,12 @@ TURNOVER = (1.0 / 3.0, 1.0 / 3.0)
 # path: a Monte Carlo draw of -30% recovers over twenty years, but capital that
 # leaves never comes back. The two failure modes are independent and the model
 # now carries both.
+# The redemption ledger costs a dictionary snapshot per phase per year, so it
+# is OPT-IN: nothing is snapshotted unless --redemption_csv asked for it. That
+# matters because the Monte Carlo runs simulate() ten thousand times and has no
+# use for the ledger.
+LEDGER_ON = False
+
 EMERGENCY_SHOCK = None
 
 # ── THE OLD REGIME ─────────────────────────────────────────────────────────
@@ -1113,7 +1119,7 @@ def _redemption_snapshot(personal, huf, eq_p, eq_h):
     return snap
 
 
-def _redemptions_between(before, after, fy, navs, nav_eq):
+def _redemptions_between(before, after, fy, navs, nav_eq, kind="plan"):
     """One row per fund that was actually redeemed this year.
 
     Price is the year's NAV for that fund, because at annual resolution a fund
@@ -1127,7 +1133,7 @@ def _redemptions_between(before, after, fy, navs, nav_eq):
             continue
         purse, fi, k = key
         nav = nav_eq if purse.endswith("equity") else navs[k]
-        rows.append(dict(fy=fy, purse=purse, folio=fi + 1,
+        rows.append(dict(fy=fy, kind=kind, purse=purse, folio=fi + 1,
                          fund=fund_identifier(k),
                          units_sold=sold, units_bought=bought, nav=nav,
                          proceeds=sold * nav, invested=bought * nav,
@@ -2164,6 +2170,28 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
         _base_r = chunk_rates(1)[0]
         _shift = (DEBT_PATH[i] - _base_r) if DEBT_PATH else 0.0
         navs = advance_navs(navs, fy, spec, nf, _shift)
+
+        def _phase(prev, kind):
+            """Close one phase of the year and open the next.
+
+            Only the phases that happen on the REAL books can be separated
+            this way: deploying an inflow, a chunk transition, and the
+            post-commit harvest. Everything the winning candidate did --
+            drawing for cash, paying tax, resetting basis, routing surplus --
+            happened on a CLONE and arrives in one substitution, so it all
+            lands under a single "plan" tag. Separating those needs the engine
+            to execute month by month rather than choose a whole year at once,
+            which is the next piece of work and not a gap in this one.
+            """
+            if not LEDGER_ON:
+                return None
+            now = _redemption_snapshot(personal, huf, eq_p, eq_h)
+            redemptions.extend(_redemptions_between(prev, now, fy, navs,
+                                                    nav_eq, kind))
+            return now
+
+        _red0 = (_redemption_snapshot(personal, huf, eq_p, eq_h)
+                 if LEDGER_ON else None)
         # The HUF holds the SAME funds at the SAME NAVs as the personal purse.
         # It is not a separate asset class with its own flat return; it is the
         # same portfolio in a second pair of hands, so it earns the per-fund
@@ -2201,6 +2229,7 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
         if EQUITY_ENABLED:
             nav_eq *= (1.0 + (EQUITY_PATH[i] if EQUITY_PATH
                               else EQUITY_RETURN))
+        _red0 = _phase(_red0, "deploy") or _red0
         eq_exempt, eq_rate = lad["eq_exempt"][i], lad["eq_rate"][i]
         # OPEN OF YEAR: after growth and inflows, before anything is sold.
         # The identity closed against this is the only check that sees value
@@ -2213,7 +2242,6 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                    + eq_p.loss() + eq_h.loss())
 
         globals()["_FY_NOW"] = fy
-        _red0 = _redemption_snapshot(personal, huf, eq_p, eq_h)
         need = lad["requirement"][i] - lad["other_income"][i]
         if EMERGENCY_SHOCK and fy == EMERGENCY_SHOCK[1]:
             # On TOP of the year's living requirement, and funded through the
@@ -2274,6 +2302,8 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                 gain_turn_h += hg
 
         band_left = max(0.0, band_p - gain_turn)
+
+        _red0 = _phase(_red0, "transition") or _red0
 
         # ---- the HUF offer, rationed over the remaining horizon ------------
         offer = 0.0
@@ -2912,6 +2942,7 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
 
         personal, huf = best["p"], best["h"]
         eq_p, eq_h = best["ep"], best["eh"]
+        _red0 = _phase(_red0, "plan") or _red0
 
         # ---- spend whatever s.112A exemption the year did not use ----------
         eq_harv_gain = 0.0
@@ -2949,9 +2980,7 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                     + eq_p.value(nav_eq) + eq_h.value(nav_eq))
         _year_load = (personal.loss() + huf.loss()
                       + eq_p.loss() + eq_h.loss()) - _l_open
-        redemptions.extend(_redemptions_between(
-            _red0, _redemption_snapshot(personal, huf, eq_p, eq_h),
-            fy, navs, nav_eq))
+        _phase(_red0, "harvest")
         rows.append(dict(
             fy=fy,
             value_open=_v_open,
@@ -3806,6 +3835,8 @@ def main():
                  f"Got {a.explore_both_tax_regimes!r}.")
     globals()["EXPLORE_BOTH_REGIMES"] = _both in ("yes", "y", "true")
 
+    globals()["LEDGER_ON"] = bool(a.redemption_csv)
+
     if a.emergency_shock:
         _parts = a.emergency_shock.replace(",", "/").split("/")
         if len(_parts) != 2:
@@ -4160,8 +4191,9 @@ def main():
     print(f"Cash in hand after liquidation = {r['liq_net']:.1f}"
           f"   (proceeds {r['liq_proceeds']:.1f} less the tax above)")
     if a.redemption_csv:
-        _rf = ["fy", "purse", "folio", "fund", "units_sold", "units_bought",
-               "nav", "proceeds", "invested", "gain", "exit_load"]
+        _rf = ["fy", "kind", "purse", "folio", "fund", "units_sold",
+               "units_bought", "nav", "proceeds", "invested", "gain",
+               "exit_load"]
         with open(a.redemption_csv, "w", newline="") as _fh:
             _w = csv.DictWriter(_fh, fieldnames=_rf)
             _w.writeheader()

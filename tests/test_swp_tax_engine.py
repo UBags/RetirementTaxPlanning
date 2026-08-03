@@ -40,7 +40,8 @@ import swp_dp_model as M  # noqa: E402,I001
 def _restore():
     """Every test here mutates module globals. Put them back."""
     keys = ("EXPLORE_BOTH_REGIMES", "ITR_TYPE", "PLAN_DOB", "_FY_NOW",
-            "EMERGENCY_SHOCK", "LIQUIDATION_YEARS", "EQUITY_ENABLED")
+            "EMERGENCY_SHOCK", "LIQUIDATION_YEARS", "EQUITY_ENABLED",
+            "LEDGER_ON")
     saved = {k: getattr(M, k) for k in keys}
     ded = {p: dict(d) for p, d in M.DEDUCTIONS.items()}
     yield
@@ -419,23 +420,93 @@ def test_the_redemption_ledger_reconciles_to_the_cash_it_raised():
     1245 on a 35-year run. A ledger with only the sells would have the reader
     redeem the gross and sit on the difference.
     """
-    r = M.simulate("3chunk", 35, M.MAX_FOLIOS, vintage_every=5)
+    M.LEDGER_ON = True
+    try:
+        r = M.simulate("3chunk", 35, M.MAX_FOLIOS, vintage_every=5)
+    finally:
+        M.LEDGER_ON = False
     red = r["redemptions"]
     assert red, "no redemptions recorded at all"
 
-    net_out = (sum(x["proceeds"] for x in red)
-               - sum(x["invested"] for x in red))
+    # DEPLOY rows are excluded, and the exclusion is the point. A later
+    # inflow -- the HUF corpus arriving at FY4 -- is an order you place, so it
+    # belongs in the instruction, but it is money entering from OUTSIDE the
+    # plan and not something the plan redeemed. Counting it would put the
+    # identity out by exactly the inflow, which is how this test first failed.
+    _live = [x for x in red if x["kind"] != "deploy"]
+    net_out = (sum(x["proceeds"] for x in _live)
+               - sum(x["invested"] for x in _live))
     accounted = (sum(x["personal_cash"] + x["huf_cash"] for x in r["rows"])
                  + r["tax"] + sum(x["exit_load"] for x in r["rows"]))
     assert net_out == pytest.approx(accounted, abs=M.PLAN_TOL), (
         f"ledger net {net_out:.4f} against cash plus tax plus load "
         f"{accounted:.4f}"
     )
+    deployed = sum(x["invested"] for x in red if x["kind"] == "deploy")
+    assert deployed == pytest.approx(sum(amt for amt, _fy in M.HUF_INFLOWS)
+                                     + sum(amt for amt, _fy
+                                           in M.PERSONAL_INFLOWS[1:]),
+                                     abs=M.PLAN_TOL), (
+        f"deploy rows total {deployed:.2f}, which does not match the inflows "
+        f"after the opening seed"
+    )
     for x in red:
         assert x["units_sold"] >= 0.0 and x["units_bought"] >= 0.0
         assert x["nav"] > 0.0
         assert x["proceeds"] == pytest.approx(x["units_sold"] * x["nav"],
                                               abs=1e-9)
+
+
+def test_the_ledger_separates_churn_from_real_outflow():
+    """SLOW. Two of the four phases must net to nothing, by construction.
+
+    The basis-reset harvest sells and rebuys at one NAV, and a chunk
+    transition moves value between funds. Both place real orders and both
+    raise NOTHING -- so their rows must net to zero. If either ever does not,
+    value is moving in a phase that is supposed to be a round trip, which is
+    the exact shape of every leak this project has had.
+
+    Only `plan` is a real outflow, and it must equal the cash raised plus the
+    tax paid plus the exit load. Someone acting on this ledger redeems the
+    gross; the phase tag is what tells them 239 of it comes straight back.
+    """
+    M.LEDGER_ON = True
+    try:
+        r = M.simulate("3chunk", 35, M.MAX_FOLIOS, vintage_every=5)
+    finally:
+        M.LEDGER_ON = False
+    red = r["redemptions"]
+    assert red, "the ledger was empty with LEDGER_ON set"
+
+    by_kind = {}
+    for x in red:
+        s_, b_ = by_kind.get(x["kind"], (0.0, 0.0))
+        by_kind[x["kind"]] = (s_ + x["proceeds"], b_ + x["invested"])
+
+    for kind in ("harvest", "transition"):
+        assert kind in by_kind, f"no {kind} rows at all"
+        sold, bought = by_kind[kind]
+        assert sold - bought == pytest.approx(0.0, abs=M.PLAN_TOL), (
+            f"{kind} moved {sold - bought:+.4f} of value; it is a round trip "
+            f"and must net to nothing"
+        )
+
+    sold, bought = by_kind["plan"]
+    accounted = (sum(x["personal_cash"] + x["huf_cash"] for x in r["rows"])
+                 + r["tax"] + sum(x["exit_load"] for x in r["rows"]))
+    assert sold - bought == pytest.approx(accounted, abs=M.PLAN_TOL), (
+        f"plan net {sold - bought:.4f} against cash plus tax plus load "
+        f"{accounted:.4f}"
+    )
+
+
+def test_the_ledger_costs_nothing_when_it_is_off():
+    """LEDGER_ON gates every snapshot, because the Monte Carlo runs simulate
+    ten thousand times and has no use for a ledger."""
+    r = M.simulate("1chunk", 30, M.MAX_FOLIOS, vintage_every=5)
+    assert r["redemptions"] == [], (
+        "redemptions were collected with LEDGER_ON false"
+    )
 
 
 def test_an_exhausted_plan_reports_when_and_zeroes_what_follows():
