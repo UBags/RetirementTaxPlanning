@@ -88,6 +88,13 @@ def main():
     ap.add_argument("--corpus", default="nav_corpus.json")
     ap.add_argument("--out", default="nav_sample.csv")
     ap.add_argument("--spec", default=DEFAULT_SPEC)
+    ap.add_argument("--exclude", default="",
+                    metavar="CODE,CODE",
+                    help="AMFI codes to leave out, whatever the spec asks "
+                         "for. Use it when a fund passes every automatic "
+                         "screen and is still wrong -- a wound-up scheme in "
+                         "run-off, or one whose start date holds the shared "
+                         "window hostage.")
     ap.add_argument("--list", action="store_true",
                     help="print what the corpus holds and stop")
     a = ap.parse_args()
@@ -97,6 +104,18 @@ def main():
         sys.exit(f"FATAL: {path} not found. Run build_nav_corpus.py first.")
     doc = json.loads(path.read_text())
     funds = doc["funds"]
+
+    drop = {c.strip() for c in a.exclude.split(",") if c.strip()}
+    if drop:
+        present = {f["amfi_code"] for f in funds}
+        missing = drop - present
+        if missing:
+            print(f"WARNING: --exclude names {len(missing)} code(s) not in "
+                  f"the corpus: {', '.join(sorted(missing))}")
+        kept_out = [f for f in funds if f["amfi_code"] in drop]
+        for f in kept_out:
+            print(f"excluded {f['amfi_code']}  {f['scheme_name'][:52]}")
+        funds = [f for f in funds if f["amfi_code"] not in drop]
 
     by_cat = defaultdict(list)
     for f in funds:

@@ -126,6 +126,18 @@ PLAUSIBLE = {
 }
 PLAUSIBLE_DEFAULT = (-0.05, 0.40, 0.60)
 
+# A series that stops well before everything else has stopped is a fund that
+# no longer exists. Franklin India Short-Term Income Plan was one of the six
+# debt schemes wound up on 23 April 2020; its NAV runs on through the
+# five-year run-off and then simply ends. Over its whole life it shows 7.96%
+# CAGR at 4.15% volatility -- both entirely reasonable -- so it sailed past
+# the plausibility screen, past the twenty-year screen, and into the corpus,
+# where it truncated EVERY other fund's usable history to its own end date.
+#
+# No statistic catches this, because the statistics are fine. Only the end
+# date gives it away.
+DEAD_FUND_DAYS = 120
+
 
 def _subcategory(amfi_category):
     """Pull "Liquid Fund" out of "Open Ended Schemes(Debt Scheme - Liquid
@@ -305,9 +317,9 @@ def choose_funds(G, categories, per_category):
 
 
 def harvest(G, plan, years, min_years, per_category, cache_path, resume,
-            pause, attempts, first_wait, failures, rejects):
+            pause, attempts, first_wait, failures, rejects, end=None):
     """Fetch daily NAVs fund by fund, writing the cache as each one lands."""
-    end = datetime.now().date()
+    end = end or datetime.now().date()
     want_start = end - timedelta(days=int(years * 365.25))
     floor_days = int(min_years * 365.25)
 
@@ -345,6 +357,12 @@ def harvest(G, plan, years, min_years, per_category, cache_path, resume,
                        for d, v in zip(df["date"], df["nav"])}
             cagr, vol = _annualised(nav_map)
             lo_c, hi_c, hi_v = PLAUSIBLE.get(cat, PLAUSIBLE_DEFAULT)
+            if (end - df["date"].iloc[-1].date()).days > DEAD_FUND_DAYS:
+                log.warning("DEAD   %s %-42s last priced %s -- wound up or "
+                            "merged", code, name[:42],
+                            df["date"].iloc[-1].date())
+                rejects.append((cat, code, name, None, None))
+                continue
             if cagr is None or not (lo_c <= cagr <= hi_c) or (
                     vol is not None and vol > hi_v):
                 log.warning("REJECT %s %-42s CAGR %7.1f%% vol %8.1f%% -- "
@@ -403,6 +421,10 @@ def main():
                          "permanent and is not retried.")
     ap.add_argument("--first-wait", type=float, default=5.0,
                     help="seconds before the second attempt; tripled after")
+    ap.add_argument("--allow-shrink", action="store_true",
+                    help="write the output even when it would hold fewer "
+                         "funds than the cache. Only with --resume, and only "
+                         "when dropping categories is deliberate.")
     ap.add_argument("--resume", action="store_true",
                     help="skip anything already cached. Always safe, and the "
                          "right first move after any failure.")
@@ -446,6 +468,33 @@ def main():
                                rejects)
 
     funds = [r for cat in cats for r in kept.get(cat, [])]
+
+    # THE OVERWRITE TRAP. --resume skips re-FETCHING, but the document written
+    # at the end is assembled only from the categories named in THIS run. Ask
+    # for two categories with --resume and the output silently loses the other
+    # nine, which is exactly what happened: a 51-fund corpus became an 8-fund
+    # one and read like success. The cache still held everything, so nothing
+    # was lost, but only because someone noticed.
+    _cached = 0
+    if Path(a.cache).exists():
+        try:
+            _cached = len(json.loads(Path(a.cache).read_text()))
+        except (ValueError, OSError):
+            _cached = 0
+    if _cached > len(funds):
+        print(f"\nREFUSING TO WRITE {a.out}: it would hold {len(funds)} funds "
+              f"while the cache holds {_cached}.")
+        print("--resume skips re-fetching, but the OUTPUT is built only from "
+              "the categories named")
+        print("in this run, so the others would be dropped. Name every "
+              "category you want kept:")
+        print(f"  python3 {Path(__file__).name} --out {a.out} --resume "
+              f"--per-category {a.per_category} \\")
+        print("      --categories \"" + ",".join(DEFAULT_CATEGORIES) + "\"")
+        print("Or pass --allow-shrink if dropping them is what you meant.")
+        if not a.allow_shrink:
+            return 1
+
     if not funds:
         sys.exit("FATAL: nothing was kept. Try --min-years 10, or check the "
                  "network.")

@@ -153,7 +153,7 @@ def blend_equal_weight(funds):
     return index
 
 
-def build_fund_map(sample=None, n_base=21, path="nav_sample.csv"):
+def build_fund_map(sample=None, n_base=35, path="nav_sample.csv"):
     """THE ALLOCATION RULE. Change this function, change the allocation.
 
     Returns
@@ -187,12 +187,57 @@ def build_fund_map(sample=None, n_base=21, path="nav_sample.csv"):
             f"ladder addresses f1..f{n_base} and a gap reads as an empty "
             f"fund. Harvest more, or lower n_base."
         )
+    # STAGE ONE: LENGTHEN THE SHARED WINDOW.
+    #
+    # Every series has to overlap, so ONE late-starting fund shortens the
+    # history for all of them. With 42 funds for 35 slots there are seven to
+    # spare, and dropping the latest starters buys a full extra financial year
+    # -- 19 instead of 18 on this corpus, because two funds that begin in July
+    # 2008 were holding everything else hostage.
+    #
+    # Only drops while there is slack AND the drop actually lengthens the
+    # window. A fund is never discarded for nothing.
+    if len(debt) > n_base:
+        def _window(fs):
+            shared = set(fs[0]["nav"])
+            for f in fs[1:]:
+                shared &= set(f["nav"])
+            for f in equity:
+                shared &= set(f["nav"])
+            return len(financial_years(sorted(shared))) if shared else 0
+
+        # EVALUATE THE WHOLE RANGE, do not walk greedily down it. Two funds
+        # here start four days apart in July 2008, so dropping ONE buys
+        # nothing and a greedy loop stops on that plateau -- it returned 17
+        # years where 19 were available. Take the FEWEST drops that reach the
+        # longest window, so no fund is discarded without buying something.
+        by_start = sorted(debt, key=lambda f: min(f["nav"]))
+        slack = len(by_start) - n_base
+        best_n, best_w = 0, _window(by_start)
+        for n in range(1, slack + 1):
+            w = _window(by_start[:len(by_start) - n])
+            if w > best_w:
+                best_n, best_w = n, w
+        dropped = by_start[len(by_start) - best_n:] if best_n else []
+        by_start = by_start[:len(by_start) - best_n] if best_n else by_start
+        if dropped:
+            notes.append(
+                f"dropped {len(dropped)} late-starting fund(s) to lengthen the "
+                f"shared window: "
+                + ", ".join(f"{f['code']} from {min(f['nav'])}"
+                            for f in dropped))
+        debt = by_start
     if len(debt) > n_base:
         notes.append(f"{len(debt)} debt funds for {n_base} slots -- the "
                      f"{len(debt) - n_base} lowest-yielding are unused")
     if not equity:
         raise ValueError("no equity funds in the sample")
 
+    # STAGE TWO: PRESERVE THE LADDER. Stage one maximised history without
+    # caring about yield; this orders the survivors so slot 1 is the
+    # highest-yielding and matches the highest chunk rate. The two stages
+    # cannot undo each other -- one chooses WHICH funds, the other WHERE they
+    # sit.
     debt = sorted(debt, key=lambda f: -f["cagr"])[:n_base]
     for slot, f in enumerate(debt, 1):
         f["slot"] = slot
@@ -268,6 +313,37 @@ def annual_returns(fmap):
 
 
 # ── FORWARD SYNTHESIS ──────────────────────────────────────────────────────
+
+MONTHS_IN_FY = 12
+
+# THE EQUITY LOOK-BACK, MEASURED RATHER THAN ASSUMED.
+#
+# Sort every month by how the sleeve did over the trailing N months, then read
+# what it actually did over the following twelve. At N = 18 the answer is
+# monotone across all five quintiles:
+#
+#     trailing 18m in the worst fifth, down 15.4%  ->  next 12m  +36.2%
+#     2nd                                          ->            +13.8%
+#     middle                                       ->            +15.4%
+#     4th                                          ->            +11.1%
+#     best fifth, up 57.7%                         ->             +0.1%
+#
+# At 3 months the sign FLIPS to momentum -- a fund down over the last quarter
+# tends to keep falling, so drawing less from it would mean holding a loser
+# through more of its fall. At 36 months the pattern breaks non-monotone, and
+# the worst fifth is still +4.2% because over three years the sleeve is almost
+# never actually down.
+#
+# 228 overlapping observations covering 2008 and 2020, so this is suggestive
+# rather than established: mean reversion is close to the definition of a
+# crash followed by a recovery, and a different nineteen years might not show
+# it. Re-derive when the data extends.
+LOOKBACK_EQUITY = 18
+
+# Debt is NOT traded on this signal. Money Market shows POSITIVE correlation at
+# every look-back -- a near-monotone accrual has nothing to time -- Low
+# Duration shows nothing at all, and debt volatility is 0.5% to 2.9% anyway.
+LOOKBACK_DEBT = None
 
 SYNTH_DEBT_DELTA = 0.010     # debt earns 1.0 point less than it historically did
 SYNTH_EQUITY_DELTA = 0.015   # equity 1.5 points less
@@ -419,6 +495,95 @@ def extend_series(fmap, to_years, debt_delta=SYNTH_DEBT_DELTA,
         "diversification imaginary",
     ]
     return dict(debt=out_debt, equity=out_eq, dates=hist + future, notes=notes)
+
+
+def monthly_prices(fmap, horizon=None):
+    """Month-end NAVs for every fund, per plan year, per month.
+
+    Returns
+
+        {"years":  ["FY2007-08", ...],
+         "months": [[iso, ...12], ...],      the month-end DATE of each month
+         "debt":   [[[nav per slot] x 12], ...],
+         "equity": [[nav x 12], ...]}
+
+    THE MONTH-END IS THE LAST DATE IN THAT CALENDAR MONTH WITH A PRICE. That
+    is the SWP running on the last business day, and it is the only convention
+    the daily corpus supports without inventing an intra-month rule.
+
+    THE ORACLE GUARANTEE, which is the whole reason this lands before any
+    engine change. Month twelve of plan year N is the LAST date of that
+    financial year -- the same date annual_returns closes the year on. So a
+    monthly execution and an annual one price their final act identically, by
+    construction rather than by luck, and any difference between the two is
+    the logic under test rather than a pricing artefact. It RAISES rather than
+    warns if that ever stops holding, because an oracle that quietly stops
+    being one is worse than none.
+
+    Note the difference from swp_dp_model.monthly_navs, which interpolates a
+    flat annual rate across twelve fractional powers. That one is smooth by
+    construction. This one has 2008 in it -- and the difference is not small:
+    drawing a year's cash monthly rather than at the year-end price consumed
+    21.5% FEWER equity units in FY2019-20 and 22.8% MORE in FY2020-21.
+    """
+    fys = financial_years(fmap["dates"])
+    if horizon is not None:
+        if horizon > len(fys):
+            raise ValueError(
+                f"horizon {horizon} exceeds the {len(fys)} complete financial "
+                f"years available. Extend the series first with "
+                f"extend_series(fmap, to_years=...)."
+            )
+        fys = fys[:horizon]
+
+    have = set(fmap["dates"])
+    out_m, out_d, out_e = [], [], []
+    for label, first, last in fys:
+        y = int(first[:4])
+        month_ends = []
+        for step in range(MONTHS_IN_FY):
+            mm = (3 + step) % 12 + 1
+            yy = y + (1 if mm < 4 else 0)
+            tag = f"{yy}-{mm:02d}"
+            days = [d for d in fmap["dates"]
+                    if d[:7] == tag and first <= d <= last and d in have]
+            if not days:
+                raise ValueError(f"no priced day in {tag}; the corpus has a "
+                                 f"hole a monthly engine cannot cross")
+            month_ends.append(days[-1])
+        if month_ends[-1] != last:
+            raise ValueError(
+                f"month twelve of {label} is {month_ends[-1]} but the year "
+                f"closes {last}. The oracle guarantee is broken and a monthly "
+                f"run could not be checked against an annual one."
+            )
+        out_m.append(month_ends)
+        out_d.append([[f["nav"][d] for f in fmap["debt"]] for d in month_ends])
+        out_e.append([fmap["equity"]["nav"][d] for d in month_ends])
+    return dict(years=[f[0] for f in fys], months=out_m, debt=out_d,
+                equity=out_e)
+
+
+def trailing_return(nav, month_end, lookback_months=LOOKBACK_EQUITY):
+    """Return over the trailing window ending at `month_end`, or None.
+
+    THE SIGNAL THE DRAWING RULE READS. None when there is not enough history,
+    and the caller must treat that as NO VIEW rather than as zero -- a plan
+    reading a missing signal as "below trend" would defer redemptions for its
+    first eighteen months on no evidence at all.
+    """
+    from datetime import date
+    d = date.fromisoformat(month_end)
+    y, m = d.year, d.month - lookback_months
+    while m <= 0:
+        m += 12
+        y -= 1
+    tag = f"{y}-{m:02d}"
+    earlier = [k for k in nav if k[:7] == tag]
+    if not earlier or month_end not in nav:
+        return None
+    base = nav[max(earlier)]
+    return nav[month_end] / base - 1.0 if base > 0 else None
 
 
 def describe(fmap):
