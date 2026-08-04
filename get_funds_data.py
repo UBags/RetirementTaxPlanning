@@ -557,8 +557,18 @@ def build_amfi_map(input_csv: str, output_csv: str = AMFI_MAP_FILE):
 # NAV FETCHING
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def fetch_nav(amfi_code: str) -> pd.DataFrame:
-    """Download NAV history; return monthly EOM DataFrame with [nav, ret]."""
+def _nav_history_frame(amfi_code: str) -> pd.DataFrame:
+    """Download NAV history and return the corrected DAILY frame.
+
+    EXTRACTED, NOT REWRITTEN. Every line below is the body fetch_nav has always
+    had, up to but not including its month-end resample: the manual
+    _NAV_BASE_FIXES table for known unit splits and consolidations, and the
+    auto-detector for the rest.
+
+    It lives here so fetch_nav and fetch_nav_daily can share it. That logic is
+    subtle, it carries a hand-maintained table of eleven scheme codes, and a
+    second copy would drift the moment either was edited.
+    """
     data    = _get_json(f"{MFAPI_BASE}/{amfi_code}")
     records = data.get("data", [])
     if not records:
@@ -653,9 +663,25 @@ def fetch_nav(amfi_code: str) -> pd.DataFrame:
                     )
                     break                                 # one fix per fund
 
+    return df
+
+
+def fetch_nav(amfi_code: str) -> pd.DataFrame:
+    """Download NAV history; return monthly EOM DataFrame with [nav, ret]."""
+    df = _nav_history_frame(amfi_code)
     eom = df.set_index("date")["nav"].resample("ME").last().dropna()
     ret = eom.pct_change().dropna()
     return pd.DataFrame({"nav": eom, "ret": ret}).dropna()
+
+
+def fetch_nav_daily(amfi_code: str) -> pd.DataFrame:
+    """Download NAV history; return the DAILY series as [date, nav].
+
+    NEW, and additive: nothing that existed calls it. Same corrections as
+    fetch_nav, because both go through _nav_history_frame -- the only
+    difference is that this one does not resample to month end.
+    """
+    return _nav_history_frame(amfi_code)[["date", "nav"]].reset_index(drop=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
