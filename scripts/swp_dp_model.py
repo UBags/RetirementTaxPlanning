@@ -797,6 +797,20 @@ LADDER_PROJECTED_YEARS = 5 * min(len(EXEMPT_BLOCKS), len(NILBAND_BLOCKS),
 EQUITY_PATH = None
 DEBT_PATH = None
 
+# ── REAL NAVs ──────────────────────────────────────────────────────────────
+# {"years": [...], "debt": [[r_slot1..r_slot21], ...], "equity": [r, ...]}
+# one row per financial year, from nav_feed.annual_returns.
+#
+# THE SAME SEPARATION THE MONTE CARLO USES. These replace what the world
+# DELIVERS. terminal() still scores candidates at the flat EQUITY_RETURN and
+# the modelled chunk rates, because a plan cannot see what the market did next
+# -- the difference is only that this path actually happened.
+#
+# Takes precedence over EQUITY_PATH and DEBT_PATH: a sampled path and a real
+# one are two answers to the same question and combining them would mean
+# neither.
+REAL_NAVS = None
+
 MC_EQUITY_MEAN = 0.12       # Indian equity, long-run CAGR
 MC_EQUITY_SIGMA = 0.20      # one sigma either side gives -8% to +32%
 MC_DEBT_MEAN = 0.0575       # short and medium debt funds, 4.5% to 7.0%
@@ -1177,6 +1191,104 @@ def nav_growth_factor(rate, month=MONTHS_IN_YEAR):
     return (1.0 + rate) ** (month / float(MONTHS_IN_YEAR))
 
 
+def execute_year_monthly(personal, huf, eq_p, eq_h, month_navs,
+                         month_nav_eq, need, fy, months=MONTHS_IN_YEAR):
+    """Raise one year's requirement in monthly instalments, at monthly prices.
+
+    STEP TWO OF THE MONTHLY ENGINE, AND IT REPLACES NOTHING. Nothing in
+    simulate() calls this. It exists so the monthly path can be measured
+    against the annual one before either depends on the other, because a
+    rewrite of the year loop with no baseline to check against is how a model
+    loses nine defects at once.
+
+    Takes CLONES and leaves the callers' books untouched.
+
+    THE ORACLE. Fed twelve identical price vectors, this must reproduce the
+    annual draw exactly -- same units, same gain, to floating-point. It can,
+    because FIFO is additive: twelve draws of need/12 consume the same lots in
+    the same order as one draw of need. If that ever stops holding, the
+    monthly path has grown a behaviour the annual one does not have, and the
+    difference is a bug rather than a finding. There is a test.
+
+    WHAT IT DOES NOT DO YET, deliberately: no band optimisation within the
+    month, no harvest, no tax, no deferral on the trailing-return signal, no
+    borrowing. Those arrive once the two paths are known to agree on the
+    simple case. This raises cash, month by month, at the right prices, and
+    records what it sold.
+
+    Returns (months, totals) where each month carries the per-fund detail a
+    redemption instruction needs.
+    """
+    p, h = personal.clone(), huf.clone()
+    ep, eh = eq_p.clone(), eq_h.clone()
+    per_month = need / float(months)
+    out, tot_cash, tot_gain, tot_load = [], 0.0, 0.0, 0.0
+
+    for m in range(months):
+        navs_m, nav_eq_m = month_navs[m], month_nav_eq[m]
+        want, raised, gain, sold, load = per_month, 0.0, 0.0, {}, 0.0
+
+        for tag, book in (("personal_debt", p), ("huf_debt", h)):
+            if raised >= want - EPS:
+                break
+            # Exit load is read off the per-Fund counters for the same
+            # reason the units are: a global ledger would also count the
+            # candidate draws the grid searches discard.
+            before = {(fi, k): (f.sold_units, f.loss)
+                      for fi, fo in enumerate(book.folios)
+                      for k, f in enumerate(fo.funds)}
+            got, g, _per = book.draw(navs_m, fy, amount=want - raised)
+            raised += got
+            gain += g
+            for fi, fo in enumerate(book.folios):
+                for k, f in enumerate(fo.funds):
+                    u0, l0 = before[(fi, k)]
+                    load += f.loss - l0
+                    u = f.sold_units - u0
+                    if u > EPS:
+                        sold[(tag, fi + 1, k)] = (u, navs_m[k])
+
+        if EQUITY_ENABLED and raised < want - EPS:
+            for tag, sl in (("personal_equity", ep), ("huf_equity", eh)):
+                if raised >= want - EPS:
+                    break
+                before = {k: (f.sold_units, f.loss)
+                          for k, f in enumerate(sl.funds)}
+                gross, g = sl.sell(nav_eq_m, fy, amount=want - raised)
+                raised += gross
+                gain += g
+                for k, f in enumerate(sl.funds):
+                    u0, l0 = before[k]
+                    load += f.loss - l0
+                    u = f.sold_units - u0
+                    if u > EPS:
+                        sold[(tag, 1, k)] = (u, nav_eq_m)
+
+        tot_cash += raised
+        tot_gain += gain
+        tot_load += load
+        out.append(dict(month=m + 1, wanted=per_month, raised=raised,
+                        gain=gain, exit_load=load,
+                        short=max(0.0, per_month - raised), sold=sold))
+
+    return out, dict(cash=tot_cash, gain=tot_gain, exit_load=tot_load,
+                     short=sum(x["short"] for x in out),
+                     p=p, h=h, ep=ep, eh=eh)
+
+
+def real_rate(fy, k=None):
+    """The realised return for plan year `fy`, or None outside the data.
+
+    k is a debt slot index; None asks for equity. Beyond the last year with
+    data this returns None and the caller falls back to the modelled rate,
+    which is what the wind-down loop needs when it runs past the history.
+    """
+    if not REAL_NAVS or fy < 1 or fy > len(REAL_NAVS["years"]):
+        return None
+    row = REAL_NAVS["equity"] if k is None else REAL_NAVS["debt"][fy - 1]
+    return row[fy - 1] if k is None else row[k]
+
+
 def advance_navs(navs, fy, spec, nf, shift=0.0, month=MONTHS_IN_YEAR):
     """Move every base fund's NAV on by `month` months of a financial year.
 
@@ -1188,7 +1300,9 @@ def advance_navs(navs, fy, spec, nf, shift=0.0, month=MONTHS_IN_YEAR):
     mutate, without the caller caring which.
     """
     for k in range(nf):
-        navs[k] *= nav_growth_factor(spec["rate"](k) + shift, month)
+        r = real_rate(fy, k)
+        navs[k] *= nav_growth_factor(spec["rate"](k) + shift if r is None
+                                     else r, month)
     return navs
 
 
@@ -2165,12 +2279,19 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
     if horizon > MAX_HORIZON:
         raise ValueError(
             f"horizon {horizon} is above MAX_HORIZON ({MAX_HORIZON}).")
-    if horizon < MIN_HORIZON:
+    # REAL_NAVS relaxes this, and only this. The floor is a judgement about
+    # what counts as a retirement plan, not an engine limit -- the arithmetic
+    # is clean at seventeen years. When the binding constraint is how much real
+    # history exists, refusing to run would mean never testing against real
+    # prices at all.
+    _floor = min(MIN_HORIZON, len(REAL_NAVS["years"])) if REAL_NAVS \
+        else MIN_HORIZON
+    if horizon < _floor:
         raise ValueError(
-            f"horizon {horizon} is below MIN_HORIZON ({MIN_HORIZON}). The "
-            f"floor tiers are min(10, N//3) years each and stop being "
-            f"meaningful below that, and a drawdown shorter than 20 years is "
-            f"not what this model is for.")
+            f"horizon {horizon} is below MIN_HORIZON ({_floor}). The floor "
+            f"tiers are min(10, N//3) years each and stop being meaningful "
+            f"below that, and a drawdown shorter than 20 years is not what "
+            f"this model is for.")
     spec = get_scenario(scenario)
     nf = spec["n_funds"]
     lad = build_ladders(horizon)
@@ -2266,8 +2387,10 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
                         huf.folios[huf.receiver].funds[k].invest(
                             _amount * v / _total, navs[k], fy)
         if EQUITY_ENABLED:
-            nav_eq *= (1.0 + (EQUITY_PATH[i] if EQUITY_PATH
-                              else EQUITY_RETURN))
+            _req = real_rate(fy)
+            nav_eq *= (1.0 + (_req if _req is not None
+                              else (EQUITY_PATH[i] if EQUITY_PATH
+                                    else EQUITY_RETURN)))
         _red0 = _phase(_red0, "deploy") or _red0
         eq_exempt, eq_rate = lad["eq_exempt"][i], lad["eq_rate"][i]
         # OPEN OF YEAR: after growth and inflows, before anything is sold.
@@ -3108,7 +3231,8 @@ def simulate(scenario="1chunk", horizon=HORIZON, cap=MAX_FOLIOS,
             # assumption with the final year's spread preserved.
             _wnv = advance_navs(_wnv, fy + _wk, spec, nf, _shift0)
             if EQUITY_ENABLED:
-                _wne *= (1.0 + EQUITY_RETURN)
+                _wr = real_rate(fy + _wk)
+                _wne *= (1.0 + (_wr if _wr is not None else EQUITY_RETURN))
         _rem = _ln - _wk
         _wtoi = _lad2["taxable_other"][_wi]
         _wexc, _wnb = _lad2["exempt"][_wi], _lad2["nilband"][_wi]
@@ -3561,6 +3685,14 @@ def main():
                          "nil band and s.112A exemption, and what is not yet "
                          "sold goes on earning. Nothing is spent during the "
                          "wind-down.")
+    ap.add_argument("--real_navs", "--real-navs", default=None,
+                    metavar="PATH",
+                    help="run against REAL fund NAVs from a nav_sample.csv "
+                         "built by extract_nav_sample.py, instead of the flat "
+                         "modelled rates. The horizon is then capped at the "
+                         "number of COMPLETE Indian financial years in the "
+                         "data. Decisions are still scored at the modelled "
+                         "rates: the plan cannot see what the market did next.")
     ap.add_argument("--redemption_csv", "--redemption-csv", default=None,
                     metavar="PATH",
                     help="write the redemption instruction: one row per fund "
@@ -3876,6 +4008,61 @@ def main():
 
     globals()["LEDGER_ON"] = bool(a.redemption_csv)
 
+    if a.real_navs:
+        # nav_feed.py lives in the PROJECT ROOT while this file lives in
+        # scripts/, and running "python3 scripts/swp_dp_model.py" puts
+        # scripts/ on sys.path rather than the directory you are standing in.
+        # So the root has to be added explicitly: both the working directory
+        # and this file's parent's parent, which covers being run from the
+        # root, from scripts/, or by absolute path.
+        import os.path as _op
+        _root = _op.dirname(_op.dirname(_op.abspath(__file__)))
+        for _cand in (_op.abspath(_op.curdir), _root):
+            if _cand not in sys.path:
+                sys.path.insert(0, _cand)
+        try:
+            import nav_feed
+        except ImportError:
+            sys.exit(
+                f"FATAL: --real_navs needs nav_feed.py, and it is not on the "
+                f"path.\n"
+                f"       Looked in {_op.abspath(_op.curdir)} and {_root}.\n"
+                f"       Either run from the directory holding nav_feed.py, "
+                f"or set PYTHONPATH to it.")
+        _fm = nav_feed.build_fund_map(path=a.real_navs)
+        _ar = nav_feed.annual_returns(_fm)
+        _need = get_scenario(a.scenario)["n_funds"]
+        if len(_fm["debt"]) < _need:
+            sys.exit(
+                f"FATAL: {a.real_navs} carries {len(_fm['debt'])} debt funds "
+                f"and {a.scenario} addresses {_need}.\n"
+                f"       21 base funds plus {TURNOVER[0]:.0%} then "
+                f"{TURNOVER[1]:.0%} turnover -- the chunk transitions buy into "
+                f"NEW funds\n"
+                f"       at the lower chunk rate, and those need real price "
+                f"series too.\n"
+                f"       Either run --scenario 1chunk, which addresses 21, or "
+                f"rebuild the sample with\n"
+                f"       five funds in each of the seven debt categories:\n"
+                f"         python3 extract_nav_sample.py --out nav_sample.csv "
+                f"--spec \\\n"
+                f"           \"Overnight Fund:5,Liquid Fund:5,Money Market "
+                f"Fund:5,Ultra Short Duration Fund:5,\\\n"
+                f"            Low Duration Fund:5,Short Duration Fund:5,"
+                f"Corporate Bond Fund:5,\\\n"
+                f"            Large Cap Fund:3,Flexi Cap Fund:2\"")
+        globals()["REAL_NAVS"] = _ar
+        print(f"--real_navs {a.real_navs}: {len(_ar['years'])} complete "
+              f"financial years, {_ar['years'][0]} to {_ar['years'][-1]}")
+        print(f"  equity is an equal-weight blend of "
+              f"{len(_fm['equity']['members'])} funds at "
+              f"{_fm['equity']['cagr'] * 100:.2f}% CAGR and "
+              f"{_fm['equity']['vol'] * 100:.2f}% volatility")
+        print(f"  debt slots run {_fm['debt'][0]['cagr'] * 100:.2f}% down to "
+              f"{_fm['debt'][-1]['cagr'] * 100:.2f}%, sorted by realised CAGR")
+        print("  DECISIONS are still scored at the modelled rates. Only what "
+              "the world delivers is real.")
+
     if a.emergency_shock:
         _parts = a.emergency_shock.replace(",", "/").split("/")
         if len(_parts) != 2:
@@ -3923,9 +4110,33 @@ def main():
               f"horizon is {a.horizon} years to age {PLAN_TO_AGE}.")
     if a.horizon is None:
         a.horizon = HORIZON
-    if a.horizon < MIN_HORIZON:
+    _min_h = MIN_HORIZON
+    if REAL_NAVS:
+        _have = len(REAL_NAVS["years"])
+        if a.horizon and a.horizon > _have:
+            sys.exit(f"FATAL: --horizon {a.horizon} exceeds the {_have} "
+                     f"complete financial years in {a.real_navs}. A part year "
+                     f"would be charged full-year tax allowances and read as "
+                     f"a windfall. Use --horizon {_have} or fewer.")
+        if a.horizon is None:
+            a.horizon = _have
+        # MIN_HORIZON is a judgement about what counts as a retirement plan,
+        # not an engine limit -- the arithmetic is clean at seventeen. When the
+        # DATA is the binding constraint, say so and carry on rather than
+        # refusing to use the only real history there is.
+        if _have < MIN_HORIZON:
+            _min_h = _have
+            print(f"  NOTE: the data offers {_have} complete years, below the "
+                  f"usual minimum of {MIN_HORIZON}. That floor is a judgement "
+                  f"about what")
+            print("  counts as a retirement plan, not an engine limit, and is "
+                  "relaxed here because")
+            print("  the history is what it is. Conclusions about the LONG "
+                  "end are not available")
+            print("  from a nineteen-year run.")
+    if a.horizon < _min_h:
         sys.exit(f"FATAL: --horizon {a.horizon} is below the minimum of "
-                 f"{MIN_HORIZON}.")
+                 f"{_min_h}.")
     if a.horizon > MAX_HORIZON:
         sys.exit(f"FATAL: --horizon {a.horizon} is above the maximum of "
                  f"{MAX_HORIZON}.")
