@@ -98,6 +98,54 @@ DEFAULT_CATEGORIES = [
 ]
 
 
+def _tune_network(G, connect, read, inner_retries):
+    """Make get_funds_data patient enough for a hundred-call harvest.
+
+    ITS DEFAULTS ARE TUNED FOR THE OPPOSITE JOB. REQUEST_TIMEOUT is (8, 30) --
+    eight seconds to CONNECT -- with MAX_RETRIES 2 and a 1.5s backoff, so the
+    whole budget before giving up is about seventeen seconds. That is the right
+    shape for an interactive tool that should fail fast on an unreachable host.
+    It is the wrong shape here: mfapi.in is slow when asked for twenty years of
+    daily NAVs, and an eight-second TLS handshake budget loses funds to nothing
+    worse than a busy server.
+
+    Set on the module rather than edited in it, so downstream callers keep the
+    fast-fail defaults they were given.
+    """
+    G.REQUEST_TIMEOUT = (connect, read)
+    G.MAX_RETRIES = inner_retries
+    return G
+
+
+def _fetch_with_backoff(G, code, attempts, first_wait):
+    """Fetch one fund, distinguishing a bad fund from a bad moment.
+
+    THE ORIGINAL VERSION OF THIS SWALLOWED BOTH. A transient timeout and a
+    scheme with no data both hit `except Exception: continue`, so a network
+    blip in the middle of a hundred-fund harvest would quietly drop good funds
+    and the summary would report it as "no fund had the history" -- a wrong
+    conclusion that looks exactly like a right one.
+
+    Transport failures are retried with a long backoff. Anything else -- a 404,
+    an empty series, unparseable NAVs -- is permanent and returns immediately.
+    """
+    import requests
+    wait = first_wait
+    for attempt in range(1, attempts + 1):
+        try:
+            return G.fetch_nav_daily(code), None
+        except requests.RequestException as exc:
+            if attempt == attempts:
+                return None, f"network, {attempts} attempts: {exc}"
+            log.info("    %s attempt %d/%d failed (%s) -- waiting %.0fs",
+                     code, attempt, attempts, type(exc).__name__, wait)
+            time.sleep(wait)
+            wait *= 3
+        except Exception as exc:                        # noqa: BLE001
+            return None, f"permanent: {exc}"
+    return None, "unreachable"
+
+
 def _module():
     """Import get_funds_data, which must be importable from the CWD or path."""
     try:
@@ -171,7 +219,7 @@ def choose_funds(G, categories, per_category):
 
 
 def harvest(G, plan, years, min_years, per_category, cache_path, resume,
-            pause):
+            pause, attempts, first_wait, failures):
     """Fetch daily NAVs fund by fund, writing the cache as each one lands."""
     end = datetime.now().date()
     want_start = end - timedelta(days=int(years * 365.25))
@@ -192,10 +240,10 @@ def harvest(G, plan, years, min_years, per_category, cache_path, resume,
                 if rec.get("category_bucket") == cat:
                     kept[cat].append(rec)
                 continue
-            try:
-                df = G.fetch_nav_daily(code)
-            except Exception as exc:                    # noqa: BLE001
-                log.warning("%s %s: %s", code, name[:48], exc)
+            df, err = _fetch_with_backoff(G, code, attempts, first_wait)
+            if err:
+                log.warning("FAILED %s %-44s %s", code, name[:44], err)
+                failures.append((cat, code, name, err))
                 continue
             if df is None or df.empty:
                 continue
@@ -244,7 +292,22 @@ def main():
                     help="comma-separated overrides for the default list")
     ap.add_argument("--pause", type=float, default=0.4,
                     help="seconds between API calls. Be polite to mfapi.in.")
-    ap.add_argument("--resume", action="store_true")
+    ap.add_argument("--connect-timeout", type=float, default=20.0,
+                    help="seconds to establish the TLS connection. The "
+                         "library default of 8 is tuned for fail-fast "
+                         "interactive use and loses funds to a busy server.")
+    ap.add_argument("--read-timeout", type=float, default=90.0,
+                    help="seconds for the body. Twenty years of daily NAVs is "
+                         "a large JSON.")
+    ap.add_argument("--attempts", type=int, default=4,
+                    help="tries per fund on a TRANSPORT failure, with a "
+                         "tripling backoff. A 404 or an empty series is "
+                         "permanent and is not retried.")
+    ap.add_argument("--first-wait", type=float, default=5.0,
+                    help="seconds before the second attempt; tripled after")
+    ap.add_argument("--resume", action="store_true",
+                    help="skip anything already cached. Always safe, and the "
+                         "right first move after any failure.")
     ap.add_argument("--plan", action="store_true",
                     help="resolve and print the selection, fetch nothing")
     ap.add_argument("--list-categories", action="store_true",
@@ -277,9 +340,11 @@ def main():
         print("\nNothing was fetched. Drop --plan to harvest.")
         return 0
 
+    failures = []
+    _tune_network(G, a.connect_timeout, a.read_timeout, 2)
     kept, start, end = harvest(G, plan, a.years, a.min_years,
                                a.per_category, Path(a.cache), a.resume,
-                               a.pause)
+                               a.pause, a.attempts, a.first_wait, failures)
 
     funds = [r for cat in cats for r in kept.get(cat, [])]
     if not funds:
@@ -312,6 +377,15 @@ def main():
             continue
         ys = [r["years"] for r in rs]
         print(f"{cat:22s}{len(rs):>6}{min(ys):>10.1f}{max(ys):>9.1f}")
+    if failures:
+        print(f"\n{len(failures)} fund(s) FAILED on the network and were not "
+              f"assessed. These are NOT")
+        print("funds without the history -- they were never reached. Re-run "
+              "with --resume.")
+        for cat, code, name, err in failures[:12]:
+            print(f"  {cat:16s}{code:>9}  {name[:38]:40s}{err[:28]}")
+        if len(failures) > 12:
+            print(f"  ... and {len(failures) - 12} more")
     total_days = sum(r["trading_days"] for r in funds)
     print(f"\nwrote {a.out} -- {len(funds)} funds, {total_days} daily NAVs, "
           f"{Path(a.out).stat().st_size / 1e6:.1f} MB")
