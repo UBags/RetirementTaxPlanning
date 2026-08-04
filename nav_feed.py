@@ -216,6 +216,57 @@ def build_fund_map(sample=None, n_base=21, path="nav_sample.csv"):
     return dict(debt=debt, equity=eq, dates=sorted(shared), notes=notes)
 
 
+def financial_years(dates):
+    """Complete Indian financial years, 1 April to 31 March, inside `dates`.
+
+    Returns [(label, first_iso, last_iso), ...]. INCOMPLETE YEARS AT EITHER
+    END ARE DROPPED, because every tax figure in the model -- the s.87A
+    ceiling, the HUF nil band, the s.112A exemption, the surcharge thresholds
+    -- is a full-year quantity assessed on a full year's income. A part-year
+    would be charged full-year allowances and read as a tax-free windfall.
+    """
+    have = set(dates)
+    out = []
+    y = int(dates[0][:4]) - 1
+    while True:
+        y += 1
+        start, end = f"{y}-04-01", f"{y + 1}-03-31"
+        if start < dates[0]:
+            continue
+        if end > dates[-1]:
+            break
+        inside = [d for d in dates if start <= d <= end]
+        if not inside or inside[0] not in have:
+            continue
+        out.append((f"FY{y}-{(y + 1) % 100:02d}", inside[0], inside[-1]))
+    return out
+
+
+def annual_returns(fmap):
+    """Realised return per financial year, per debt slot and for equity.
+
+    WHAT THE WORLD DELIVERED, and nothing else. The plan must still SCORE its
+    candidates at the modelled rates -- a plan cannot see next year's return,
+    which is the same separation the Monte Carlo already enforces through
+    EQUITY_PATH and DEBT_PATH. These returns replace what the world does, not
+    what the plan believes.
+
+    Returns {"years": [...], "debt": [[r_slot1..r_slotN], ...], "equity": [r]}
+    with one row per financial year.
+    """
+    fys = financial_years(fmap["dates"])
+    if not fys:
+        raise ValueError("no complete financial years in the sample")
+    debt_rows, eq_rows = [], []
+    for _label, first, last in fys:
+        debt_rows.append([f["nav"][last] / f["nav"][first] - 1.0
+                          for f in fmap["debt"]])
+        eq_rows.append(fmap["equity"]["nav"][last]
+                       / fmap["equity"]["nav"][first] - 1.0)
+    return dict(years=[f[0] for f in fys], debt=debt_rows, equity=eq_rows,
+                spans=[(f[1], f[2]) for f in fys])
+
+
 def describe(fmap):
     """A readable summary, for eyeballing before anything consumes it."""
     out = [f"{'slot':>5}  {'code':>7}  {'category':26s}{'CAGR':>8}{'vol':>8}"
