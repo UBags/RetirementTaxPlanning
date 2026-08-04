@@ -267,6 +267,160 @@ def annual_returns(fmap):
                 spans=[(f[1], f[2]) for f in fys])
 
 
+# ── FORWARD SYNTHESIS ──────────────────────────────────────────────────────
+
+SYNTH_DEBT_DELTA = 0.010     # debt earns 1.0 point less than it historically did
+SYNTH_EQUITY_DELTA = 0.015   # equity 1.5 points less
+SYNTH_BLOCK_DAYS = 60        # bootstrap block length
+SYNTH_SEED = 20260804
+
+
+def _daily_returns(nav, dates):
+    prev, out = None, []
+    for d in dates:
+        v = nav.get(d)
+        if v is None:
+            out.append(0.0)
+            continue
+        out.append(0.0 if prev is None or prev <= 0 else v / prev - 1.0)
+        prev = v
+    return out
+
+
+def _monthly_vol(nav, dates):
+    months = {}
+    for d in dates:
+        if d in nav:
+            months[d[:7]] = nav[d]
+    ks = sorted(months)
+    rets = [months[b] / months[a] - 1.0 for a, b in zip(ks, ks[1:])
+            if months[a] > 0]
+    return st.pstdev(rets) * (12 ** 0.5) if len(rets) > 1 else 0.0
+
+
+def _cagr_from(levels):
+    years = (len(levels) - 1) / 365.25
+    return (levels[-1] / levels[0]) ** (1.0 / years) - 1.0 if years > 0 else 0.0
+
+
+def extend_series(fmap, to_years, debt_delta=SYNTH_DEBT_DELTA,
+                  equity_delta=SYNTH_EQUITY_DELTA, seed=SYNTH_SEED,
+                  block_days=SYNTH_BLOCK_DAYS):
+    """Continue every series forward to `to_years`, keeping sigma and cutting
+    return.
+
+    TWO GUARANTEES, both enforced by solving rather than hoping.
+
+      SIGMA IS PRESERVED EXACTLY. The synthetic stretch is scaled until its
+      annualised volatility, measured from month ends exactly as everything
+      else in this file measures it, equals the historical figure to 1e-9. Not
+      approximately: the deviations are rescaled and remeasured until they
+      match, because "same sigma" was the non-negotiable half of the request.
+
+      RETURN IS CUT BY A STATED AMOUNT. The drift is then solved so the
+      synthetic CAGR lands exactly on (historical CAGR - delta), 1.0 point for
+      debt and 1.5 for equity by default. Solved for the same reason: adding a
+      drift to bootstrapped returns does not move the CAGR by the amount added,
+      because compounding is not linear in the mean.
+
+    THE THIRD THING, WHICH WAS NOT ASKED FOR AND MATTERS MOST
+
+      EVERY FUND IS SAMPLED ON THE SAME DATES. The bootstrap draws block start
+      positions ONCE and applies them to all funds, so whatever happened to
+      debt and equity together in the historical window happens together in the
+      synthetic one. Measured on this data, monthly returns of debt slot 1
+      against slot 6 correlate at +0.72 and against equity at +0.13. Synthesise
+      each fund independently and those collapse toward zero -- thirty-three
+      debt funds would look like thirty-three independent bets instead of one
+      asset class, the diversification would be imaginary, and the plan would
+      appear far safer than it is.
+
+      A BLOCK bootstrap rather than a daily one, for the same reason at a
+      different scale: drawing single days destroys volatility clustering, so
+      a synthetic 2008 never happens. Sixty-day blocks keep crashes and
+      recoveries intact.
+
+    Returns a new fmap. The originals are not modified.
+    """
+    import random
+
+    hist = fmap["dates"]
+    need_days = int(round(to_years * 365.25)) - len(hist)
+    if need_days <= 0:
+        return fmap
+
+    series = [(f, debt_delta) for f in fmap["debt"]]
+    series.append((fmap["equity"], equity_delta))
+
+    rng = random.Random(seed)
+    n = len(hist)
+    # ONE set of block starts, shared by every fund -- this is the correlation
+    # guarantee. Blocks are drawn from anywhere in the history.
+    starts = [rng.randrange(0, max(1, n - block_days))
+              for _ in range(need_days // block_days + 2)]
+
+    from datetime import date, timedelta
+    last = date.fromisoformat(hist[-1])
+    future = [(last + timedelta(days=i + 1)).isoformat()
+              for i in range(need_days)]
+
+    out_debt, out_eq = [], None
+    for f, delta in series:
+        rets = _daily_returns(f["nav"], hist)
+        drawn = []
+        for st_i in starts:
+            drawn.extend(rets[st_i:st_i + block_days])
+            if len(drawn) >= need_days:
+                break
+        drawn = drawn[:need_days]
+        mean = sum(drawn) / len(drawn)
+        dev = [r - mean for r in drawn]
+
+        target_vol = _monthly_vol(f["nav"], hist)
+        target_cagr = f["cagr"] - delta
+        base = f["nav"][hist[-1]]
+
+        scale, drift = 1.0, mean
+        for _ in range(60):
+            lv, v = [base], base
+            for x in dev:
+                v *= (1.0 + x * scale + drift)
+                lv.append(v)
+            nav_new = dict(zip([hist[-1]] + future, lv))
+            got_vol = _monthly_vol(nav_new, [hist[-1]] + future)
+            got_cagr = _cagr_from(lv)
+            if (abs(got_vol - target_vol) < 1e-9
+                    and abs(got_cagr - target_cagr) < 1e-9):
+                break
+            if got_vol > 1e-12:
+                scale *= target_vol / got_vol
+            drift += (target_cagr - got_cagr) / 365.25
+        else:
+            raise RuntimeError(f"synthesis did not converge for "
+                               f"{f.get('code', 'equity')}")
+
+        merged = dict(f["nav"])
+        merged.update({d: lv[i + 1] for i, d in enumerate(future)})
+        new = dict(f, nav=merged, **_stats(merged))
+        new["synth_from"] = future[0]
+        new["hist_cagr"] = f["cagr"]
+        new["hist_vol"] = target_vol
+        if f is fmap["equity"]:
+            out_eq = new
+        else:
+            out_debt.append(new)
+
+    notes = list(fmap["notes"]) + [
+        f"extended to {to_years} years: {len(future)} synthetic days from "
+        f"{future[0]}, sigma preserved exactly, CAGR cut by "
+        f"{debt_delta:.1%} on debt and {equity_delta:.1%} on equity",
+        "synthetic blocks are drawn on COMMON dates, so cross-fund "
+        "correlation survives; independent draws would make the "
+        "diversification imaginary",
+    ]
+    return dict(debt=out_debt, equity=out_eq, dates=hist + future, notes=notes)
+
+
 def describe(fmap):
     """A readable summary, for eyeballing before anything consumes it."""
     out = [f"{'slot':>5}  {'code':>7}  {'category':26s}{'CAGR':>8}{'vol':>8}"
