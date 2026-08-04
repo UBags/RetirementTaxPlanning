@@ -51,6 +51,63 @@ def _restore():
         M.DEDUCTIONS[p] = d
 
 
+# ── the monthly price layer ────────────────────────────────────────────────
+
+@pytest.mark.parametrize("scenario", ["1chunk", "2chunk", "3chunk"])
+@pytest.mark.parametrize("shift", [0.0, -0.02, 0.035])
+def test_month_twelve_is_bit_identical_to_the_annual_advance(scenario, shift):
+    """The whole point of the price layer, and it is BIT-exact, not close.
+
+    A monthly engine is only checkable against the annual one if the two agree
+    at year boundaries to the last bit. They do, because every monthly NAV is a
+    FRACTIONAL POWER of the year's opening NAV rather than a chain of twelve
+    multiplications: (1+r)**(12/12) is exactly (1+r) under IEEE pow, while
+    twelve successive steps land on 1.0600000000000003 at 6%.
+
+    That drift is small per year, CUMULATIVE over thirty-five, and
+    one-directional -- which is precisely the kind of error that makes an
+    oracle useless. The parametrisation includes a sampled-path shift because
+    the Monte Carlo moves every rate and the identity has to survive it.
+    """
+    spec = M.get_scenario(scenario)
+    nf = len(M.INTEREST_RATES) and 21
+    opening = [1.0 + 0.01 * k for k in range(nf)]
+
+    months = M.monthly_navs(list(opening), 1, spec, nf, shift)
+    annual = M.advance_navs(list(opening), 1, spec, nf, shift)
+
+    assert len(months) == M.MONTHS_IN_YEAR
+    assert months[-1] == annual, (
+        "month twelve is not bit-identical to the annual advance; the monthly "
+        "engine could not be checked against the annual one"
+    )
+    for k in range(nf):
+        series = [m[k] for m in months]
+        assert all(b >= a for a, b in zip(series, series[1:])), (
+            f"fund {k} is not monotone within the year"
+        )
+        assert series[0] > opening[k] * 0.5
+
+
+def test_twelve_monthly_steps_would_have_drifted():
+    """Proves the constraint is real rather than defensive.
+
+    If this ever starts passing, someone has changed nav_growth_factor to
+    chain multiplications and the exactness guarantee above is gone.
+    """
+    for rate in (0.06, 0.125):
+        chained = 1.0
+        step = (1.0 + rate) ** (1.0 / 12.0)
+        for _ in range(12):
+            chained *= step
+        assert chained != (1.0 + rate), (
+            f"chaining twelve steps at {rate} happened to be exact; the "
+            f"fractional-power form is no longer load-bearing and this test "
+            f"needs rethinking"
+        )
+        assert M.nav_growth_factor(rate) == (1.0 + rate)
+
+
 # ── s.87A, new regime ──────────────────────────────────────────────────────
 
 def test_87a_reproduces_the_published_examples():

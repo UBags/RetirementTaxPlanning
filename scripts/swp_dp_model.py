@@ -678,6 +678,10 @@ TURNOVER = (1.0 / 3.0, 1.0 / 3.0)
 # is OPT-IN: nothing is snapshotted unless --redemption_csv asked for it. That
 # matters because the Monte Carlo runs simulate() ten thousand times and has no
 # use for the ledger.
+MONTHS_IN_YEAR = 12         # the engine is annual; this is the resolution the
+                            # monthly view expands to, and the divisor that
+                            # makes month twelve land exactly on the year.
+
 LEDGER_ON = False
 
 EMERGENCY_SHOCK = None
@@ -1154,21 +1158,56 @@ def fund_identifier(k):
     return f"Fund {k + 1:02d}"
 
 
-def advance_navs(navs, fy, spec, nf, shift=0.0):
-    """Move every base fund's NAV on by one financial year, in place.
+def nav_growth_factor(rate, month=MONTHS_IN_YEAR):
+    """Growth from the START of a year to the end of `month` within it.
+
+    A FRACTIONAL POWER OF THE OPENING NAV, never twelve successive monthly
+    multiplications, and the difference is not cosmetic. At month twelve this
+    returns (1+r)**(12/12), which IEEE pow makes bit-identical to (1+r), so the
+    monthly view and the annual engine agree exactly at every year boundary.
+    Compounding twelve separate steps does not: at 6% it lands on
+    1.0600000000000003 and at 12.5% on 1.1249999999999984. Over thirty-five
+    years that drift is small but it is CUMULATIVE and one-directional, and it
+    would put a monthly engine permanently out of step with the annual one it
+    has to be checked against.
+
+    This is the single point at which a price is computed. A real-NAV version
+    replaces it and nothing else.
+    """
+    return (1.0 + rate) ** (month / float(MONTHS_IN_YEAR))
+
+
+def advance_navs(navs, fy, spec, nf, shift=0.0, month=MONTHS_IN_YEAR):
+    """Move every base fund's NAV on by `month` months of a financial year.
 
     THE OTHER INJECTION POINT. Today each fund compounds at its own modelled
     rate plus whatever the sampled path shifts it by. Tomorrow this fetches the
-    real NAV for each scheme at the real date and assigns it. The engine never
-    computes a NAV anywhere else, so a real-price version of this function is
-    the whole of that change too.
+    real NAV for each scheme at the real date and assigns it.
 
     Returns navs so a future version is free to build a new list rather than
     mutate, without the caller caring which.
     """
     for k in range(nf):
-        navs[k] *= (1.0 + spec["rate"](k) + shift)
+        navs[k] *= nav_growth_factor(spec["rate"](k) + shift, month)
     return navs
+
+
+def monthly_navs(navs_open, fy, spec, nf, shift=0.0):
+    """Twelve NAV vectors, one per month, from a year's OPENING NAVs.
+
+    Element 11 -- month twelve -- equals advance_navs(navs_open) exactly, not
+    approximately, which is what lets a monthly engine be checked against the
+    annual one rather than merely compared with it. Every vector is computed
+    from the opening NAVs rather than from its predecessor, for the reason in
+    nav_growth_factor.
+
+    Nothing consumes this yet. It is the price layer the monthly engine will
+    sit on, landed first and on its own so the exactness guarantee can be
+    tested before anything depends on it.
+    """
+    return [[navs_open[k] * nav_growth_factor(spec["rate"](k) + shift, m)
+             for k in range(nf)]
+            for m in range(1, MONTHS_IN_YEAR + 1)]
 
 
 def surcharge_rate(total_income):
