@@ -560,14 +560,9 @@ def build_amfi_map(input_csv: str, output_csv: str = AMFI_MAP_FILE):
 def _nav_history_frame(amfi_code: str) -> pd.DataFrame:
     """Download NAV history and return the corrected DAILY frame.
 
-    EXTRACTED, NOT REWRITTEN. Every line below is the body fetch_nav has always
-    had, up to but not including its month-end resample: the manual
-    _NAV_BASE_FIXES table for known unit splits and consolidations, and the
-    auto-detector for the rest.
-
-    It lives here so fetch_nav and fetch_nav_daily can share it. That logic is
-    subtle, it carries a hand-maintained table of eleven scheme codes, and a
-    second copy would drift the moment either was edited.
+    Extracted from fetch_nav so fetch_nav and fetch_nav_daily can share it.
+    That logic is subtle, it carries a hand-maintained table of scheme codes,
+    and a second copy would drift the moment either was edited.
     """
     data    = _get_json(f"{MFAPI_BASE}/{amfi_code}")
     records = data.get("data", [])
@@ -578,6 +573,17 @@ def _nav_history_frame(amfi_code: str) -> pd.DataFrame:
     df["date"] = pd.to_datetime(df["date"], dayfirst=True)
     df["nav"]  = pd.to_numeric(df["nav"], errors="coerce")
     df = df.dropna(subset=["nav"]).sort_values("date")
+
+    # A NAV OF ZERO IS A FEED ARTEFACT, NOT A PRICE, and dropna does not
+    # remove it. Left in, it does double damage: the split detector below sees
+    # a ratio of 0.000, reads it as a 100:1 split, rescales all the GOOD
+    # history before it by 1/100 -- and then breaks, spending the fund's one
+    # permitted fix so that a genuine consolidation later is never repaired.
+    #
+    # SBI Overnight (101206) is exactly this. A single zero on 2006-07-29
+    # shielded a real 100x consolidation on 2012-01-13, and the fund came out
+    # of the corpus at 34% CAGR with 2226% volatility.
+    df = df[df["nav"] > 0]
 
     if df.empty:
         raise ValueError(f"NAV series empty after cleaning for code {amfi_code}")
@@ -622,9 +628,17 @@ def _nav_history_frame(amfi_code: str) -> pd.DataFrame:
     # Handles both splits (high→low, ratio < 0.40) and consolidations
     # (low→high, ratio > 2.5).
     # Skip auto-detect if a manual fix was already applied.
-    if code_str not in _NAV_BASE_FIXES:
-        navs = df["nav"].values
-        dates = df["date"].values
+    # RESCANNED UNTIL CLEAN, not once. The loop used to break after the first
+    # correction, so a fund with two discontinuities kept the second. Each pass
+    # fixes the earliest remaining one and rescans, because scaling the rows
+    # before a cutoff changes every ratio at and before it. Capped so that a
+    # pathological series cannot spin.
+    _MAX_AUTO_FIXES = 6
+    for _auto_pass in range(_MAX_AUTO_FIXES if code_str not in _NAV_BASE_FIXES
+                            else 0):
+        navs = df["nav"].tolist()
+        dates = df["date"].tolist()
+        _fixed_this_pass = False
         for i in range(1, len(navs)):
             if navs[i - 1] > 0:
                 ratio = navs[i] / navs[i - 1]
@@ -644,7 +658,8 @@ def _nav_history_frame(amfi_code: str) -> pd.DataFrame:
                         code_str, (1 - ratio) * 100,
                         str(cutoff.date()), multiplier, pre.sum()
                     )
-                    break                                 # one fix per fund
+                    _fixed_this_pass = True
+                    break                        # rescan from the top
                 elif ratio > 2.5:                         # Consolidation
                     if ratio > 50:
                         multiplier = 100
@@ -661,7 +676,11 @@ def _nav_history_frame(amfi_code: str) -> pd.DataFrame:
                         code_str, ratio, str(cutoff.date()),
                         multiplier, pre.sum()
                     )
-                    break                                 # one fix per fund
+                    _fixed_this_pass = True
+                    break                        # rescan from the top
+
+        if not _fixed_this_pass:
+            break
 
     return df
 
