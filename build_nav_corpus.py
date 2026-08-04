@@ -82,20 +82,102 @@ log = logging.getLogger("nav_corpus")
 # are matched case-insensitively as SUBSTRINGS of the AMFI category string,
 # because AMFI writes things like "Open Ended Schemes(Debt Scheme - Short
 # Duration Fund)" and the useful part is buried in it.
+# EXACT AMFI sub-category names, not substrings. Substring matching put two
+# LARGE & MID CAP funds into a "Mid Cap" bucket, because "Mid Cap" is inside
+# "Large & Mid Cap Fund" -- a different category with a different risk
+# profile, and their volatility sat alongside the large caps rather than above
+# them. The whole point of picking by category is that the categories mean
+# something.
 DEFAULT_CATEGORIES = [
-    "Overnight",
-    "Liquid",
-    "Ultra Short",
-    "Low Duration",
-    "Money Market",
-    "Short Duration",
-    "Corporate Bond",
-    "Banking and PSU",
-    "Gilt",
-    "Large Cap",
-    "Flexi Cap",
-    "Mid Cap",
+    "Overnight Fund",
+    "Liquid Fund",
+    "Ultra Short Duration Fund",
+    "Low Duration Fund",
+    "Money Market Fund",
+    "Short Duration Fund",
+    "Corporate Bond Fund",
+    "Banking and PSU Fund",
+    "Gilt Fund",
+    "Large Cap Fund",
+    "Flexi Cap Fund",
+    "Mid Cap Fund",
 ]
+
+# A twenty-year daily series has to look like what it claims to be. These are
+# deliberately WIDE -- they are not a quality filter, they are a corruption
+# detector. SBI Overnight came out of a harvest at 34% CAGR with 2226%
+# volatility because a zero NAV shielded a 100x consolidation; a screen this
+# loose would still have caught it, whatever the cause.
+#
+# (min CAGR, max CAGR, max annualised volatility), all as fractions.
+PLAUSIBLE = {
+    "Overnight Fund":            (0.02, 0.12, 0.03),
+    "Liquid Fund":               (0.02, 0.12, 0.03),
+    "Ultra Short Duration Fund": (0.02, 0.13, 0.05),
+    "Low Duration Fund":         (0.02, 0.13, 0.05),
+    "Money Market Fund":         (0.02, 0.13, 0.05),
+    "Short Duration Fund":       (0.02, 0.14, 0.10),
+    "Corporate Bond Fund":       (0.02, 0.14, 0.10),
+    "Banking and PSU Fund":      (0.02, 0.14, 0.10),
+    "Gilt Fund":                 (0.02, 0.16, 0.15),
+    "Large Cap Fund":            (0.00, 0.30, 0.40),
+    "Flexi Cap Fund":            (0.00, 0.32, 0.45),
+    "Mid Cap Fund":              (0.00, 0.35, 0.50),
+}
+PLAUSIBLE_DEFAULT = (-0.05, 0.40, 0.60)
+
+
+def _subcategory(amfi_category):
+    """Pull "Liquid Fund" out of "Open Ended Schemes(Debt Scheme - Liquid
+    Fund)". Returns the whole string unchanged if it does not parse."""
+    inner = amfi_category
+    if "(" in inner and ")" in inner:
+        inner = inner[inner.index("(") + 1:inner.rindex(")")]
+    return inner.rsplit(" - ", 1)[-1].strip()
+
+
+_PLAN_WORDS = ("regular plan", "direct plan", "super institutional",
+               "institutional plan", "institutional", "retail plan", "retail",
+               "growth option", "growth plan", "growth", "regular", "direct",
+               "option", "plan", "-", "(", ")")
+
+
+def _base_fund_key(name):
+    """Collapse share classes of one scheme to a single key.
+
+    100234 "JM Liquid Fund" and 100247 "JM Liquid Fund (Regular) - Super
+    Institutional Plan" are the SAME fund in two share classes: both returned
+    7.0% at 0.5% volatility and their correlation is essentially one. Taking
+    both is not diversification, it is the same series twice, and it crowds out
+    a genuinely different fund.
+    """
+    low = " " + " ".join(name.lower().split()) + " "
+    for w in _PLAN_WORDS:
+        low = low.replace(w, " ")
+    return " ".join(low.split())
+
+
+def _annualised(nav_by_date):
+    """(CAGR, annualised volatility) from a daily series, via month ends."""
+    keys = sorted(nav_by_date)
+    if len(keys) < 24:
+        return None, None
+    months = {}
+    for k in keys:
+        months[k[:7]] = nav_by_date[k]
+    mk = sorted(months)
+    first, last = months[mk[0]], months[mk[-1]]
+    years = len(mk) / 12.0
+    if first <= 0 or last <= 0 or years < 1:
+        return None, None
+    cagr = (last / first) ** (1.0 / years) - 1.0
+    rets = [months[b] / months[a] - 1.0 for a, b in zip(mk, mk[1:])
+            if months[a] > 0]
+    if len(rets) < 12:
+        return cagr, None
+    mean = sum(rets) / len(rets)
+    var = sum((r - mean) ** 2 for r in rets) / len(rets)
+    return cagr, (var ** 0.5) * (12 ** 0.5)
 
 
 def _tune_network(G, connect, read, inner_retries):
@@ -195,18 +277,22 @@ def choose_funds(G, categories, per_category):
         sys.exit("FATAL: the AMFI master came back empty. Network?")
 
     picked = defaultdict(list)
-    seen_codes = set()
+    seen_codes, seen_funds = set(), set()
     for _idx, row in master.iterrows():
         name = str(row.get("scheme_name", ""))
         cat = str(row.get("category", ""))
         code = str(row.get("scheme_code", "")).strip()
         if not code or code in seen_codes or not _is_regular_growth(name):
             continue
-        for wanted in categories:
-            if wanted.lower() in cat.lower():
-                picked[wanted].append((code, name, cat))
-                seen_codes.add(code)
-                break
+        sub = _subcategory(cat)
+        if sub not in categories:
+            continue
+        key = _base_fund_key(name)
+        if key in seen_funds:
+            continue                 # another share class of one already taken
+        picked[sub].append((code, name, cat))
+        seen_codes.add(code)
+        seen_funds.add(key)
 
     out = {}
     for cat in categories:
@@ -219,7 +305,7 @@ def choose_funds(G, categories, per_category):
 
 
 def harvest(G, plan, years, min_years, per_category, cache_path, resume,
-            pause, attempts, first_wait, failures):
+            pause, attempts, first_wait, failures, rejects):
     """Fetch daily NAVs fund by fund, writing the cache as each one lands."""
     end = datetime.now().date()
     want_start = end - timedelta(days=int(years * 365.25))
@@ -255,6 +341,17 @@ def harvest(G, plan, years, min_years, per_category, cache_path, resume,
                 log.info("skip %s %s -- only %.1f years",
                          code, name[:44], span / 365.25)
                 continue
+            nav_map = {d.date().isoformat(): float(v)
+                       for d, v in zip(df["date"], df["nav"])}
+            cagr, vol = _annualised(nav_map)
+            lo_c, hi_c, hi_v = PLAUSIBLE.get(cat, PLAUSIBLE_DEFAULT)
+            if cagr is None or not (lo_c <= cagr <= hi_c) or (
+                    vol is not None and vol > hi_v):
+                log.warning("REJECT %s %-42s CAGR %7.1f%% vol %8.1f%% -- "
+                            "outside %s", code, name[:42],
+                            (cagr or 0) * 100, (vol or 0) * 100, cat)
+                rejects.append((cat, code, name, cagr, vol))
+                continue
             rec = {
                 "amfi_code": code,
                 "scheme_name": name,
@@ -265,8 +362,9 @@ def harvest(G, plan, years, min_years, per_category, cache_path, resume,
                 "last_date": df["date"].iloc[-1].date().isoformat(),
                 "trading_days": int(len(df)),
                 "years": round(span / 365.25, 2),
-                "nav": {d.date().isoformat(): float(v)
-                        for d, v in zip(df["date"], df["nav"])},
+                "cagr": round(cagr, 6),
+                "vol": round(vol, 6) if vol is not None else None,
+                "nav": nav_map,
             }
             cache[code] = rec
             cache_path.write_text(json.dumps(cache))
@@ -340,11 +438,12 @@ def main():
         print("\nNothing was fetched. Drop --plan to harvest.")
         return 0
 
-    failures = []
+    failures, rejects = [], []
     _tune_network(G, a.connect_timeout, a.read_timeout, 2)
     kept, start, end = harvest(G, plan, a.years, a.min_years,
                                a.per_category, Path(a.cache), a.resume,
-                               a.pause, a.attempts, a.first_wait, failures)
+                               a.pause, a.attempts, a.first_wait, failures,
+                               rejects)
 
     funds = [r for cat in cats for r in kept.get(cat, [])]
     if not funds:
@@ -368,15 +467,29 @@ def main():
     Path(a.out).write_text(json.dumps(doc, indent=1))
 
     print()
-    print(f"{'category':22s}{'kept':>6}{'shortest':>10}{'longest':>9}")
-    print("-" * 50)
+    print(f"{'category':26s}{'kept':>6}{'yrs':>7}{'CAGR':>16}{'vol':>16}")
+    print("-" * 74)
     for cat in cats:
         rs = kept.get(cat, [])
         if not rs:
-            print(f"{cat:22s}{0:>6}         -        -   NONE with the history")
+            print(f"{cat:26s}{0:>6}      -               -               -"
+                  f"   NONE")
             continue
         ys = [r["years"] for r in rs]
-        print(f"{cat:22s}{len(rs):>6}{min(ys):>10.1f}{max(ys):>9.1f}")
+        cs = [r["cagr"] for r in rs]
+        vs = [r["vol"] for r in rs if r["vol"] is not None]
+        print(f"{cat:26s}{len(rs):>6}{min(ys):>7.1f}"
+              f"{min(cs) * 100:>8.1f}%-{max(cs) * 100:.1f}%"
+              f"{(min(vs) if vs else 0) * 100:>8.1f}%-"
+              f"{(max(vs) if vs else 0) * 100:.1f}%")
+    if rejects:
+        print(f"\n{len(rejects)} fund(s) REJECTED as implausible. A screen "
+              f"this loose is a corruption")
+        print("detector, not a quality filter -- anything it catches is bad "
+              "data, not a bad fund.")
+        for cat, code, name, cagr, vol in rejects[:10]:
+            print(f"  {code:>9}  {name[:40]:42s}CAGR {(cagr or 0) * 100:7.1f}%"
+                  f"  vol {(vol or 0) * 100:8.1f}%")
     if failures:
         print(f"\n{len(failures)} fund(s) FAILED on the network and were not "
               f"assessed. These are NOT")
