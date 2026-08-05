@@ -6,10 +6,10 @@ De-prioritise a fund for redemption when it is trading below its own trend,
 carry the shortfall on borrowed money, and repay before investing.
 
 THE RULE, IN ONE PARAGRAPH. Each month, each fund is judged against ITS OWN
-history: the trailing lookback return (18 months for equity, 12 for debt) is
-compared with a percentile of that same fund's own past readings. Below the
-percentile, the fund is SPARED -- de-prioritised for redemption. What happens
-next depends on WHY the redemption was going to happen:
+history: the trailing lookback return is compared with a percentile of that
+same fund's own past readings. Below the percentile, the fund is SPARED --
+de-prioritised for redemption. What happens next depends on WHY the redemption
+was going to happen:
 
     LIQUIDITY  the money is needed to live on. Draw it from an unspared fund
                if one can supply it; otherwise BORROW at 12% and repay at the
@@ -20,39 +20,139 @@ next depends on WHY the redemption was going to happen:
                carried forward and executed in the first month the lot is not
                at a loss.
 
-THE PERCENTILE IS EXPANDING-WINDOW, NEVER FULL-SAMPLE. The threshold for month
-N is computed from readings 1..N-1 only. A full-sample percentile would let the
-backtest see the 2008 crash before deciding whether to defer in 2007, and every
-number it produced would be a fiction.
+THE PERCENTILE IS PER CATEGORY GROUP, NOT PER ASSET CLASS. An earlier version
+of this file split the world into equity and debt and gave debt one number.
+Measured on nav_sample.csv that hid a real difference INSIDE debt: money market
+and its short-duration siblings are pure accrual instruments whose trailing
+return simply IS the prevailing yield, while corporate bond and its
+duration-bearing siblings carry a genuine rate-cycle component. Below the tenth
+percentile of its own trailing 12m return the money-market group went on to
+earn 4.89% against 7.51% -- an edge of -2.63pp -- while the corporate group
+managed -0.95pp. Same sign, a third of the size. Those are not one asset class
+and one knob cannot serve both.
+
+THE FOUR GROUPS, and why the line falls where it does:
+
+    money_market   Overnight, Liquid, Ultra Short, Low Duration, Money Market.
+                   Near-zero duration, accrual dominated. 0.15 sigma on a
+                   liquid fund is a 0.09% price move -- there is nothing to
+                   wait for.
+
+    corporate      Short/Medium/Long Duration, Corporate Bond, Credit Risk,
+                   Banking and PSU, Gilt, Dynamic Bond, Floater. Duration
+                   and/or credit: a real cycle, but one that persists rather
+                   than reverts over the horizon this rule acts on.
+
+    hybrid         Aggressive, Conservative and Balanced Hybrid, Balanced
+                   Advantage, Multi Asset, Equity Savings, Arbitrage.
+
+    equity         Every equity category, plus index, ETF and fund-of-funds.
+
+ARBITRAGE SITS IN HYBRID HERE EVEN THOUGH THE INCOME TAX ACT TREATS IT AS
+EQUITY. This gate predicts PRICE BEHAVIOUR, not tax, so it keys on what drives
+the NAV. The tax treatment is a separate question answered in a separate place,
+and the two are meant to disagree.
 
 WHAT THE DATA SAYS ABOUT THE DEFAULTS (nav_sample.csv, 19 years, 228 months):
 
-    EQUITY MEAN-REVERTS. Below the 10th percentile of its own trailing 18m
-    return, the blend went on to earn +65.1% over the next twelve months
-    against +13.0% otherwise. Real, but it fired TWICE -- 2008-09 and 2020.
-    Two events, not a law.
+    EQUITY MEAN-REVERTS. Below the 10th percentile of its trailing 18m return
+    the blend went on to earn +65.1% over the next twelve months against
+    +13.0% otherwise. Real, but it fired TWICE -- 2008-09 and 2020. Two
+    events, not a law. Ships at 0.10.
 
-    DEBT DOES NOT. Below the 10th percentile of its own trailing 12m return,
-    the 35 slots went on to earn +5.47% against +7.63% -- the signal runs
-    BACKWARDS. A debt fund's trailing return is the prevailing rate level, and
-    rate levels persist: a low reading forecasts more low readings, not a
-    rebound.
+    MONEY MARKET AND CORPORATE DO NOT, at -2.63pp and -0.95pp. Both ship at
+    0.0 -- off. Swept end to end on a solvent 19-year drawdown the debt gate
+    lost 1.54L at p0.02 and 24.10L at p0.30 WITH NOTHING BORROWED, because
+    sparing one slot merely pushes the draw into another and the spared fund
+    goes on to earn less. The loss is substitution, not interest; borrowing at
+    12% would only deepen it.
 
-    AND BORROWING AT 12% SETTLES IT. Over a three-month wait the borrow costs
-    2.87%; a debt fund beat that in 3.6% of months. On a liquid fund the whole
-    0.15-sigma dip being waited out is a 0.09% price move. So the debt gate
-    ships at percentile 0.0 -- OFF -- and equity at 0.10. Both are arguments,
-    not axioms; sweep_percentile() is how they get re-argued against new data.
+    HYBRID IS UNCALIBRATED AND SHIPS OFF. There is not one hybrid fund in the
+    corpus. A number chosen by interpolating between corporate and equity would
+    look exactly as authoritative as the three that were measured, and it would
+    be a guess wearing a measurement's clothes. When hybrid history arrives,
+    calibrate it; until then it is 0.0 and this paragraph is why.
+
+Every one of these is an argument from one sample, not an axiom. Sweeping them
+is how they get re-argued against new data.
 """
 from __future__ import annotations
 
-# ── parameters ──────────────────────────────────────────────────────────────
+# ── category groups ─────────────────────────────────────────────────────────
 
-LOOKBACK_EQUITY = 18          # months
-LOOKBACK_DEBT = 12
+MONEY_MARKET = "money_market"
+CORPORATE = "corporate"
+HYBRID = "hybrid"
+EQUITY = "equity"
+GROUPS = (MONEY_MARKET, CORPORATE, HYBRID, EQUITY)
 
-GATE_PERCENTILE_EQUITY = 0.10
-GATE_PERCENTILE_DEBT = 0.0    # 0.0 means never spare; measured, see module doc
+CATEGORY_GROUP = {
+    # accrual, near-zero duration
+    "overnight": MONEY_MARKET,
+    "liquid": MONEY_MARKET,
+    "ultra short duration": MONEY_MARKET,
+    "low duration": MONEY_MARKET,
+    "money market": MONEY_MARKET,
+    # duration and/or credit
+    "short duration": CORPORATE,
+    "medium duration": CORPORATE,
+    "medium to long duration": CORPORATE,
+    "long duration": CORPORATE,
+    "dynamic bond": CORPORATE,
+    "corporate bond": CORPORATE,
+    "credit risk": CORPORATE,
+    "banking and psu": CORPORATE,
+    "floater": CORPORATE,
+    "gilt": CORPORATE,
+    "gilt with 10 year constant duration": CORPORATE,
+    # hybrid
+    "conservative hybrid": HYBRID,
+    "balanced hybrid": HYBRID,
+    "aggressive hybrid": HYBRID,
+    "dynamic asset allocation or balanced advantage": HYBRID,
+    "balanced advantage": HYBRID,
+    "multi asset allocation": HYBRID,
+    "arbitrage": HYBRID,
+    "equity savings": HYBRID,
+    # equity
+    "multi cap": EQUITY,
+    "flexi cap": EQUITY,
+    "large cap": EQUITY,
+    "large and mid cap": EQUITY,
+    "large & mid cap": EQUITY,
+    "mid cap": EQUITY,
+    "small cap": EQUITY,
+    "dividend yield": EQUITY,
+    "value": EQUITY,
+    "contra": EQUITY,
+    "focused": EQUITY,
+    "sectoral": EQUITY,
+    "thematic": EQUITY,
+    "sectoral/thematic": EQUITY,
+    "elss": EQUITY,
+    "index": EQUITY,
+    "etf": EQUITY,
+    "fof overseas": EQUITY,
+    "fof domestic": EQUITY,
+    "retirement": EQUITY,
+    "children's": EQUITY,
+}
+
+# ── parameters, per group ───────────────────────────────────────────────────
+
+GATE_PERCENTILE = {
+    MONEY_MARKET: 0.0,      # measured -2.63pp; off
+    CORPORATE: 0.0,         # measured -0.95pp; off
+    HYBRID: 0.0,            # NOT MEASURED -- no hybrid fund in the corpus
+    EQUITY: 0.10,           # measured +52.1pp, on two events
+}
+
+GATE_LOOKBACK = {
+    MONEY_MARKET: 12,       # months
+    CORPORATE: 12,
+    HYBRID: 18,
+    EQUITY: 18,
+}
 
 WARMUP_OBSERVATIONS = 36      # readings needed before the gate may fire at all
 BORROW_RATE = 0.12            # per annum, simple monthly accrual
@@ -60,11 +160,45 @@ BORROW_CAP = None             # absolute ceiling on balance; None = uncapped
 EPS = 1e-12
 
 
+class UnknownCategory(KeyError):
+    """A category no rule covers.
+
+    RAISED RATHER THAN DEFAULTED. Quietly filing an unrecognised category under
+    some group would apply a percentile nobody chose for it, and the run would
+    look identical to a correct one. A new SEBI category is a five-second edit
+    to CATEGORY_GROUP; a silently misgrouped fund is a defect that never
+    surfaces.
+    """
+
+
+def classify(category):
+    """AMFI/SEBI category string -> one of GROUPS. Raises on anything else.
+
+    Tolerant of the noise real category strings carry -- case, a trailing
+    'Fund', hyphens -- and intolerant of anything it cannot place.
+    """
+    if category in GROUPS:
+        return category
+    key = " ".join(str(category).lower().replace("-", " ").split())
+    for suffix in (" fund", " funds", " scheme"):
+        while key.endswith(suffix):
+            key = key[: -len(suffix)].strip()
+    if key in CATEGORY_GROUP:
+        return CATEGORY_GROUP[key]
+    for name, grp in CATEGORY_GROUP.items():
+        if key.startswith(name):
+            return grp
+    raise UnknownCategory(
+        f"{category!r} matches no entry in CATEGORY_GROUP. Add it there "
+        f"rather than defaulting it -- a misgrouped fund gets a percentile "
+        f"nobody chose and the run still looks correct.")
+
+
 # ── the percentile gate ─────────────────────────────────────────────────────
 
-def percentile(sorted_or_not, p):
+def percentile(sample, p):
     """Linear-interpolated percentile. Returns None on an empty sample."""
-    xs = sorted(sorted_or_not)
+    xs = sorted(sample)
     if not xs:
         return None
     k = (len(xs) - 1) * p
@@ -78,24 +212,36 @@ class Gate:
 
     ONE INSTANCE PER RUN, FED IN MONTH ORDER. `observe` appends this month's
     reading AFTER the decision is taken, which is what keeps the window
-    expanding rather than peeking. Calling them out of order is the one way to
-    make this thing lie, so `spared` refuses to answer for a month it has
-    already observed.
+    expanding rather than peeking.
+
+    `percentiles` and `lookbacks` are dicts keyed by group OR by any category
+    string that classifies into one. Anything omitted falls back to the module
+    default FOR THAT GROUP, never to a global one.
     """
 
-    def __init__(self, percentile_equity=GATE_PERCENTILE_EQUITY,
-                 percentile_debt=GATE_PERCENTILE_DEBT,
+    def __init__(self, percentiles=None, lookbacks=None,
                  warmup=WARMUP_OBSERVATIONS):
-        self.p_eq = percentile_equity
-        self.p_dt = percentile_debt
+        self.percentiles = dict(GATE_PERCENTILE)
+        self.lookbacks = dict(GATE_LOOKBACK)
+        for src, dst in ((percentiles, self.percentiles),
+                         (lookbacks, self.lookbacks)):
+            for k, v in (src or {}).items():
+                dst[classify(k)] = v
         self.warmup = warmup
         self._hist = {}          # fund key -> [readings, oldest first]
-        self._seen = {}          # fund key -> set of months already observed
+        self._seen = {}          # fund key -> months already observed
 
-    def _p(self, is_equity):
-        return self.p_eq if is_equity else self.p_dt
+    def percentile_for(self, category):
+        return self.percentiles[classify(category)]
 
-    def spared(self, key, reading, is_equity):
+    def lookback_for(self, category):
+        return self.lookbacks[classify(category)]
+
+    def active_groups(self):
+        """Groups whose percentile is above zero. For reporting."""
+        return tuple(g for g in GROUPS if self.percentiles[g] > 0.0)
+
+    def spared(self, key, reading, category):
         """True when this fund should be de-prioritised for redemption.
 
         A reading of None means NO VIEW -- not enough history -- and no view
@@ -103,7 +249,7 @@ class Gate:
         would defer every redemption for its first eighteen months on no
         evidence whatsoever.
         """
-        p = self._p(is_equity)
+        p = self.percentile_for(category)
         if p <= 0.0 or reading is None:
             return False
         past = self._hist.get(key, ())
@@ -122,9 +268,9 @@ class Gate:
         seen.add(month)
         self._hist.setdefault(key, []).append(reading)
 
-    def threshold(self, key, is_equity):
+    def threshold(self, key, category):
         """The live threshold, for reporting. None before warm-up."""
-        p = self._p(is_equity)
+        p = self.percentile_for(category)
         past = self._hist.get(key, ())
         if p <= 0.0 or len(past) < self.warmup:
             return None
@@ -160,7 +306,9 @@ class BorrowBook:
 
     @property
     def headroom(self):
-        return float("inf") if self.cap is None else max(0.0, self.cap - self.balance)
+        if self.cap is None:
+            return float("inf")
+        return max(0.0, self.cap - self.balance)
 
     def accrue(self, month):
         """One month of interest. Call ONCE per month, before any draw."""
@@ -252,7 +400,12 @@ def execute_month(month, need, funds, gate, book, queue,
     business, decided by the tax logic, not here. Each carries:
 
         key         stable identifier
-        is_equity   which lookback and which percentile apply
+        category    AMFI/SEBI category string, or a group name directly. THIS
+                    SELECTS BOTH THE PERCENTILE AND THE LOOKBACK, so the
+                    caller must read the trailing return over
+                    gate.lookback_for(category) rather than a fixed window --
+                    a corporate fund judged on 18 months and an equity fund on
+                    12 is a different rule from the one that was measured.
         available   value that could be redeemed this month
         reading     trailing return at this month end, or None for no view
 
@@ -272,7 +425,7 @@ def execute_month(month, need, funds, gate, book, queue,
 
     spared, drawn, per_fund = [], 0.0, {}
     for f in funds:
-        if gate.spared(f["key"], f.get("reading"), f["is_equity"]):
+        if gate.spared(f["key"], f.get("reading"), f["category"]):
             spared.append(f["key"])
             continue
         if drawn >= need - EPS:

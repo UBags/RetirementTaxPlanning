@@ -13,10 +13,17 @@ OPPOSITE directions and a single knob would net them against each other and
 report a wash.
 """
 import nav_feed as N
-from redemption_gate import BorrowBook, Gate, HarvestQueue, execute_month
+from redemption_gate import (
+    CORPORATE,
+    EQUITY,
+    MONEY_MARKET,
+    BorrowBook,
+    Gate,
+    HarvestQueue,
+    classify,
+    execute_month,
+)
 
-LOOKBACK_DEBT = 12
-LOOKBACK_EQUITY = 18
 START_CORPUS = 580.0          # lakh, personal 390 + HUF 190
 DEBT_SHARE = 0.70
 MONTHLY_NEED = 3.33           # lakh, the 40L/yr rung
@@ -33,12 +40,14 @@ def build(months, fmap):
     units["eq"] = START_CORPUS * (1 - DEBT_SHARE) / fmap["equity"]["nav"][d0]
     navs = {f"d{i}": f["nav"] for i, f in enumerate(debt)}
     navs["eq"] = fmap["equity"]["nav"]
-    return units, navs
+    cats = {f"d{i}": f["category"] for i, f in enumerate(debt)}
+    cats["eq"] = EQUITY
+    return units, navs, cats
 
 
-def run(months, fmap, p_debt, p_equity):
-    units, navs = build(months, fmap)
-    gate = Gate(percentile_equity=p_equity, percentile_debt=p_debt)
+def run(months, fmap, percentiles):
+    units, navs, cats = build(months, fmap)
+    gate = Gate(percentiles)
     book, queue = BorrowBook(), HarvestQueue()
     spared_months = 0
 
@@ -48,15 +57,15 @@ def run(months, fmap, p_debt, p_equity):
             px = nav.get(m)
             if px is None or units[k] <= 0:
                 continue
-            eq = k == "eq"
-            if eq and not SELL_EQUITY_LAST:
-                gate.observe(k, m, N.trailing_return(nav, m, LOOKBACK_EQUITY))
+            cat = cats[k]
+            lb = gate.lookback_for(cat)
+            if k == "eq" and not SELL_EQUITY_LAST:
+                gate.observe(k, m, N.trailing_return(nav, m, lb))
                 continue
-            lb = LOOKBACK_EQUITY if eq else LOOKBACK_DEBT
-            rows.append(dict(key=k, is_equity=eq, price=px,
+            rows.append(dict(key=k, category=cat, price=px,
                              available=units[k] * px,
                              reading=N.trailing_return(nav, m, lb)))
-        rows.sort(key=lambda r: (r["is_equity"], r["key"]))
+        rows.sort(key=lambda r: (classify(r["category"]) == EQUITY, r["key"]))
 
         res, per_fund, _ = execute_month(m, MONTHLY_NEED, rows, gate, book,
                                          queue)
@@ -76,7 +85,7 @@ def run(months, fmap, p_debt, p_equity):
 def main():
     fmap = N.build_fund_map(path="nav_sample.csv")
     months = [d for yr in N.monthly_prices(fmap)["months"] for d in yr]
-    base = run(months, fmap, 0.0, 0.0)
+    base = run(months, fmap, {})
 
     print(f"{len(months)} months, {months[0]} .. {months[-1]}")
     print(f"start {START_CORPUS:.1f}L, draw {MONTHLY_NEED:.2f}L/month, "
@@ -85,12 +94,14 @@ def main():
     print(f"{'p':>6}{'net':>10}{'vs off':>9}{'holdings':>10}{'debt':>9}"
           f"{'interest':>10}{'peak':>9}{'months owing':>14}")
     print("-" * 77)
-    for p in (0.02, 0.05, 0.10, 0.15, 0.20, 0.30):
-        r = run(months, fmap, p, 0.0)
+    for grp in (MONEY_MARKET, CORPORATE, EQUITY):
+      print(f"\n  -- {grp} --")
+      for p in (0.02, 0.05, 0.10, 0.15, 0.20, 0.30):
+        r = run(months, fmap, {grp: p})
         print(f"{p:>6.2f}{r['net']:>10.2f}{r['net'] - base['net']:>+9.2f}"
               f"{r['holdings']:>10.2f}{r['debt']:>9.2f}{r['interest']:>10.2f}"
               f"{r['peak']:>9.2f}{r['in_debt']:>14d}")
-    print("\n(debt gate swept; equity is never sold for cash on this plan)")
+    print("\nOne group swept at a time, the others at their shipped defaults.")
 
 
 if __name__ == "__main__":
