@@ -27,10 +27,97 @@ point estimates, and it would have acquitted every generator of every charge.
 """
 from __future__ import annotations
 
+import math
+
 from . import metrics as M
 
 EXACT_TOLERANCE = 1e-4
 WINDOW_YEARS = 9
+MIN_EFFECTIVE_BLOCKS = 30     # below this a path is a replay, not a sample
+MAX_LENGTH_RATIO = 1.25       # synthetic-to-real length, for fidelity scoring
+
+
+def _pearson(x, y):
+    n = min(len(x), len(y))
+    x, y = x[:n], y[:n]
+    mx, my = sum(x) / n, sum(y) / n
+    num = sum((a - mx) * (b - my) for a, b in zip(x, y))
+    dx = math.sqrt(sum((a - mx) ** 2 for a in x))
+    dy = math.sqrt(sum((b - my) ** 2 for b in y))
+    return num / (dx * dy) if dx > 0 and dy > 0 else None
+
+
+def correlation_matrix(funds):
+    """Pairwise correlation of daily log returns. `funds` maps name -> (nav, dates)."""
+    r = {k: M.log_returns(M.series_of(nav, dates))
+         for k, (nav, dates) in funds.items()}
+    names = sorted(r)
+    out = {}
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            out[(a, b)] = _pearson(r[a], r[b])
+    return out
+
+
+def verify_correlations(real_funds, ensemble, alpha=0.10):
+    """Does every REAL pairwise correlation sit inside the ensemble's spread?
+
+    THE PROPERTY NO PER-ASSET SYNTHESIZER CAN HAVE. A two-purse plan lives or
+    dies on whether debt and equity fall together, and a generator that gets
+    every marginal right while making the joints independent will understate
+    every simultaneous drawdown it exists to study. `ensemble` is a list of
+    dicts mapping fund name -> (nav, dates).
+    """
+    real = correlation_matrix(real_funds)
+    findings, ok = [], True
+    for pair, want in real.items():
+        vals = sorted(v for v in (correlation_matrix(p).get(pair)
+                                  for p in ensemble) if v is not None)
+        if want is None or len(vals) < 4:
+            findings.append(dict(name=f"{pair[0]}~{pair[1]}", kind="corr",
+                                 verdict="not estimable"))
+            continue
+        lo = vals[int(len(vals) * alpha / 2)]
+        hi = vals[max(0, int(len(vals) * (1 - alpha / 2)) - 1)]
+        inside = lo <= want <= hi
+        ok = ok and inside
+        findings.append(dict(name=f"{pair[0]}~{pair[1]}", kind="corr",
+                             got=sum(vals) / len(vals), point=want,
+                             lo=lo, hi=hi,
+                             verdict="pass" if inside else "FAIL"))
+    return ok, findings
+
+
+def check_novelty(blocks, n_out, mean_block,
+                  min_blocks=MIN_EFFECTIVE_BLOCKS):
+    """Is the path a sample of history, or a re-reading of it?
+
+    EVERY OTHER CRITERION HERE IS A SIMILARITY MEASURE, so all of them are
+    maximised by returning the real series unchanged. Without this one, block
+    length can be tuned until anything passes: on nav_sample.csv a naive
+    bootstrap at 1000-day blocks matched equity ACF decay and Hurst exactly,
+    using SEVEN contiguous slabs of the real past for a nineteen-year path. It
+    passed because it had stopped generating.
+    """
+    ok = blocks >= min_blocks
+    return dict(name="novelty", kind="novelty", blocks=blocks,
+                n_out=n_out, mean_block=mean_block, min_blocks=min_blocks,
+                verdict="pass" if ok else "FAIL"), ok
+
+
+def check_length(real_dates, synth_dates, max_ratio=MAX_LENGTH_RATIO):
+    """Fidelity must be scored on paths the same length as the history.
+
+    Hurst is length-invariant; the ACF decay exponent is NOT. Measured on this
+    data the same generator scored [0.55, 0.96] on nineteen-year paths and
+    [0.74, 1.26] on thirty-five-year ones -- a shift of 0.2 that is arithmetic,
+    not fidelity. Generate at the real length to SCORE, and at the planning
+    horizon to USE.
+    """
+    ratio = len(synth_dates) / max(1, len(real_dates))
+    ok = (1 / max_ratio) <= ratio <= max_ratio
+    return dict(name="length", kind="length", ratio=ratio,
+                verdict="pass" if ok else "FAIL"), ok
 
 
 def subsample_range(nav, dates, fn, window_years=WINDOW_YEARS, step_years=1):
@@ -235,6 +322,13 @@ def format_findings(findings):
                 lines.append(f"  {f['name']:10s} exact      got {f['got']:+.6f} "
                              f"want {f['want']:+.6f}  miss {f['miss']:.2e}  "
                              f"{f['verdict']}")
+        elif f["kind"] == "novelty":
+            lines.append(f"  {'novelty':10s} {f['blocks']} blocks in "
+                         f"{f['n_out']} observations at mean {f['mean_block']}"
+                         f"  (floor {f['min_blocks']})  {f['verdict']}")
+        elif f["kind"] == "length":
+            lines.append(f"  {'length':10s} synthetic/real = {f['ratio']:.2f}"
+                         f"  {f['verdict']}")
         elif f["verdict"] in ("not estimable",):
             lines.append(f"  {f['name']:10s} estimated  {f['verdict']}")
         else:

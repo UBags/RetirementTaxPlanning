@@ -265,3 +265,74 @@ def test_format_findings_renders_every_verdict_without_raising():
     _, findings = V.verify(real, dates, wrong, dates)
     text = V.format_findings(findings)
     assert "FAIL" in text and len(text.splitlines()) == len(findings)
+
+
+# ── novelty, length and correlation ─────────────────────────────────────────
+
+def test_novelty_fails_a_path_that_is_a_replay():
+    """
+    Every other criterion is a SIMILARITY measure, so all of them are maximised
+    by returning the real series unchanged. On real data a naive bootstrap at
+    1000-day blocks matched equity ACF decay and Hurst exactly, using seven
+    contiguous slabs of the past for a nineteen-year path. It passed because it
+    had stopped generating.
+    """
+    bad, ok_bad = V.check_novelty(blocks=7, n_out=6939, mean_block=1000)
+    good, ok_good = V.check_novelty(blocks=62, n_out=6939, mean_block=125)
+    assert not ok_bad and bad["verdict"] == "FAIL"
+    assert ok_good and good["verdict"] == "pass"
+
+
+def test_length_check_catches_scoring_a_35_year_path_against_19_years():
+    """Hurst is length-invariant; the ACF decay exponent is not. The same
+    generator scored [0.55, 0.96] on 19-year paths and [0.74, 1.26] on
+    35-year ones -- a shift of 0.2 that is arithmetic, not fidelity."""
+    real = daily_dates(365 * 19)
+    ok_same, _ = V.check_length(real, daily_dates(365 * 19))[0], None
+    bad, ok_bad = V.check_length(real, daily_dates(365 * 35))
+    assert ok_same["verdict"] == "pass"
+    assert not ok_bad and bad["ratio"] > 1.5
+
+
+def test_correlation_matrix_covers_every_unordered_pair():
+    dates, a = _gbm(2000, 0.10, 0.20, seed=40)
+    _, b = _gbm(2000, 0.07, 0.05, seed=41)
+    _, c = _gbm(2000, 0.06, 0.01, seed=42)
+    m = V.correlation_matrix({"a": (a, dates), "b": (b, dates),
+                              "c": (c, dates)})
+    assert set(m) == {("a", "b"), ("a", "c"), ("b", "c")}
+
+
+def test_verify_correlations_passes_when_the_joint_structure_survives():
+    dates, a = _gbm(4000, 0.10, 0.20, seed=43)
+    _, b = _gbm(4000, 0.07, 0.05, seed=44)
+    real = {"a": (a, dates), "b": (b, dates)}
+    ens = [real for _ in range(10)]
+    ok, findings = V.verify_correlations(real, ens)
+    assert ok and all(f["verdict"] == "pass" for f in findings)
+
+
+def test_verify_correlations_fails_when_funds_are_made_independent():
+    """
+    THE PROPERTY NO PER-ASSET SYNTHESIZER CAN HAVE. A two-purse plan lives or
+    dies on whether debt and equity fall together.
+    """
+    import math as _m
+    import random as _r
+    rng = _r.Random(45)
+    n = 4000
+    dates = daily_dates(n + 1)
+    la, lb = [100.0], [100.0]
+    for _ in range(n):
+        z = rng.gauss(0, 1)
+        la.append(la[-1] * _m.exp(0.0003 + 0.010 * z))
+        lb.append(lb[-1] * _m.exp(0.0002 + 0.004 * z))   # perfectly coupled
+    real = {"a": (dict(zip(dates, la)), dates), "b": (dict(zip(dates, lb)), dates)}
+    ens = []
+    for i in range(10):
+        _, x = _gbm(n, 0.10, 0.20, seed=500 + i)
+        _, y = _gbm(n, 0.07, 0.05, seed=900 + i)
+        ens.append({"a": (x, dates), "b": (y, dates)})
+    ok, findings = V.verify_correlations(real, ens)
+    assert not ok
+    assert any(f["verdict"] == "FAIL" for f in findings)

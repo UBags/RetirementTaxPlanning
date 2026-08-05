@@ -269,3 +269,186 @@ def test_an_ensemble_returns_the_number_of_paths_asked_for():
     dates, nav = gbm(365 * 19, 0.11, 0.20, seed=17)
     f = {"eq": fund(nav, dates, "Flexi Cap Fund", 0.0125)}
     assert len(E.synthesize_ensemble(f, 5, n_paths=6)) == 6
+
+
+# ── regime-conditioned sampling ─────────────────────────────────────────────
+
+def test_volatility_states_label_calm_and_crisis_apart():
+    """
+    Calm values must VARY. A constant-magnitude calm stretch puts every
+    tercile cut on the same number, `v >= cut` is true everywhere, and the
+    whole series labels as crisis -- a degenerate case worth knowing about
+    because a stale feed produces exactly that shape.
+    """
+    rng = random.Random(40)
+    calm = [rng.gauss(0, 0.004) for _ in range(1000)]
+    storm = [rng.gauss(0, 0.05) for _ in range(400)]
+    st_ = E.volatility_states(calm + storm + calm, n_states=3, window=21)
+    # The CALM stretch spans all three states -- terciles cut it into thirds --
+    # so the testable property is that the storm sits above it on average,
+    # not that any single calm index reads zero.
+    calm_mean = st.fmean(st_[100:900] + st_[1600:2300])
+    storm_mean = st.fmean(st_[1050:1350])
+    assert storm_mean > calm_mean + 1.0, f"{storm_mean} vs {calm_mean}"
+    assert max(st_[1050:1350]) == 2
+
+
+def test_the_transition_matrix_rows_are_probabilities():
+    m = E.transition_matrix([0, 0, 1, 1, 2, 2, 1, 0], n_states=3)
+    assert len(m) == 3
+    for row in m:
+        assert sum(row) == pytest.approx(1.0)
+        assert all(0.0 < x < 1.0 for x in row)
+
+
+def test_an_unseen_regime_pair_is_improbable_not_impossible():
+    """Laplace-smoothed: nineteen years need not contain every transition."""
+    m = E.transition_matrix([0] * 100, n_states=3)
+    assert 0.0 < m[0][2] < 0.05
+
+
+def test_regime_sampling_preserves_clustering_that_naive_blocks_destroy():
+    """
+    THE FIX, MEASURED. Persistence lives in the SEQUENCE OF REGIMES rather
+    than inside a block, so clusters survive block boundaries. Naive sampling
+    at the same block length breaks them, and the ACF of |r| decays faster.
+    """
+    rng = random.Random(21)
+    r = []
+    for i in range(7000):
+        vol = 0.035 if (i // 900) % 2 else 0.004     # long alternating regimes
+        r.append(rng.gauss(0.0002, vol))
+    dates = daily_dates(len(r) + 1)
+    lv = [100.0]
+    for x in r:
+        lv.append(lv[-1] * math.exp(x))
+    nav = {d: v for d, v in zip(dates, lv)}
+    f = {"x": fund(nav, dates, "Flexi Cap Fund", 0.0)}
+    # Averaged over seeds: a single path's ACF exponent is noisy enough that
+    # one draw would make this test a coin flip rather than a measurement.
+    reg, nai = [], []
+    for sd_ in range(5):
+        a = E.synthesize(f, 19, seed=5 + sd_, block_days=125, regime=True)["x"]
+        b = E.synthesize(f, 19, seed=5 + sd_, block_days=125, regime=False)["x"]
+        reg.append(M.acf_abs_decay_exponent(M.log_returns(a["nav_levels"])))
+        nai.append(M.acf_abs_decay_exponent(M.log_returns(b["nav_levels"])))
+    b_real = M.acf_abs_decay_exponent(M.log_returns(M.series_of(nav, dates)))
+    assert abs(st.fmean(reg) - b_real) < abs(st.fmean(nai) - b_real), \
+        f"real {b_real:.3f} regime {st.fmean(reg):.3f} naive {st.fmean(nai):.3f}"
+
+
+def test_the_regime_reference_defaults_to_the_most_volatile_fund():
+    """Regimes are market-wide, and a liquid fund's local volatility barely
+    moves between 2007 and 2009. Read them off the series that shows them."""
+    de, ne = gbm(365 * 19, 0.11, 0.20, seed=22)
+    _, nd = gbm(365 * 19, 0.07, 0.004, seed=23)
+    out = E.synthesize({"eq": fund(ne, de, "Flexi Cap Fund", 0.0),
+                        "lq": fund(nd, de, "Liquid Fund", 0.0)}, 19)
+    assert out["eq"]["reference"] == "eq"
+
+
+def test_block_counts_are_reported_so_novelty_can_be_judged():
+    dates, nav = gbm(365 * 19, 0.11, 0.20, seed=24)
+    out = E.synthesize({"eq": fund(nav, dates, "Flexi Cap Fund", 0.0)}, 19,
+                       block_days=125)
+    assert out["eq"]["blocks"] > 30
+
+
+# ── the accrual generator ───────────────────────────────────────────────────
+
+def test_accrual_categories_are_recognised():
+    for c in ("Liquid Fund", "Overnight Fund", "Money Market Fund",
+              "Ultra Short Duration Fund"):
+        assert E.is_accrual(c)
+    for c in ("Corporate Bond Fund", "Flexi Cap Fund", "Low Duration Fund"):
+        assert not E.is_accrual(c)
+
+
+def test_decomposition_adds_back_to_the_original():
+    r = [0.001, 0.002, -0.0005, 0.003] * 100
+    level, resid = E.decompose_accrual(r, window=63)
+    for i in range(len(r)):
+        assert level[i] + resid[i] == pytest.approx(r[i], abs=1e-15)
+
+
+def test_ar1_coefficient_recovers_a_planted_persistence():
+    rng = random.Random(25)
+    phi, x, xs = 0.95, 0.0, []
+    for _ in range(50000):
+        x = phi * x + rng.gauss(0, 1)
+        xs.append(x)
+    assert E.ar1_coefficient(xs) == pytest.approx(phi, abs=0.02)
+
+
+def test_the_simulated_factor_is_standardised():
+    f = E.simulate_factor(200000, 0.99, random.Random(26))
+    assert st.fmean(f) == pytest.approx(0.0, abs=0.05)
+    assert st.pstdev(f) == pytest.approx(1.0, abs=0.05)
+
+
+def test_a_more_persistent_factor_moves_more_slowly():
+    """
+    NOT "wanders further" -- both are standardised to unit variance, so the
+    persistent one moves SLOWLY rather than far. Measured on the span it comes
+    out narrower, which is the opposite of the intuition and the reason this
+    test names the property it actually tests.
+    """
+    a = E.simulate_factor(50000, 0.90, random.Random(27))
+    b = E.simulate_factor(50000, 0.9995, random.Random(27))
+    assert E.ar1_coefficient(b) > E.ar1_coefficient(a)
+    assert st.pstdev(a) == pytest.approx(st.pstdev(b), abs=0.15)
+
+
+def test_accrual_funds_are_flagged_and_others_are_not():
+    dates, ne = gbm(365 * 19, 0.11, 0.20, seed=28)
+    _, nl = gbm(365 * 19, 0.07, 0.004, seed=29)
+    out = E.synthesize({"eq": fund(ne, dates, "Flexi Cap Fund", 0.0),
+                        "lq": fund(nl, dates, "Liquid Fund", 0.0)}, 19)
+    assert out["lq"]["accrual"] and not out["eq"]["accrual"]
+
+
+def test_the_accrual_path_keeps_the_exact_moments():
+    """The decomposition must not cost the two criteria that are solved for."""
+    dates, nav = gbm(365 * 19, 0.07, 0.004, seed=30)
+    r = E.synthesize({"lq": fund(nav, dates, "Liquid Fund", 0.010)}, 19)["lq"]
+    assert M.cagr(r["nav_levels"], r["periods_per_year"]) == \
+        pytest.approx(r["target_cagr"], abs=1e-9)
+    assert M.volatility(r["nav_levels"], r["periods_per_year"]) == \
+        pytest.approx(r["hist_vol"], abs=1e-9)
+
+
+def test_the_accrual_generator_can_be_switched_off():
+    dates, nav = gbm(365 * 19, 0.07, 0.004, seed=31)
+    f = {"lq": fund(nav, dates, "Liquid Fund", 0.0)}
+    assert not E.synthesize(f, 19, accrual=False)["lq"]["accrual"]
+
+
+def accruing(n, base, seed, noise=0.00004):
+    """A series that ACCRUES: return = slowly-wandering yield + small noise.
+
+    A GBM cannot stand in for this. The 63-day level of i.i.d. returns carries
+    almost no variance, so the shared yield factor would have nothing to
+    share and the test would pass or fail for reasons unrelated to the code.
+    """
+    rng = random.Random(seed)
+    lv, y = [100.0], base / 365.0
+    for _ in range(n):
+        y = 0.9995 * y + 0.0005 * (base / 365.0) + rng.gauss(0, 4e-6)
+        lv.append(lv[-1] * math.exp(max(0.0, y) + rng.gauss(0, noise)))
+    dates = daily_dates(len(lv))
+    return dates, {k: v for k, v in zip(dates, lv)}
+
+
+def test_two_accrual_funds_share_one_yield_factor():
+    """
+    The 0.617 correlation between the real liquid and money market slots IS
+    the yield level they both track. Simulating a factor each would leave two
+    money market funds with unrelated futures.
+    """
+    dates, a = accruing(365 * 19, 0.070, seed=32)
+    _, b = accruing(365 * 19, 0.065, seed=33)
+    out = E.synthesize({"p": fund(a, dates, "Liquid Fund", 0.0),
+                        "q": fund(b, dates, "Money Market Fund", 0.0)}, 19,
+                       yield_phi=0.9995)
+    assert out["p"]["accrual"] and out["q"]["accrual"]
+    assert correlation(rets(out["p"]), rets(out["q"])) > 0.3
