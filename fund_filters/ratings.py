@@ -67,7 +67,7 @@ AGENCY_PATTERNS = [
      "India Ratings"),
     (re.compile(r"\bBWR\b|\bBRICKWORK\b", re.I), "Brickwork"),
     (re.compile(r"\bACUITE?\b|\bSMERA\b", re.I), "Acuite"),
-    (re.compile(r"\bINFOMERICS\b", re.I), "Infomerics"),
+    (re.compile(r"\bINFOMERICS\b|\bIVR\b", re.I), "Infomerics"),
 ]
 
 # Grades are matched longest-first so 'AA+' is never read as 'AA', and the
@@ -82,6 +82,7 @@ _ENHANCED_RE = re.compile(r"\(\s*(CE|SO)\s*\)", re.I)
 _OUTLOOK_RE = re.compile(
     r"\b(stable|positive|negative|developing|watch)\b", re.I)
 _WITHDRAWN_RE = re.compile(r"\bwithdraw|\bsuspend|\bnot\s+meaningful\b", re.I)
+_NOT_COOPERATING_RE = re.compile(r"issuer\s+not\s+cooperat", re.I)
 
 
 def parse(raw):
@@ -102,6 +103,7 @@ def parse(raw):
             break
 
     enhanced = bool(_ENHANCED_RE.search(text))
+    not_cooperating = bool(_NOT_COOPERATING_RE.search(text))
     withdrawn = bool(_WITHDRAWN_RE.search(text))
     outlook_m = _OUTLOOK_RE.search(text)
 
@@ -130,16 +132,45 @@ def parse(raw):
         # concentration policy is written against.
         scale, rank = "long", RANK[grade]
     return dict(agency=agency, grade=grade, scale=scale, rank=rank,
-                enhanced=enhanced,
+                enhanced=enhanced, not_cooperating=not_cooperating,
                 outlook=outlook_m.group(1).lower() if outlook_m else None,
                 withdrawn=withdrawn, raw=text)
 
 
 def _empty(text, **kw):
     base = dict(agency=None, grade=None, scale=None, rank=None,
-                enhanced=False, outlook=None, withdrawn=False, raw=text)
+                enhanced=False, not_cooperating=False, outlook=None,
+                withdrawn=False, raw=text)
     base.update(kw)
     return base
+
+
+def split_multi(raw):
+    """One NSDL cell into one parsed rating per agency.
+
+    THE FILE PACKS SEVERAL AGENCIES INTO ONE CELL, semicolon separated:
+    'CARE AAA/Stable ();ICRA AAA/Stable ();CRISIL AAA/Stable'. 4,274 rows of
+    28,670 carry more than one. Parsing the cell as a single string finds
+    whichever grade appears first and silently discards the rest -- including
+    this real row, where the first opinion is four notches below the last:
+
+        BWR BB-/Stable () (ISSUER NOT COOPERATING*);IND AA+/Stable ();
+        ACUITE AA/Stable ()
+    """
+    text = str(raw or "")
+    return [parse(p) for p in text.split(";") if p.strip()]
+
+
+def any_not_cooperating(parsed_list):
+    """Did ANY agency flag non-cooperation?
+
+    A REGULATOR-MANDATED DISCLOSURE AND THE MOST PREDICTIVE FIELD IN THE FILE.
+    It means the issuer stopped supplying information to its rating agency,
+    which is a decision the issuer took, not an opinion the agency formed. 169
+    of 28,670 rows carry it. Everything else in this module is descriptive;
+    this is the one thing that looks forward.
+    """
+    return any(p.get("not_cooperating") for p in parsed_list if p)
 
 
 def parse_any(*fields):
