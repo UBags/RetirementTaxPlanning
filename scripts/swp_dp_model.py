@@ -3685,6 +3685,23 @@ def main():
                          "nil band and s.112A exemption, and what is not yet "
                          "sold goes on earning. Nothing is spent during the "
                          "wind-down.")
+    ap.add_argument("--extend_navs", "--extend-navs", action="store_true",
+                    help="when --horizon exceeds the complete financial years "
+                         "in the NAV data, CONTINUE every series forward "
+                         "rather than refusing. Sigma is preserved exactly and "
+                         "the forward CAGR is cut by 1.0 point on debt and 1.5 "
+                         "on equity; block starts are shared across funds so "
+                         "cross-fund correlation survives. The synthetic "
+                         "stretch is a reshuffling of the history it was built "
+                         "from: it can produce a 2008 because 2008 is in the "
+                         "deck, but nothing worse than the worst block that "
+                         "actually happened. Off by default, because inventing "
+                         "prices under a banner reading REAL NAVS should have "
+                         "to be asked for.")
+    ap.add_argument("--extend_deltas", "--extend-deltas", default=None,
+                    metavar="DEBT/EQUITY",
+                    help="override the forward return cut, as fractions, e.g. "
+                         "0.010/0.015 which is the default.")
     ap.add_argument("--real_navs", "--real-navs", default=None,
                     metavar="PATH",
                     help="run against REAL fund NAVs from a nav_sample.csv "
@@ -4113,11 +4130,49 @@ def main():
     _min_h = MIN_HORIZON
     if REAL_NAVS:
         _have = len(REAL_NAVS["years"])
+        if a.horizon and a.horizon > _have and a.extend_navs:
+            # CONTINUE THE SERIES RATHER THAN REFUSE. Everything past _have is
+            # synthetic, and the banner below says so in years rather than
+            # burying it in a note, because a reader who skims the header and
+            # sees "real NAVs" must not come away believing thirty-five years
+            # of Indian market history exist.
+            _dd, _ed = nav_feed.SYNTH_DEBT_DELTA, nav_feed.SYNTH_EQUITY_DELTA
+            if a.extend_deltas:
+                try:
+                    _p = a.extend_deltas.split("/")
+                    _dd, _ed = float(_p[0]), float(_p[1])
+                except (ValueError, IndexError):
+                    sys.exit(f"FATAL: --extend_deltas {a.extend_deltas} is not "
+                             f"DEBT/EQUITY as two fractions, e.g. 0.010/0.015")
+            # ASK FOR MORE YEARS THAN THE HORIZON. The synthetic stretch
+            # begins on the day the history ends, which is mid-financial-year,
+            # so the last year it reaches is a PART year and does not count as
+            # complete. Requesting exactly the horizon lands one short every
+            # time. Two spare years costs nothing -- the horizon caps the run
+            # downstream -- and asking for a margin is more honest than an
+            # off-by-one nobody can see.
+            _fm = nav_feed.extend_series(_fm, to_years=a.horizon + 2,
+                                         debt_delta=_dd, equity_delta=_ed)
+            _ar = nav_feed.annual_returns(_fm)
+            if len(_ar["years"]) < a.horizon:
+                sys.exit(f"FATAL: extension produced {len(_ar['years'])} "
+                         f"complete years for a horizon of {a.horizon}. The "
+                         f"margin in this call is too small for this data.")
+            globals()["REAL_NAVS"] = _ar
+            _synth = len(_ar["years"]) - _have
+            print(f"--extend_navs: {_have} real financial years plus "
+                  f"{_synth} SYNTHETIC ones to reach {a.horizon}.")
+            print(f"  forward CAGR cut {_dd:.1%} on debt and {_ed:.1%} on "
+                  f"equity; sigma preserved; blocks shared across funds")
+            print(f"  the synthetic stretch RESHUFFLES {_have} years of "
+                  f"history -- it cannot be worse than the worst block in it")
+            _have = len(_ar["years"])
         if a.horizon and a.horizon > _have:
             sys.exit(f"FATAL: --horizon {a.horizon} exceeds the {_have} "
                      f"complete financial years in {a.real_navs}. A part year "
                      f"would be charged full-year tax allowances and read as "
-                     f"a windfall. Use --horizon {_have} or fewer.")
+                     f"a windfall. Use --horizon {_have} or fewer, or pass "
+                     f"--extend_navs to continue the series forward.")
         if a.horizon is None:
             a.horizon = _have
         # MIN_HORIZON is a judgement about what counts as a retirement plan,
