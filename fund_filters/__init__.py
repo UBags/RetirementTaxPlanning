@@ -2,8 +2,11 @@
 # See LICENSE in the project root for license information.
 """fund_filters -- choosing the investible universe, and watching it.
 
-THREE MODULES, AND A MEASURED WARNING ABOUT WHAT TWO OF THEM DO NOT DO.
+FOUR MODULES, AND A MEASURED WARNING ABOUT WHAT TWO OF THEM DO NOT DO.
 
+    instruments    what kind of risk an instrument carries, from its ISIN.
+                   Two-thirds of the traded debt universe classifies with no
+                   rating file at all.
     concentration  how much one default can cost, and what cap prevents it.
                    THE ONLY MODULE HERE THAT WOULD ACTUALLY HAVE PREVENTED THE
                    HISTORICAL LOSSES.
@@ -28,6 +31,11 @@ Applying it still needs the monthly portfolio disclosure, which this project
 does not yet ingest: the module can size a limit, not audit compliance with
 one. That remains the outstanding data-acquisition problem.
 """
-from . import amc_registry, concentration, deviation  # noqa: F401
+from . import (  # noqa: F401
+    amc_registry,
+    concentration,
+    deviation,
+    instruments,
+)
 
-__all__ = ["amc_registry", "concentration", "deviation"]
+__all__ = ["amc_registry", "concentration", "deviation", "instruments"]
