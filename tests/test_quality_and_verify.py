@@ -336,3 +336,78 @@ def test_verify_correlations_fails_when_funds_are_made_independent():
     ok, findings = V.verify_correlations(real, ens)
     assert not ok
     assert any(f["verdict"] == "FAIL" for f in findings)
+
+
+# ── decile occupancy ────────────────────────────────────────────────────────
+
+def test_the_decile_null_is_large_and_must_not_be_assumed_away():
+    """
+    THE TOLERANCE CANNOT BE CHOSEN. A perfect generator still shows a large
+    max-bucket deviation on a nineteen-year path, and it grows with the
+    horizon: any fixed threshold would pass everything at N=18 or fail
+    everything at N=3.
+    """
+    dates, nav = _gbm(365 * 19, 0.11, 0.20, seed=60)
+    ml = [nav[d] for d in V.M.month_ends(dates, nav)]
+    m3, p3 = V.decile_null(ml, 3, draws=60, seed=1)
+    m18, p18 = V.decile_null(ml, 18, draws=60, seed=1)
+    assert m3 > 2.0 and m18 > m3
+    assert p3 > m3 and p18 > m18
+
+
+def test_a_series_scored_against_its_own_deciles_is_flat():
+    """The vacuity check: this is WHY an absolute null is needed instead of
+    a real point value to sit inside a band."""
+    dates, nav = _gbm(365 * 19, 0.11, 0.20, seed=61)
+    ml = [nav[d] for d in V.M.month_ends(dates, nav)]
+    occ = V.M.decile_occupancy(ml, ml, 12, drift_delta=0.0)
+    assert V.M.occupancy_deviation(occ)[0] < 1.0
+
+
+def test_check_deciles_passes_an_ensemble_drawn_from_the_same_process():
+    dates, real = _gbm(365 * 19, 0.11, 0.20, seed=62)
+    paths = [(_gbm(365 * 19, 0.11, 0.20, seed=700 + i)[1], dates)
+             for i in range(10)]
+    ok, findings = V.check_deciles(real, dates, paths)
+    assert ok, V.format_findings(findings)
+    assert {f["name"] for f in findings} == {
+        "decile3", "decile6", "decile9", "decile12", "decile18"}
+
+
+def test_check_deciles_fails_an_ensemble_from_a_different_process():
+    dates, real = _gbm(365 * 19, 0.11, 0.20, seed=63)
+    paths = [(_gbm(365 * 19, 0.02, 0.45, seed=800 + i)[1], dates)
+             for i in range(10)]
+    ok, _ = V.check_deciles(real, dates, paths)
+    assert not ok
+
+
+def test_the_drift_adjustment_is_what_lets_a_reduced_cagr_still_pass():
+    """
+    Requirement (b) cuts the CAGR; requirement (c) compares against the REAL
+    deciles. Without adding the cut back over the window they contradict each
+    other and NO series can satisfy both.
+    """
+    import math as _m
+    # A LOW-VOLATILITY series, deliberately. At equity volatility a ten-point
+    # drift cut is under half a sigma at twelve months and vanishes inside the
+    # null -- which is itself worth knowing: at nineteen years the occupancy
+    # test cannot detect a CAGR error of that size on a volatile fund.
+    dates, real = _gbm(365 * 19, 0.08, 0.03, seed=64)
+    cut = _m.log(1 - 0.10) / 365.0
+    paths = []
+    for i in range(10):
+        _, n = _gbm(365 * 19, 0.08, 0.03, seed=900 + i)
+        lv, prev = {}, None
+        for j, d in enumerate(dates):
+            if d not in n:
+                continue
+            lv[d] = n[d] * _m.exp(cut * j)
+            prev = d
+        assert prev is not None
+        paths.append((lv, dates))
+    raw_ok, _ = V.check_deciles(real, dates, paths, drift_delta=0.0)
+    adj_ok, adj = V.check_deciles(real, dates, paths,
+                                  drift_delta=1 / 0.90 - 1)
+    assert not raw_ok
+    assert adj_ok, V.format_findings(adj)

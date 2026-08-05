@@ -28,12 +28,17 @@ point estimates, and it would have acquitted every generator of every charge.
 from __future__ import annotations
 
 import math
+import random
+import statistics as st
 
 from . import metrics as M
 
 EXACT_TOLERANCE = 1e-4
 WINDOW_YEARS = 9
 MIN_EFFECTIVE_BLOCKS = 30     # below this a path is a replay, not a sample
+DECILE_HORIZONS = (3, 6, 9, 12, 18)
+DECILE_NULL_DRAWS = 200
+DECILE_NULL_BLOCK = 12        # months, so the overlap structure survives
 MAX_LENGTH_RATIO = 1.25       # synthetic-to-real length, for fidelity scoring
 
 
@@ -85,6 +90,104 @@ def verify_correlations(real_funds, ensemble, alpha=0.10):
                              got=sum(vals) / len(vals), point=want,
                              lo=lo, hi=hi,
                              verdict="pass" if inside else "FAIL"))
+    return ok, findings
+
+
+def decile_null(real_month_levels, n, draws=DECILE_NULL_DRAWS,
+                block=DECILE_NULL_BLOCK, seed=0):
+    """What deviation a PERFECT generator still shows on a path this long.
+
+    THE TOLERANCE CANNOT BE CHOSEN, IT HAS TO BE MEASURED. Occupancy has no
+    real value to sit inside a band -- the real series scored against its own
+    deciles gives zero by construction -- so the criterion needs an absolute
+    threshold, and any number picked by taste would be indistinguishable from
+    one picked to pass.
+
+    Measured on nav_sample.csv the floor is LARGE: at eighteen months a perfect
+    equity generator still shows a mean 12.5pp max-bucket deviation and a 95th
+    percentile of 24.5. Deviations reported earlier as the weakest part of the
+    synthesizer sat at or below that floor. Raw occupancy numbers cannot be
+    read without it.
+
+    TWO INDEPENDENT RESAMPLES, NOT RESAMPLE-VERSUS-ORIGINAL. Scoring a
+    bootstrap of the real path against that same path's deciles shares data
+    between the thing measured and the thing measured against, and understates
+    the floor: an ensemble drawn from an IDENTICAL process then fails at three
+    months, ratio 1.61. Real synthetic paths are independent realisations and
+    carry sampling error on BOTH sides, so the null must too.
+
+    Blocks are twelve months, so the heavy overlap between rolling windows
+    survives. An i.i.d. null would understate the floor badly, because
+    overlapping n-month returns share n-1 months of data.
+    """
+    rets = M.monthly_log_returns(real_month_levels, 1)
+    if len(rets) < block * 3:
+        return None, None
+    rng = random.Random(seed)
+
+    def resample():
+        out = []
+        while len(out) < len(rets):
+            st_ = rng.randrange(0, len(rets) - block)
+            out.extend(rets[st_:st_ + block])
+        lv = [1.0]
+        for x in out[:len(rets)]:
+            lv.append(lv[-1] * math.exp(x))
+        return lv
+
+    devs = []
+    for _ in range(draws):
+        thr = M.quantile_thresholds(
+            [math.exp(x) - 1 for x in M.monthly_log_returns(resample(), n)])
+        if thr is None:
+            continue
+        ss = [math.exp(x) - 1 for x in M.monthly_log_returns(resample(), n)]
+        d = M.occupancy_deviation(M.occupancy(ss, thr))[0]
+        if d is not None:
+            devs.append(d)
+    if len(devs) < 20:
+        return None, None
+    devs.sort()
+    return st.fmean(devs), devs[int(len(devs) * 0.95)]
+
+
+def check_deciles(real_nav, real_dates, paths, horizons=DECILE_HORIZONS,
+                  drift_delta=0.0, seed=0):
+    """Rolling n-month return occupancy against the real series' deciles.
+
+    Scored on DRIFT-ADJUSTED returns: the synthetic series has a deliberately
+    lower CAGR, so it must sit low in the real distribution unless the cut is
+    added back over the window. Without that, the requirement to reduce the
+    return and the requirement to match the quantiles contradict each other and
+    no series can satisfy both.
+
+    Passes when the ensemble MEAN deviation is at or under the null's 95th
+    percentile -- that is, when the generator is not distinguishable from a
+    correct one at this sample size.
+    """
+    ml = [real_nav[d] for d in M.month_ends(real_dates, real_nav)]
+    findings, ok = [], True
+    for n in horizons:
+        mean_null, p95 = decile_null(ml, n, seed=seed)
+        devs = []
+        for nav, dates in paths:
+            sl = [nav[d] for d in M.month_ends(dates, nav)]
+            occ = M.decile_occupancy(ml, sl, n, drift_delta=drift_delta)
+            if occ is None:
+                continue
+            mx, _ = M.occupancy_deviation(occ)
+            devs.append(mx)
+        if not devs or p95 is None:
+            findings.append(dict(name=f"decile{n}", kind="decile",
+                                 verdict="not estimable"))
+            continue
+        got = st.fmean(devs)
+        passed = got <= p95
+        ok = ok and passed
+        findings.append(dict(name=f"decile{n}", kind="decile", got=got,
+                             null_mean=mean_null, null_p95=p95,
+                             ratio=got / mean_null if mean_null else None,
+                             verdict="pass" if passed else "FAIL"))
     return ok, findings
 
 
@@ -322,6 +425,14 @@ def format_findings(findings):
                 lines.append(f"  {f['name']:10s} exact      got {f['got']:+.6f} "
                              f"want {f['want']:+.6f}  miss {f['miss']:.2e}  "
                              f"{f['verdict']}")
+        elif f["kind"] == "decile":
+            if f["verdict"] == "not estimable":
+                lines.append(f"  {f['name']:10s} decile     not estimable")
+            else:
+                lines.append(
+                    f"  {f['name']:10s} decile     got {f['got']:5.1f}pp  "
+                    f"null mean {f['null_mean']:5.1f}  p95 {f['null_p95']:5.1f}"
+                    f"  ratio {f['ratio']:.2f}  {f['verdict']}")
         elif f["kind"] == "novelty":
             lines.append(f"  {'novelty':10s} {f['blocks']} blocks in "
                          f"{f['n_out']} observations at mean {f['mean_block']}"
