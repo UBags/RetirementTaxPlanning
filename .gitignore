@@ -61,3 +61,6 @@ Code packaged into MDs for LLMs/
 # Schema DDL is source, not data. The ignore rule above is for dumps
 # and backups; it swallowed db/ratings_schema.sql silently once.
 !db/*.sql
+
+!ingest/
+!ingest/*.py
