@@ -57,3 +57,7 @@ Code packaged into MDs for LLMs/
 /CODEBUDDY.md
 /GEMINI.md
 /QODER.md
+
+# Schema DDL is source, not data. The ignore rule above is for dumps
+# and backups; it swallowed db/ratings_schema.sql silently once.
+!db/*.sql
