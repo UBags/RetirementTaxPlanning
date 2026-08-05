@@ -51,6 +51,89 @@ def _restore():
         M.DEDUCTIONS[p] = d
 
 
+# ── the monthly executor ───────────────────────────────────────────────────
+
+def _one_book(nf, amount=400.0):
+    b = M.Book(M.MAX_FOLIOS, nf)
+    b.put_direct(amount, [1.0] * nf, 0, list(range(M.N_BASE_FUNDS)))
+    return b
+
+
+def test_monthly_execution_reproduces_the_annual_draw_on_flat_prices():
+    """THE ORACLE. Without this the monthly rewrite has no baseline.
+
+    Fed twelve IDENTICAL price vectors, executing monthly must give exactly
+    what one annual draw gives -- same cash, same gain, to floating point. It
+    can, because FIFO is additive: twelve draws of need/12 consume the same
+    lots in the same order as one draw of need.
+
+    If this ever fails, the monthly path has grown a behaviour the annual one
+    does not have, and the difference is a bug rather than a finding.
+    """
+    nf = M.get_scenario("2chunk")["n_funds"]
+    book = _one_book(nf)
+    navs = [1.06] * nf
+    flat = [list(navs) for _ in range(12)]
+
+    probe = book.clone()
+    cash_a, gain_a, _ = probe.draw(navs, 1, amount=36.0)
+
+    _months, tot = M.execute_year_monthly(
+        book, M.Book(M.MAX_FOLIOS, nf), M.Sleeve(), M.Sleeve(),
+        flat, [1.0] * 12, 36.0, 1)
+
+    assert tot["cash"] == pytest.approx(cash_a, abs=1e-9), (
+        f"monthly raised {tot['cash']:.9f} against the annual {cash_a:.9f}"
+    )
+    assert tot["gain"] == pytest.approx(gain_a, abs=1e-9), (
+        f"monthly realised {tot['gain']:.9f} of gain against the annual "
+        f"{gain_a:.9f}; FIFO should make twelve draws equal to one"
+    )
+
+
+def test_monthly_execution_leaves_the_callers_books_alone():
+    """It takes clones. A function that mutated the real books could not be
+    run alongside the annual path for comparison, which is its only job."""
+    nf = M.get_scenario("2chunk")["n_funds"]
+    book = _one_book(nf)
+    navs = [1.06] * nf
+    before = book.value(navs)
+    M.execute_year_monthly(book, M.Book(M.MAX_FOLIOS, nf), M.Sleeve(),
+                           M.Sleeve(), [list(navs) for _ in range(12)],
+                           [1.0] * 12, 36.0, 1)
+    assert book.value(navs) == pytest.approx(before, abs=1e-9)
+
+
+def test_monthly_detail_accounts_for_every_rupee_raised():
+    """The per-fund records ARE the redemption instruction, so they have to
+    add up to the cash. Units times price, summed, is what was raised."""
+    nf = M.get_scenario("2chunk")["n_funds"]
+    navs = [1.06] * nf
+    months, tot = M.execute_year_monthly(
+        _one_book(nf), M.Book(M.MAX_FOLIOS, nf), M.Sleeve(), M.Sleeve(),
+        [list(navs) for _ in range(12)], [1.0] * 12, 36.0, 1)
+    for row in months:
+        gross = sum(u * p for u, p in row["sold"].values())
+        assert gross == pytest.approx(row["raised"] + row["exit_load"],
+                                      abs=1e-9), (
+            f"month {row['month']}: sold {gross:.6f} but raised "
+            f"{row['raised']:.6f} plus load {row['exit_load']:.6f}"
+        )
+    assert sum(r["raised"] for r in months) == pytest.approx(tot["cash"],
+                                                             abs=1e-9)
+
+
+def test_monthly_execution_records_a_shortfall_rather_than_pretending():
+    """An empty book must report what it could not raise, not raise it."""
+    nf = M.get_scenario("2chunk")["n_funds"]
+    months, tot = M.execute_year_monthly(
+        _one_book(nf, amount=6.0), M.Book(M.MAX_FOLIOS, nf), M.Sleeve(),
+        M.Sleeve(), [[1.06] * nf for _ in range(12)], [1.0] * 12, 60.0, 1)
+    assert tot["short"] > 1.0, "a book of 6 funded a requirement of 60"
+    assert tot["cash"] < 60.0
+    assert any(r["short"] > 0 for r in months)
+
+
 # ── the monthly price layer ────────────────────────────────────────────────
 
 @pytest.mark.parametrize("scenario", ["1chunk", "2chunk", "3chunk"])
