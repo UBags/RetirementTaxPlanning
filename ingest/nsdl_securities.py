@@ -197,14 +197,29 @@ def parse_workbook(path, sheet=None):
         parsed = _ratings.split_multi(raw_rating)
         worst = _ratings.worst(parsed)
         issuer = _norm(r[idx["Name of Issuer"]])
-        tier = _instruments.classify(None, isin)["tier"]
+        description = _norm(r[idx["Security Description"]]) \
+            if "Security Description" in idx else ""
+        instrument_type = _norm(r[idx["Type of Instrument"]]) \
+            if "Type of Instrument" in idx else ""
+        # SENIORITY COMES OUT OF THIS FILE'S OWN TWO TEXT COLUMNS. There is no
+        # SECTYPE here, so without them classify() can only reach CORPORATE and
+        # every perpetual in the outstanding universe is sized at the general
+        # cap on a 45% recovery assumption. Subordination is invisible in a
+        # return series -- an AT1 that never triggers moves like senior paper
+        # -- so the words are the only place the risk shows up in advance.
+        redemption = _date(r[idx["Date of Redemption/Conversion"]]) \
+            if "Date of Redemption/Conversion" in idx else None
+        # THE UNION OF TWO INCOMPLETE TESTS. The words miss 67 perpetuals that
+        # carry no seniority term at all; the sentinel misses 9 whose issuers
+        # filed a call date instead, plus every genuinely dated Tier 2 bond.
+        tier = _instruments.classify(
+            None, isin, f"{instrument_type} {description}",
+            maturity=redemption)["tier"]
         out.append(dict(
             isin=isin, issuer=issuer, issuer_key=canonical_issuer(issuer),
             tier=tier,
-            description=_norm(r[idx.get("Security Description", -1)])
-            if "Security Description" in idx else "",
-            instrument_type=_norm(r[idx["Type of Instrument"]])
-            if "Type of Instrument" in idx else "",
+            description=description,
+            instrument_type=instrument_type,
             sector=_norm(r[idx["Business Sector"]])
             if "Business Sector" in idx else "",
             ownership=_norm(r[idx["Type of Issuer-Ownership"]])
@@ -213,8 +228,7 @@ def parse_workbook(path, sheet=None):
             if "Instrument Status" in idx else "",
             allotment=_date(r[idx["Date of Allotment"]])
             if "Date of Allotment" in idx else None,
-            redemption=_date(r[idx.get("Date of Redemption/Conversion", -1)])
-            if "Date of Redemption/Conversion" in idx else None,
+            redemption=redemption,
             coupon=_number(r[idx["Coupon Rate (%)"]])
             if "Coupon Rate (%)" in idx else None,
             face_value=_number(r[idx["Face Value(in Rs.)"]])
@@ -231,6 +245,114 @@ def parse_workbook(path, sheet=None):
         raise ValueError(f"only {len(out)} rows; expected at least "
                          f"{MIN_PLAUSIBLE_ROWS}")
     return out
+
+
+def seniority_audit(records):
+    """The two seniority tests, scored against each other.
+
+    THE EARLIER VERSION OF THIS FUNCTION ASKED A DEAD QUESTION. It looked for
+    corporate rows with NO redemption date, on the reasoning that a perpetual
+    has no maturity. Not one row in the file has an empty date -- the
+    perpetuals carry the sentinel 31-12-9999 -- so that check returned zero
+    every time and looked like a clean bill of health. It has been removed
+    rather than kept as a decoration.
+
+    WHAT REPLACES IT IS A REAL CROSS-TAB, because there are now two
+    independent tests and neither is complete:
+
+        both              the easy cases
+        sentinel_only     perpetuals with no seniority word anywhere. 67 of
+                          them, including SBI, REC, Bank of India and Power
+                          Finance -- unreachable from any marker table.
+        words_only        rows whose issuer filed a call date instead of the
+                          sentinel, PLUS genuinely dated subordination (Tata
+                          Capital Tier II, DCB Tier 2, IIFL Tier 2, SMFG
+                          sub-debt) which no maturity test can ever reach.
+
+    Read `words_only`. It is small, and it is the list where a false positive
+    would hide: a perpetual appearing there is a filing quirk, but a senior
+    bond appearing there is a marker firing on something it should not.
+
+    `far_dated` collects every redemption year beyond 2100 that is NOT the
+    adopted sentinel. Those rows are unexplained and are reported rather than
+    absorbed -- 2903 and 3034 look far more like typos for 2033 and 2034 than
+    like a convention.
+    """
+    by_tier, markers, types = {}, {}, {}
+    both, sentinel_only, words_only, far_dated = [], [], [], []
+    for r in records:
+        tier = r.get("tier")
+        by_tier[tier] = by_tier.get(tier, 0) + 1
+        it = r.get("instrument_type") or "(blank)"
+        d = types.setdefault(it, dict(count=0, subordinated=0))
+        d["count"] += 1
+        if tier == _instruments.SUBORDINATED:
+            d["subordinated"] += 1
+
+        marker = _instruments.subordinated_text(
+            f"{r.get('instrument_type') or ''} {r.get('description') or ''}")
+        red = r.get("redemption")
+        sentinel = _instruments.is_perpetual_maturity(red)
+        if marker:
+            markers[marker] = markers.get(marker, 0) + 1
+        if sentinel:
+            markers["(no maturity)"] = markers.get("(no maturity)", 0) + 1
+
+        if marker and sentinel:
+            both.append(r)
+        elif sentinel:
+            sentinel_only.append(r)
+        elif marker:
+            words_only.append(r)
+
+        if red is not None and red.year > 2100 and not sentinel:
+            far_dated.append(r)
+
+    return dict(
+        by_tier=dict(sorted(by_tier.items(), key=lambda kv: -kv[1])),
+        markers=dict(sorted(markers.items(), key=lambda kv: -kv[1])),
+        instrument_types=dict(sorted(types.items(),
+                                     key=lambda kv: -kv[1]["count"])),
+        both=both, sentinel_only=sentinel_only, words_only=words_only,
+        far_dated=far_dated)
+
+
+def format_seniority_audit(audit, sample=25):
+    """One page to read before trusting the subordinated cap."""
+    def rows(rs, n):
+        return [f"  {r.get('isin')}  {(r.get('description') or '')[:70]}"
+                for r in rs[:n]]
+
+    b, s, w = audit["both"], audit["sentinel_only"], audit["words_only"]
+    lines = ["seniority: the maturity sentinel and the description, together",
+             "-" * 70, "tier"]
+    for t, n in audit["by_tier"].items():
+        lines.append(f"  {t:<22}{n:>8,}")
+    lines += ["", "what identified it"]
+    lines.append(f"  both tests               {len(b):>8,}")
+    lines.append(f"  sentinel only            {len(s):>8,}   "
+                 f"<- no seniority word anywhere")
+    lines.append(f"  words only               {len(w):>8,}   "
+                 f"<- call date filed, or dated subordination")
+    lines.append(f"  union                    {len(b) + len(s) + len(w):>8,}")
+    lines += ["", "which word fired"]
+    for m, n in audit["markers"].items():
+        lines.append(f"  {m:<22}{n:>8,}")
+    lines += ["", "Type of Instrument (count / of which subordinated)"]
+    for it, d in list(audit["instrument_types"].items())[:40]:
+        lines.append(f"  {it[:44]:<46}{d['count']:>8,} {d['subordinated']:>8,}")
+    lines += ["", f"SENTINEL ONLY -- {len(s):,} perpetuals no marker table "
+                  f"could reach"] + rows(s, sample)
+    lines += ["", f"WORDS ONLY -- {len(w):,}. Read these: a perpetual here is "
+                  f"a filing quirk, a SENIOR bond here is a false positive"
+              ] + rows(w, sample)
+    if audit["far_dated"]:
+        lines += ["", f"UNEXPLAINED FAR DATES -- {len(audit['far_dated']):,} "
+                      f"rows beyond 2100 that are not the adopted sentinel"]
+        lines += [f"  {r.get('isin')}  {r.get('redemption')}  "
+                  f"{(r.get('description') or '')[:52]}"
+                  for r in audit["far_dated"][:sample]]
+    return "\n".join(lines)
 
 
 def content_hash(records):
