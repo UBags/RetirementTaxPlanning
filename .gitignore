@@ -64,3 +64,6 @@ Code packaged into MDs for LLMs/
 
 !ingest/
 !ingest/*.py
+
+!lookup/
+!lookup/*.py
