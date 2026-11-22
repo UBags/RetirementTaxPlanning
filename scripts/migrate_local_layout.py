@@ -101,6 +101,7 @@ def main() -> int:
 
     plan = list(MOVES) + [(u, f"outputs/{u}") for u in user_output_dirs()]
     moved = skipped = 0
+    planned: set[Path] = set()      # sources that are (or would be) moved
     print(("APPLYING" if a.apply else "DRY RUN") + f" in {ROOT}\n")
 
     for src_rel, dst_rel in plan:
@@ -116,6 +117,7 @@ def main() -> int:
             skipped += 1
             continue
         print(f"  move                   {src_rel}  ->  {dst_rel}")
+        planned.add(src)
         if a.apply:
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(src), str(dst))
@@ -133,7 +135,8 @@ def main() -> int:
     for d in VACATED_DIRS:
         p = ROOT / d
         if p.is_dir():
-            leftover = [c for c in p.iterdir() if c.name != "__pycache__"]
+            leftover = [c for c in p.iterdir()
+                        if c.name != "__pycache__" and c not in planned]
             if leftover:
                 names = ", ".join(sorted(c.name for c in leftover))
                 print(f"  KEEP (not empty)       {d}/  [{names}]")
