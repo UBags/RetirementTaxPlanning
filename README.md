@@ -5,6 +5,10 @@
 
 A comprehensive retirement-income planning application for Indian investors. It models a 30-year Systematic Withdrawal Plan (SWP) for a **Personal + HUF (Hindu Undivided Family)** dual-entity structure, with tax-optimal fund selection, multi-period portfolio rebalancing via a glide path, Monte Carlo stress testing, and a full PySide6 GUI.
 
+![Main window after Run Calculations: 30-year combined annual summary for Personal and HUF, with the end-of-plan totals strip](docs/images/02_annual_summary.png)
+
+<sub>Screenshots use the synthetic golden test plan (`tests/golden/golden_projects.py`): illustrative figures and generalised fund names, not a real portfolio. Regenerate with `QT_QPA_PLATFORM=offscreen python3 scripts/make_readme_screenshots.py`.</sub>
+
 ---
 
 ## Table of Contents
@@ -322,7 +326,7 @@ classDiagram
 
 ## Portfolio Optimisation Logic
 
-The optimiser lives in `allocate_funds.py`. Two top-level modes are supported:
+The optimiser lives in `optimiser/allocate_funds.py`. Two top-level modes are supported:
 
 ### Mode A — Singular (Buy-and-Hold)
 
@@ -417,6 +421,10 @@ At each SWP month, the engine withdraws from funds in this priority order:
 
 The engine computes tax annually in April (India FY end). Tax is calculated separately for **Personal** and **HUF** entities.
 
+<img src="docs/images/05_tax_rules.png" width="720" alt="Tax Rules dialog: time chunks with 87A limits on the left, slab table for the selected chunk on the right">
+
+*Configuration → Tax Rules (Individual & HUF): slab tables are defined per block of years (here years 1–5), separately for Personal and HUF debt and equity.*
+
 ```mermaid
 flowchart LR
     A[Annual Gains\ndebt / equity / other] --> B{Entity type}
@@ -456,6 +464,10 @@ The transition window of `spread_years` is **centred on the chunk boundary**. Be
 ---
 
 ## Monte Carlo Analysis
+
+![Monte Carlo fan chart: P5–P95 and P25–P75 bands, median and deterministic base case over 30 financial years, with ruin probability](docs/images/04_monte_carlo.png)
+
+*2,000 block-bootstrap paths of the total corpus. The header strip gives σ, the per-period return floors, ruin probability and the median and P5 final corpus; the View selector also offers a net-cash fan chart, ruin probability by year, sample sequence-of-returns paths and summary statistics.*
 
 ```mermaid
 flowchart TD
@@ -680,6 +692,8 @@ python run.py              # equivalent, from the project root
 
 At the welcome dialog, enter your name (e.g., `Uddi`). All outputs will be written to `<project_root>/outputs/Uddi/`.
 
+<img src="docs/images/01_welcome.png" width="420" alt="Welcome dialog asking for a user name and showing the outputs/ folder it will write to">
+
 ### 3. Typical GUI Workflow
 
 ```mermaid
@@ -829,6 +843,14 @@ The main window (`main.py → MainWindow`) has **4 scenario tabs** — each scen
 | **Personal Monthly Table** | Main tab | 349-row monthly detail, Personal corpus |
 | **HUF Monthly Table** | Main tab | 349-row monthly detail, HUF corpus |
 | **Annual Summary Table** | Main tab | 30-row FY summary, both entities |
+
+**Show Chart** above any results table opens a non-modal Matplotlib window; this is the Annual Combined Summary's corpus view:
+
+![Stacked area chart of total corpus by entity and asset class over 30 years](docs/images/03_annual_chart.png)
+
+**Configuration → View Fund Selection & Allocation** shows each allocation chunk's funds with their risk/return metrics. Weights are editable in place, and row colour marks whether a fund appears in all, some or one chunk:
+
+![Fund Selection & Allocation dialog listing funds, sub-categories, allocations, weights and metrics for chunk 1](docs/images/06_fund_allocation.png)
 
 ---
 
