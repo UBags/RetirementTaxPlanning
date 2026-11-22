@@ -1,0 +1,13 @@
+flowchart LR
+    A[Annual Gains\ndebt / equity / other] --> B{Entity type}
+    B -- Individual --> C[compute_slab_tax\nProgressive slabs from TaxChunk\n+ 4% cess]
+    B -- Individual --> D[compute_ltcg_individual\nEquity LTCG rate from EquityTaxChunk\nExempt limit deducted first]
+    B -- HUF --> E[compute_slab_tax\nHUF slab rates\n+ 4% cess]
+    B -- HUF --> F[compute_ltcg_huf\nHUF equity LTCG\nstacked on debt income]
+    C --> G[Total Personal Tax]
+    D --> G
+    E --> H[Total HUF Tax]
+    F --> H
+    G --> I[Rebalancing tax excluded\nfrom net_cash\nPortfolio self-funds it]
+    H --> I
+    I --> J[Tax Saved = Personal tax avoided\nby shifting income to HUF]

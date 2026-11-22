@@ -1,0 +1,6 @@
+flowchart LR
+    chunks["AllocationChunks\n[Yr 1-10], [Yr 11-20], [Yr 21-30]"]
+    spread["rebalance_spread_years = 4"]
+    chunks & spread --> build["build_glide_path()"]
+    build --> schedule["GlidePath.schedule\n{1: w1, 2: w1, ...,\n 8: lerp(w1,w2,0.25),\n 9: lerp(w1,w2,0.50),\n10: lerp(w1,w2,0.75),\n11: w2, ...}"]
+    schedule --> engine["Engine: each year\n_rebalance_portfolio()\nSells overweights → buys underweights\nCapital gains tax self-funded"]

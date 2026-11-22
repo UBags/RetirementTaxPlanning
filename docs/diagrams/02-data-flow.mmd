@@ -1,0 +1,39 @@
+flowchart LR
+    subgraph Step1 [1 · Fund Data Acquisition]
+        mfapi["mfapi.in API"] --> gfd["get_funds_data.py\nComputes 60 metrics\nper fund"]
+        amfi["AMFI AUM API"] --> aum["fetch_amfi_aum.py"]
+        gfd --> fmo["Fund_Metrics_Output.csv"]
+        aum --> fmo
+    end
+
+    subgraph Step2 [2 · Portfolio Optimisation]
+        fmo --> lf["load_and_filter()\nadj_ret / adj_std / adj_dd"]
+        lf --> milp["MILP Aim Pass\n(PuLP / SLSQP)\nMultiple α-blends\nor Frontier Walk"]
+        milp --> cands["Candidate Portfolios\nper Chunk"]
+        cands --> score["Cross-chunk\nCombination Scoring"]
+        score --> best["select_best_combination()\nChunk.target_weights"]
+        best --> gp["build_glide_path()\nGlidePath.schedule\n{year → weights}"]
+    end
+
+    subgraph Step3 [3 · Simulation]
+        gp --> eng["Engine.run()\n30 × 12 = 360 monthly steps\nFIFO lots · drift control\nLTCG harvest · rebalance"]
+        state["AppState\n(requirements, tax,\nwindfalls, income)"] --> eng
+        eng --> pmr["List[MonthlyRow]\nPersonal"]
+        eng --> hmr["List[MonthlyRow]\nHUF"]
+        eng --> ys["List[YearSummary]\n30 rows"]
+    end
+
+    subgraph Step4 [4 · Post-Processing]
+        ys --> opt_split["optimize_withdrawal_split()\nPersonal ↔ HUF tax\nminimisation"]
+        opt_split --> eng
+        ys --> mc["monte_carlo.run_monte_carlo()\nMCResults"]
+        ys --> sens["run_sensitivity()\nScenario comparison"]
+    end
+
+    subgraph Step5 [5 · Output]
+        pmr --> csv_pm["*_Personal_Monthly.csv\n*_Personal_Monthly_FundDetail.csv"]
+        hmr --> csv_hm["*_HUF_Monthly.csv\n*_HUF_Monthly_FundDetail.csv"]
+        ys  --> csv_ya["*_Personal_Annual_Summary.csv\n*_HUF_Annual_Summary.csv"]
+        mc  --> charts["Monte Carlo Charts\nFan / Ruin / Paths"]
+        sens --> charts2["Sensitivity Chart"]
+    end

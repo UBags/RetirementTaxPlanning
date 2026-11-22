@@ -1,0 +1,138 @@
+classDiagram
+    class AppState {
+        +date investment_date
+        +List~FundEntry~ funds
+        +List~AllocationChunk~ allocation_chunks
+        +List~TaxChunk~ individual_debt_chunks
+        +List~EquityTaxChunk~ individual_equity_chunks
+        +List~TaxChunk~ huf_debt_chunks
+        +List~EquityTaxChunk~ huf_equity_chunks
+        +List~ReturnChunk~ return_chunks
+        +Dict~int,float~ annual_requirements
+        +OtherIncome personal_income
+        +OtherIncome huf_income
+        +List~WindfallEntry~ windfalls
+        +List~HUFWithdrawalChunk~ huf_withdrawal_chunks
+        +str allocation_mode
+        +int rebalance_spread_years
+        +GlidePath glide_path
+        +to_dict() dict
+        +from_dict(d) AppState
+        +get_allocation_chunk(year) AllocationChunk
+        +get_split_3way(year) tuple
+        +evaluate_chunk_scores() list
+    }
+
+    class FundEntry {
+        +str name
+        +str fund_type
+        +float allocation
+        +float std_dev
+        +float sharpe
+        +float sortino
+        +float calmar
+        +float combined_ratio
+        +float max_dd
+        +float cagr_1 / 3 / 5 / 7 / 10
+        +float avg_cagr_3 / 5 / 7 / 10
+        +float worst_exp_ret
+        +str amfi_fund_type
+    }
+
+    class AllocationChunk {
+        +int year_from
+        +int year_to
+        +List~FundEntry~ funds
+        +Dict~str,float~ target_weights
+        +float min_return
+        +float max_std_dev
+        +float max_dd
+        +float max_per_fund
+        +float min_per_fund
+        +float min_equity_frac
+        +portfolio_std() float
+    }
+
+    class GlidePath {
+        +Dict~int,dict~ schedule
+        +transition_years() List~int~
+        +is_flat() bool
+    }
+
+    class TaxChunk {
+        +int year_from
+        +int year_to
+        +List~TaxSlab~ slabs
+    }
+
+    class TaxSlab {
+        +float lower
+        +float upper
+        +float rate
+    }
+
+    class EquityTaxChunk {
+        +int year_from
+        +int year_to
+        +float tax_rate
+        +float exempt_limit
+    }
+
+    class MonthlyRow {
+        +int month_idx
+        +int calendar_month
+        +int fy_year
+        +float corpus_debt_start / end
+        +float corpus_equity_start / end
+        +float corpus_other_start / end
+        +float wd_debt / equity / other
+        +float principal_debt / equity / other
+        +float gain_debt / equity / other
+        +float ind_tax_paid
+        +float huf_transfer_in
+        +float windfall_personal
+        +List~FundWithdrawalDetail~ fund_withdrawals
+    }
+
+    class YearSummary {
+        +int year
+        +float corpus_debt_personal
+        +float corpus_equity_personal
+        +float corpus_debt_huf
+        +float corpus_equity_huf
+        +float tax_personal
+        +float tax_huf
+        +float net_cash_personal
+        +float net_cash_huf
+        +float net_cash_total
+        +float fd_tax_benchmark
+        +float tax_saved
+        +float rebalance_tax_paid
+        +float swp_cash_personal
+    }
+
+    class OtherIncome {
+        +float salary
+        +float taxable_interest
+        +float pension
+        +float rental
+        +float other_taxable
+        +float tax_free_interest
+        +float other_non_taxable
+    }
+
+    class WindfallEntry {
+        +int year
+        +float amount_personal
+        +float amount_huf
+    }
+
+    AppState "1" *-- "many" FundEntry
+    AppState "1" *-- "many" AllocationChunk
+    AppState "1" *-- "1" GlidePath
+    AppState "1" *-- "many" TaxChunk
+    AppState "1" *-- "many" EquityTaxChunk
+    AppState "1" *-- "2" OtherIncome
+    AppState "1" *-- "many" WindfallEntry
+    AllocationChunk "1" *-- "many" FundEntry
+    TaxChunk "1" *-- "many" TaxSlab

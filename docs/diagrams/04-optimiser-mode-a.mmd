@@ -1,0 +1,6 @@
+flowchart TD
+    A[AllocationChunks from AppState] --> B[merge_chunks_strict\nStrictest constraints across all chunks]
+    B --> C[run_aim_pass_multi\nα-blend MILP: α from 1.0 to 0.775]
+    C --> D[Best solution\ntarget_weights]
+    D --> E[Apply same weights to every chunk]
+    E --> F[build_flat_glide_path\nFlat GlidePath]

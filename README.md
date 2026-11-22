@@ -36,44 +36,7 @@ A comprehensive retirement-income planning application for Indian investors. It 
 
 ## High-Level Architecture
 
-```mermaid
-graph TD
-    subgraph Data Sources
-        A[AMFI / mfapi.in<br/>NAV History]
-        B[Fund_Metrics_Output.csv<br/>742 funds × 60 metrics]
-    end
-
-    subgraph Optimiser Layer
-        C[allocate_funds.py<br/>MILP + SLSQP]
-        D[glide_path.py<br/>Transition Schedule]
-    end
-
-    subgraph Simulation Layer
-        E[engine.py<br/>30-yr Monthly SWP]
-        F[monte_carlo.py<br/>Block Bootstrap / Log-Normal]
-    end
-
-    subgraph Presentation Layer
-        G[main.py<br/>PySide6 MainWindow]
-        H[chart_dialog.py<br/>Matplotlib Charts]
-        I[optimization_report.py<br/>Post-Opt Report]
-    end
-
-    subgraph Persistence
-        J[*.swp.json<br/>Project Save]
-        K[per-user CSV outputs]
-    end
-
-    A -->|get_funds_data.py / fetch_amfi_aum.py| B
-    B --> C
-    C --> D
-    D --> E
-    E --> G
-    E --> F
-    F --> H
-    G --> J
-    G --> K
-```
+<img src="docs/diagrams/01-architecture.png" width="560" alt="High-level architecture: data sources, optimiser, simulation, presentation and persistence layers">
 
 ---
 
@@ -135,192 +98,17 @@ Paths are relative to `src/swp_planner/`.
 
 ## Data Flow Diagram
 
-```mermaid
-flowchart LR
-    subgraph Step1 [1 · Fund Data Acquisition]
-        mfapi["mfapi.in API"] --> gfd["get_funds_data.py\nComputes 60 metrics\nper fund"]
-        amfi["AMFI AUM API"] --> aum["fetch_amfi_aum.py"]
-        gfd --> fmo["Fund_Metrics_Output.csv"]
-        aum --> fmo
-    end
+<img src="docs/diagrams/02-data-flow.png" alt="End-to-end data flow from fund data acquisition through optimisation, simulation, post-processing and output files">
+<sub>Click the diagram to open it full size.</sub>
 
-    subgraph Step2 [2 · Portfolio Optimisation]
-        fmo --> lf["load_and_filter()\nadj_ret / adj_std / adj_dd"]
-        lf --> milp["MILP Aim Pass\n(PuLP / SLSQP)\nMultiple α-blends\nor Frontier Walk"]
-        milp --> cands["Candidate Portfolios\nper Chunk"]
-        cands --> score["Cross-chunk\nCombination Scoring"]
-        score --> best["select_best_combination()\nChunk.target_weights"]
-        best --> gp["build_glide_path()\nGlidePath.schedule\n{year → weights}"]
-    end
-
-    subgraph Step3 [3 · Simulation]
-        gp --> eng["Engine.run()\n30 × 12 = 360 monthly steps\nFIFO lots · drift control\nLTCG harvest · rebalance"]
-        state["AppState\n(requirements, tax,\nwindfalls, income)"] --> eng
-        eng --> pmr["List[MonthlyRow]\nPersonal"]
-        eng --> hmr["List[MonthlyRow]\nHUF"]
-        eng --> ys["List[YearSummary]\n30 rows"]
-    end
-
-    subgraph Step4 [4 · Post-Processing]
-        ys --> opt_split["optimize_withdrawal_split()\nPersonal ↔ HUF tax\nminimisation"]
-        opt_split --> eng
-        ys --> mc["monte_carlo.run_monte_carlo()\nMCResults"]
-        ys --> sens["run_sensitivity()\nScenario comparison"]
-    end
-
-    subgraph Step5 [5 · Output]
-        pmr --> csv_pm["*_Personal_Monthly.csv\n*_Personal_Monthly_FundDetail.csv"]
-        hmr --> csv_hm["*_HUF_Monthly.csv\n*_HUF_Monthly_FundDetail.csv"]
-        ys  --> csv_ya["*_Personal_Annual_Summary.csv\n*_HUF_Annual_Summary.csv"]
-        mc  --> charts["Monte Carlo Charts\nFan / Ruin / Paths"]
-        sens --> charts2["Sensitivity Chart"]
-    end
-```
 
 ---
 
 ## Core Data Models (Class Diagram)
 
-```mermaid
-classDiagram
-    class AppState {
-        +date investment_date
-        +List~FundEntry~ funds
-        +List~AllocationChunk~ allocation_chunks
-        +List~TaxChunk~ individual_debt_chunks
-        +List~EquityTaxChunk~ individual_equity_chunks
-        +List~TaxChunk~ huf_debt_chunks
-        +List~EquityTaxChunk~ huf_equity_chunks
-        +List~ReturnChunk~ return_chunks
-        +Dict~int,float~ annual_requirements
-        +OtherIncome personal_income
-        +OtherIncome huf_income
-        +List~WindfallEntry~ windfalls
-        +List~HUFWithdrawalChunk~ huf_withdrawal_chunks
-        +str allocation_mode
-        +int rebalance_spread_years
-        +GlidePath glide_path
-        +to_dict() dict
-        +from_dict(d) AppState
-        +get_allocation_chunk(year) AllocationChunk
-        +get_split_3way(year) tuple
-        +evaluate_chunk_scores() list
-    }
+<img src="docs/diagrams/03-data-models.png" alt="Class diagram of the core data models: AppState and its chunk, fund, tax and result types">
+<sub>Click the diagram to open it full size.</sub>
 
-    class FundEntry {
-        +str name
-        +str fund_type
-        +float allocation
-        +float std_dev
-        +float sharpe
-        +float sortino
-        +float calmar
-        +float combined_ratio
-        +float max_dd
-        +float cagr_1 / 3 / 5 / 7 / 10
-        +float avg_cagr_3 / 5 / 7 / 10
-        +float worst_exp_ret
-        +str amfi_fund_type
-    }
-
-    class AllocationChunk {
-        +int year_from
-        +int year_to
-        +List~FundEntry~ funds
-        +Dict~str,float~ target_weights
-        +float min_return
-        +float max_std_dev
-        +float max_dd
-        +float max_per_fund
-        +float min_per_fund
-        +float min_equity_frac
-        +portfolio_std() float
-    }
-
-    class GlidePath {
-        +Dict~int,dict~ schedule
-        +transition_years() List~int~
-        +is_flat() bool
-    }
-
-    class TaxChunk {
-        +int year_from
-        +int year_to
-        +List~TaxSlab~ slabs
-    }
-
-    class TaxSlab {
-        +float lower
-        +float upper
-        +float rate
-    }
-
-    class EquityTaxChunk {
-        +int year_from
-        +int year_to
-        +float tax_rate
-        +float exempt_limit
-    }
-
-    class MonthlyRow {
-        +int month_idx
-        +int calendar_month
-        +int fy_year
-        +float corpus_debt_start / end
-        +float corpus_equity_start / end
-        +float corpus_other_start / end
-        +float wd_debt / equity / other
-        +float principal_debt / equity / other
-        +float gain_debt / equity / other
-        +float ind_tax_paid
-        +float huf_transfer_in
-        +float windfall_personal
-        +List~FundWithdrawalDetail~ fund_withdrawals
-    }
-
-    class YearSummary {
-        +int year
-        +float corpus_debt_personal
-        +float corpus_equity_personal
-        +float corpus_debt_huf
-        +float corpus_equity_huf
-        +float tax_personal
-        +float tax_huf
-        +float net_cash_personal
-        +float net_cash_huf
-        +float net_cash_total
-        +float fd_tax_benchmark
-        +float tax_saved
-        +float rebalance_tax_paid
-        +float swp_cash_personal
-    }
-
-    class OtherIncome {
-        +float salary
-        +float taxable_interest
-        +float pension
-        +float rental
-        +float other_taxable
-        +float tax_free_interest
-        +float other_non_taxable
-    }
-
-    class WindfallEntry {
-        +int year
-        +float amount_personal
-        +float amount_huf
-    }
-
-    AppState "1" *-- "many" FundEntry
-    AppState "1" *-- "many" AllocationChunk
-    AppState "1" *-- "1" GlidePath
-    AppState "1" *-- "many" TaxChunk
-    AppState "1" *-- "many" EquityTaxChunk
-    AppState "1" *-- "2" OtherIncome
-    AppState "1" *-- "many" WindfallEntry
-    AllocationChunk "1" *-- "many" FundEntry
-    TaxChunk "1" *-- "many" TaxSlab
-```
 
 ---
 
@@ -330,31 +118,11 @@ The optimiser lives in `optimiser/allocate_funds.py`. Two top-level modes are su
 
 ### Mode A — Singular (Buy-and-Hold)
 
-```mermaid
-flowchart TD
-    A[AllocationChunks from AppState] --> B[merge_chunks_strict\nStrictest constraints across all chunks]
-    B --> C[run_aim_pass_multi\nα-blend MILP: α from 1.0 to 0.775]
-    C --> D[Best solution\ntarget_weights]
-    D --> E[Apply same weights to every chunk]
-    E --> F[build_flat_glide_path\nFlat GlidePath]
-```
+<img src="docs/diagrams/04-optimiser-mode-a.png" width="300" alt="Mode A singular allocation: merged strictest constraints, one MILP aim pass, flat glide path">
 
 ### Mode B — Chunked Sticky (Default)
 
-```mermaid
-flowchart TD
-    A[AllocationChunks] --> B[build_expanded_universe\nSeed + up to 50 similar funds]
-    B --> C{Candidate generation strategy}
-    C -- α-blending --> D[run_aim_pass_multi\nn candidate portfolios per chunk]
-    C -- Frontier Walk --> E[run_frontier_walk\nIterative risk-floor increment]
-    C -- PuLP Commonality Walk --> F[PuLP MILP\nMaximise cross-chunk overlap]
-    D --> G[score_combinations\nEvaluates all cross-chunk combos\nfor turnover efficiency]
-    E --> G
-    F --> G
-    G --> H[select_best_combination\nchunk.target_weights set]
-    H --> I[run_track_pass\nSLSQP: minimise turnover from anchor\nsoft constraints: return floor,\nstd/dd ceilings]
-    I --> J[build_glide_path\nLinear interpolation\nacross rebalance_spread_years]
-```
+<img src="docs/diagrams/05-optimiser-mode-b.png" width="520" alt="Mode B chunked sticky allocation: candidate generation strategies, cross-chunk scoring, track pass, interpolated glide path">
 
 ### Optimiser Constraint Hierarchy
 
@@ -386,26 +154,7 @@ The solver uses a **six-step relaxation ladder** — it only relaxes constraints
 
 `engine.py → Engine.run()` loops over 360 months (30 FYs × 12 months). Each entity (Personal, HUF) maintains **per-fund FIFO lot buckets**.
 
-```mermaid
-flowchart TD
-    Start([Month loop: m = 1..360]) --> A[Grow each fund lot by fund-specific CAGR]
-    A --> B{SWP month?\nm >= SWP_START}
-    B -- Yes --> C[Bounded Smart Withdrawal\nWaterfall: sell overweight funds first\nDrift cap Personal 0.15%, HUF 0.50%]
-    B -- No --> D[No withdrawal]
-    C --> E[Compute FIFO gains: STCG / LTCG\nper lot held < 12 months]
-    D --> E
-    E --> F{March = end of FY?}
-    F -- Yes --> G[LTCG Harvest\nRealise gains up to equity exempt limit\nStep-up cost basis → avoid future tax]
-    F -- No --> H
-    G --> H{Chunk boundary year?}
-    H -- Yes --> I[_rebalance_portfolio\nSell overweights → buy underweights\nSelf-funded: tax deducted from proceeds]
-    H -- No --> J
-    I --> J[HUF top-up\nIf Personal corpus exhausted\nHUF transfers deficit to Personal]
-    J --> K[Accumulate to p_acc / h_acc\nper FY totals]
-    K --> L{m == 360?}
-    L -- No --> Start
-    L -- Yes --> M[_build_yearly_summaries\n30 YearSummary rows]
-```
+<img src="docs/diagrams/06-engine-month-loop.png" width="420" alt="Engine month loop: growth, withdrawal waterfall, FIFO gains, LTCG harvest, rebalancing, HUF top-up, yearly summaries">
 
 ### Withdrawal Waterfall
 
@@ -425,21 +174,7 @@ The engine computes tax annually in April (India FY end). Tax is calculated sepa
 
 *Configuration → Tax Rules (Individual & HUF): slab tables are defined per block of years (here years 1–5), separately for Personal and HUF debt and equity.*
 
-```mermaid
-flowchart LR
-    A[Annual Gains\ndebt / equity / other] --> B{Entity type}
-    B -- Individual --> C[compute_slab_tax\nProgressive slabs from TaxChunk\n+ 4% cess]
-    B -- Individual --> D[compute_ltcg_individual\nEquity LTCG rate from EquityTaxChunk\nExempt limit deducted first]
-    B -- HUF --> E[compute_slab_tax\nHUF slab rates\n+ 4% cess]
-    B -- HUF --> F[compute_ltcg_huf\nHUF equity LTCG\nstacked on debt income]
-    C --> G[Total Personal Tax]
-    D --> G
-    E --> H[Total HUF Tax]
-    F --> H
-    G --> I[Rebalancing tax excluded\nfrom net_cash\nPortfolio self-funds it]
-    H --> I
-    I --> J[Tax Saved = Personal tax avoided\nby shifting income to HUF]
-```
+<img src="docs/diagrams/07-tax-logic.png" alt="Tax computation per entity: slab tax, equity LTCG with exemption, rebalancing tax and tax saved">
 
 **Tax-Optimal HUF–Personal Split Optimizer** (`optimize_withdrawal_split`): iteratively shifts withdrawal ₹0.25L at a time from Personal to HUF to minimise combined household tax, subject to:
 - `min_personal_frac` (≥ 25% personal SWP retained)
@@ -450,14 +185,7 @@ flowchart LR
 
 ## Glide Path & Rebalancing
 
-```mermaid
-flowchart LR
-    chunks["AllocationChunks\n[Yr 1-10], [Yr 11-20], [Yr 21-30]"]
-    spread["rebalance_spread_years = 4"]
-    chunks & spread --> build["build_glide_path()"]
-    build --> schedule["GlidePath.schedule\n{1: w1, 2: w1, ...,\n 8: lerp(w1,w2,0.25),\n 9: lerp(w1,w2,0.50),\n10: lerp(w1,w2,0.75),\n11: w2, ...}"]
-    schedule --> engine["Engine: each year\n_rebalance_portfolio()\nSells overweights → buys underweights\nCapital gains tax self-funded"]
-```
+<img src="docs/diagrams/08-glide-path.png" alt="Glide path construction from allocation chunks and spread years, consumed by the engine each year">
 
 The transition window of `spread_years` is **centred on the chunk boundary**. Because monthly SWP naturally sells overweighted funds first, the glide path rebalancing is mostly accomplished by the normal withdrawal flow — only residual imbalances require explicit sell/buy operations.
 
@@ -469,20 +197,7 @@ The transition window of `spread_years` is **centred on the chunk boundary**. Be
 
 *2,000 block-bootstrap paths of the total corpus. The header strip gives σ, the per-period return floors, ruin probability and the median and P5 final corpus; the View selector also offers a net-cash fan chart, ruin probability by year, sample sequence-of-returns paths and summary statistics.*
 
-```mermaid
-flowchart TD
-    A[AppState + GlidePath] --> B[run_monte_carlo\nn_sims simulations]
-    B --> C{use_bootstrap?}
-    C -- Yes --> D[Fetch Nifty 50 NAV\nmfapi.in / AMFI portal\nSaved to mc_nifty50_nav.csv]
-    D --> E[Extract Nifty Composite Debt\nFrom _NIFTY_DEBT_DATA table]
-    E --> F[Block Bootstrap\nblock_length consecutive years\nPreserves volatility clustering\nand fat tails]
-    C -- No / Fallback --> G[Log-Normal\nμ = return_chunks\nσ = Σ w_i·σ_i perfect-correlation]
-    F --> H[Centre returns per FY:\nr_centred = r_hist - mean + μ_det_fy\nFloor = μ_det - 3σ]
-    G --> H
-    H --> I[360 monthly sim steps\nper path]
-    I --> J[MCResults\ncorpus_p5/p25/p50/p75/p95\ncash_p5…p95\nruin_by_fy\nmedian / p5 final corpus\nruin_probability]
-    J --> K[MonteCarloChart\n5 views:\n1 Corpus Fan\n2 Cash Fan\n3 Ruin Probability\n4 Sequence-of-Returns Paths\n5 Summary Statistics]
-```
+<img src="docs/diagrams/09-monte-carlo.png" width="380" alt="Monte Carlo flow: bootstrap or log-normal returns, 360-month paths, MCResults and chart views">
 
 **Blended portfolio return** for each simulated year:
 
@@ -696,23 +411,7 @@ At the welcome dialog, enter your name (e.g., `Uddi`). All outputs will be writt
 
 ### 3. Typical GUI Workflow
 
-```mermaid
-flowchart TD
-    S1[Open app: python -m swp_planner] --> S2[Enter user name]
-    S2 --> S3[File → New or File → Open *.swp.json]
-    S3 --> S4[Configure Funds\nDialog: Edit Funds]
-    S4 --> S5[Configure Tax Rules\nDialog: Edit Tax Rules]
-    S5 --> S6[Set SWP Requirements\nDialog: Annual Requirements]
-    S6 --> S7[Optional: Set Income,\nWindfalls, HUF Withdrawals]
-    S7 --> S8[Run Portfolio Optimiser\nButton: Optimise Portfolio]
-    S8 --> S9[Review Optimisation Report\nGlide Path · Fund Selection · Tax · Robustness]
-    S9 --> S10[Run Calculations\nButton: Calculate]
-    S10 --> S11[View results in tables:\nPersonal Monthly\nHUF Monthly\nAnnual Summary]
-    S11 --> S12[Optional: Monte Carlo\nButton: Monte Carlo]
-    S12 --> S13[Optional: Sensitivity Analysis\nButton: Sensitivity]
-    S13 --> S14[Export CSVs\nFile → Export]
-    S14 --> S15[Save project\nFile → Save]
-```
+<img src="docs/diagrams/10-gui-workflow.png" width="260" alt="Typical GUI workflow from opening the app to saving the project">
 
 ### 4. Command-Line Allocator (single chunk)
 

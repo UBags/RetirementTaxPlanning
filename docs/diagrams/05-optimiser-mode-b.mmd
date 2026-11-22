@@ -1,0 +1,12 @@
+flowchart TD
+    A[AllocationChunks] --> B[build_expanded_universe\nSeed + up to 50 similar funds]
+    B --> C{Candidate generation strategy}
+    C -- α-blending --> D[run_aim_pass_multi\nn candidate portfolios per chunk]
+    C -- Frontier Walk --> E[run_frontier_walk\nIterative risk-floor increment]
+    C -- PuLP Commonality Walk --> F[PuLP MILP\nMaximise cross-chunk overlap]
+    D --> G[score_combinations\nEvaluates all cross-chunk combos\nfor turnover efficiency]
+    E --> G
+    F --> G
+    G --> H[select_best_combination\nchunk.target_weights set]
+    H --> I[run_track_pass\nSLSQP: minimise turnover from anchor\nsoft constraints: return floor,\nstd/dd ceilings]
+    I --> J[build_glide_path\nLinear interpolation\nacross rebalance_spread_years]
