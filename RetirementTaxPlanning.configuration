@@ -129,7 +129,7 @@ default_cagr_fallback = 7.0
 # reproducible: a default that moved with every CSV reimport would mean a
 # project opened six months later no longer matches the structure it was
 # built against.
-risk_free_rate = 0.0535
+risk_free_rate = 0.058
 
 # ─── Through-the-cycle percentile metrics ─────────────────────────────────
 # Percentile of the cross-fund monthly average of liquid-fund rolling 3Y CAGR,
@@ -172,8 +172,8 @@ risk_free_rate_low_percentile = 5
 # PLACEHOLDER -- both are overwritten on the next get_funds_data.py run.
 # Seeded from the 2016-01..2026-07 series (127 months, liquid funds) so the
 # application starts; treat them as provisional until that run reports them.
-risk_free_rate_mid = 0.0448
-risk_free_rate_low = 0.0357
+risk_free_rate_mid = 0.0487
+risk_free_rate_low = 0.0399
 
 # Percentage points added to each rung. 0.01 = 1%: a fixed deposit yields a
 # little above the liquid-fund category it is being compared with.

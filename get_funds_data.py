@@ -14,7 +14,8 @@ New in v4 (over v3):
            Std_Dev_5Y,  Sharpe_5Y,  Sortino_5Y,  Max_DD_5Y,  Calmar_5Y
        - 3-Year   (last 36 months):
            Std_Dev_3Y,  Sharpe_3Y,  Sortino_3Y,  Max_DD_3Y,  Calmar_3Y
-       Total: 15 per-window columns.  Minimum required history: 36 months.
+       Total: 15 per-window columns.  Minimum required history: 12 months
+           (lowered from 36; see MIN_HISTORY for what that costs).
 
   2. Three Combined_Ratio columns – sqrt(Sortino_XY × Calmar_XY):
        Combined_Ratio_10Y, Combined_Ratio_5Y, Combined_Ratio_3Y
@@ -151,7 +152,22 @@ RETRY_BACKOFF      = 1.5
 WINDOW_5Y   = 60    # months for the 5-year window  (Sharpe, Sortino, Std_Dev)
 WINDOW_7Y   = 84    # months for the 7-year window
 WINDOW_10Y  = 120   # months for the 10-year window (Alpha, Beta, Treynor, Max_DD, Calmar)
-MIN_HISTORY = 36    # minimum months required to attempt any computation
+MIN_HISTORY = 12    # minimum months required to attempt any computation
+# LOWERED FROM 36 ON 2026-08-07. At 36 the floor rejected 393 funds of 1,379 --
+# every fund launched inside three years, which in this market is most of the
+# thematic, momentum, multi-asset and arbitrage universe, plus whole categories
+# where the newest funds are the only ones anyone is choosing between.
+#
+# NOTHING DOWNSTREAM BREAKS, because _metrics_for_window already returns {} for
+# any window under 12 months and each window slices iloc[-N:], which for a
+# short fund is simply all of its data. A 20-month fund therefore reports the
+# SAME numbers under 3Y, 5Y, 7Y and 10Y.
+#
+# WHICH IS THE THING TO BE CAREFUL ABOUT. Those columns are labelled by window
+# and computed on whatever exists, so a "Sharpe_5Y" on a 20-month fund is a
+# 20-month Sharpe wearing a five-year label. History_Months is the column that
+# says so, and any ranking that treats the two as comparable is comparing a
+# fund through one market to a fund through three.
 
 # ── Overnight fund Direct-Growth AMFI codes (source of dynamic Rf) ───────────
 # SEBI notified the Overnight Fund category in Oct 2018; most funds launched
@@ -1805,14 +1821,17 @@ def compute_metrics(eom: pd.DataFrame, fund_type: str) -> dict:
         Std_Dev_5Y,  Sharpe_5Y,  Sortino_5Y,  Max_DD_5Y,  Calmar_5Y
         Std_Dev_3Y,  Sharpe_3Y,  Sortino_3Y,  Max_DD_3Y,  Calmar_3Y
     A metric is NaN for a given window when the fund does not yet have enough
-    history to populate that window (minimum 36 months for the 3Y window).
+    history to populate that window (minimum 12 months for any window).  A
+    fund shorter than a window reports that window computed on all the data it
+    has, so a 20-month fund shows identical 3Y, 5Y, 7Y and 10Y figures --
+    History_Months is what distinguishes them.
 
     Alpha, Beta, Treynor are computed once on the longest available window
     (up to 10Y) for regression stability.
 
     Combined_Ratio_XY = sqrt(Sortino_XY × Calmar_XY), only when both > 0.
 
-    Minimum history: MIN_HISTORY months (36). Funds below this raise ValueError.
+    Minimum history: MIN_HISTORY months (12). Funds below this raise ValueError.
     """
     nav = eom["nav"]
     ret = eom["ret"].dropna()
@@ -1820,7 +1839,8 @@ def compute_metrics(eom: pd.DataFrame, fund_type: str) -> dict:
     n_months = len(ret)
     if n_months < MIN_HISTORY:
         raise ValueError(
-            f"Only {n_months} monthly return(s) – need at least {MIN_HISTORY} (3 years)"
+            f"Only {n_months} monthly return(s) – need at least "
+            f"{MIN_HISTORY} ({MIN_HISTORY / 12:.0f} year(s))"
         )
 
     ft         = fund_type.strip().lower()

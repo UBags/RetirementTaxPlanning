@@ -67,3 +67,8 @@ Code packaged into MDs for LLMs/
 
 !lookup/
 !lookup/*.py
+
+# Re-admitted: test fixtures, package docs, shell scripts
+!tests/fixtures/*.json
+!data_synthesizer/*.md
+!scripts/*.sh

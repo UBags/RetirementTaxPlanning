@@ -30,7 +30,7 @@ if str(_ROOT) not in sys.path:
 import lookup.api as A  # noqa: E402
 from fund_filters import borrower as B  # noqa: E402
 from ingest import store as S  # noqa: E402
-from lookup.api import CreditLookup, normalise  # noqa: E402
+from lookup.api import CreditLookup, brand_matches, normalise  # noqa: E402
 
 DSN = os.environ.get("RTP_TEST_DSN")
 pytestmark = pytest.mark.skipif(
@@ -115,7 +115,14 @@ def _rec(isin, issuer, grade="AAA", raw=None, sector="", ownership="",
                 redemption=dt.date(2030, 1, 1), coupon=7.5, face_value=1e6,
                 issue_size=size,
                 raw_rating=raw or (f"CRISIL {grade}/Stable" if grade else ""),
-                worst_grade=grade, worst_rank=0 if grade == "AAA" else 5,
+                # Real ranks, not a two-valued stand-in: the group fallback
+                # picks the WORST member by rank, and a fixture where every
+                # non-AAA grade shares rank 5 cannot tell worst from best.
+                worst_grade=grade,
+                worst_rank=(None if grade is None else
+                            {"AAA": 0, "AA+": 1, "AA": 2, "AA-": 3, "A+": 4,
+                             "A": 5, "A-": 6, "BBB+": 7, "BBB": 8, "BBB-": 9,
+                             "BB": 11, "D": 19}.get(grade, 10)),
                 enhanced=False, not_cooperating=False)
 
 
@@ -530,3 +537,454 @@ def test_an_unrecognised_tier_is_unknown_not_senior(conn):
     senior."""
     assert A.seniority_of("something_new") == A.SENIORITY_UNKNOWN
     assert A.seniority_of(None) == A.SENIORITY_UNKNOWN
+
+
+# ── the lookup cache, which is what makes a 2,300-fund batch finish ─────────
+
+def test_the_same_name_is_only_resolved_once(conn):
+    """The same issuers recur relentlessly: once per month for twenty-five
+    months within one fund, and again in every other fund holding them. A
+    batch over 2,300 funds does hundreds of thousands of lookups over a few
+    thousand distinct names."""
+    _load(conn, [_rec("INE001A08001", "ALPHA LIMITED", "AAA")], D1)
+    lk = CreditLookup(conn)
+    calls = []
+    original = lk._by_name_uncached
+    lk._by_name_uncached = lambda raw, limit=3: (calls.append(raw)
+                                                 or original(raw, limit))
+    for _ in range(20):
+        assert lk.by_name("Alpha Limited").rating == "AAA"
+    assert calls == ["Alpha Limited"], "resolved once, served twenty times"
+
+
+def test_a_cached_result_cannot_be_mutated_by_its_caller(conn):
+    """enrich() copies what it is given, but a shared dict handed out twenty
+    times is a bug waiting to be written."""
+    _load(conn, [_rec("INE001A08001", "ALPHA LIMITED", "AAA")], D1)
+    lk = CreditLookup(conn)
+    first = lk.by_name("Alpha Limited")
+    first["rating"] = "TAMPERED"
+    assert lk.by_name("Alpha Limited").rating == "AAA"
+
+
+def test_invalidate_forgets_everything_that_could_be_stale(conn):
+    """The cache assumes the rating table is not changing underneath it --
+    true for a batch run, false for a process that ingests NSDL and then
+    resolves funds without restarting."""
+    _load(conn, [_rec("INE001A08001", "ALPHA LIMITED", "AAA")], D1)
+    lk = CreditLookup(conn)
+    assert lk.by_name("Alpha Limited").rating == "AAA"
+    _load(conn, [_rec("INE001A08001", "ALPHA LIMITED", "BBB")], D2)
+    assert lk.by_name("Alpha Limited").rating == "AAA", "still cached"
+    lk.invalidate()
+    assert lk.by_name("Alpha Limited").rating == "BBB"
+
+
+# ── abbreviations, from the first real batch queue ─────────────────────────
+
+@pytest.mark.parametrize("etmoney,nsdl", [
+    ("Nuclear Power Corpn. Of India Ltd.",
+     "NUCLEAR POWER CORPORATION OF INDIA LIMITED"),
+    ("Small Industries Devp. Bank of India Ltd.",
+     "SMALL INDUSTRIES DEVELOPMENT BANK OF INDIA"),
+    ("Tata Housing Devp. Co. Ltd",
+     "TATA HOUSING DEVELOPMENT COMPANY LIMITED"),
+])
+def test_an_abbreviated_name_matches_its_expansion(etmoney, nsdl):
+    """FOUND IN THE FIRST REAL QUEUE. "Nuclear Power Corpn. Of India Ltd." at
+    9.13% across ten funds went to manual review for a spelling.
+
+    The failure was ASYMMETRIC: the suffix stripper removed CORPORATION from
+    the NSDL side while CORPN survived on the ETMoney side, so the two were
+    compared as "NUCLEAR POWER CORPN OF INDIA" against "NUCLEAR POWER OF
+    INDIA" -- 88.0, under the 90 trust floor. Expanding BEFORE stripping makes
+    both sides lose the same tokens."""
+    assert normalise(etmoney) == normalise(nsdl)
+
+
+def test_expansion_does_not_merge_distinct_borrowers():
+    """The abbreviations must not buy their recall by blurring names apart."""
+    assert normalise("HDFC Bank Ltd.") != normalise("HDFC Limited")
+    assert normalise("Tata Power Ltd") != normalise("Tata Motors Ltd")
+
+
+def test_an_unabbreviated_name_is_unaffected():
+    assert normalise("REC Ltd.") == normalise("REC LIMITED")
+
+
+# ── the brand guard, from four wrong companies in a live queue ──────────────
+
+def test_the_matcher_does_not_name_a_different_company(conn):
+    """THE MOST SERIOUS DEFECT IN THIS LINE, and character similarity cannot
+    see it. Measured live against the real NSDL table:
+
+        Tata Motors Finance Ltd.  -> DHARA MOTOR FINANCE LIMITED      84.2
+        Tata Capital Fin Services -> SI CAPITAL & FINANCIAL SERVICES  90.0
+        Aditya Birla Finance Ltd. -> ADITYA BIRLA HOUSING FINANCE     83.3
+
+    The second was AT the 0.90 trust floor, so a credit rating belonging to SI
+    Capital was about to be attached to Tata Capital paper. No floor setting
+    fixes it: the distinctive part of an Indian company name is two or three
+    characters of twenty, and MOTOR FINANCE / CAPITAL FINANCIAL SERVICES is
+    shared industry vocabulary."""
+    _load(conn, [_rec("INE001A08001", "DHARA MOTOR FINANCE LIMITED", "BBB"),
+                 _rec("INE002A08001", "SI CAPITAL & FINANCIAL SERVICES "
+                                      "LIMITED", "BB")], D1)
+    lk = CreditLookup(conn)
+    for name in ("Tata Motors Finance Ltd.",
+                 "Tata Capital Financial Services Ltd."):
+        r = lk.by_name(name)
+        assert r.found is False, f"{name} resolved to {r.issuer_name}"
+        assert r.rating is None
+
+
+def test_the_rejected_candidate_is_reported_not_hidden(conn):
+    """A near miss should be visible: it is what a brand-blind matcher would
+    have chosen, and someone reading the queue needs to know that."""
+    _load(conn, [_rec("INE001A08001", "DHARA MOTOR FINANCE LIMITED", "BBB")],
+          D1)
+    r = CreditLookup(conn).by_name("Tata Motors Finance Ltd.")
+    assert r.found is False
+    assert r.confidence > 0.7, "it scored well, and that is the point"
+    assert "leading token" in (r.reason or "")
+
+
+def test_the_right_company_below_the_top_is_still_found(conn):
+    """The brand guard must not merely reject -- the right answer often sits
+    under the wrong one."""
+    _load(conn, [_rec("INE001A08001", "DHARA MOTOR FINANCE LIMITED", "BBB"),
+                 _rec("INE002A08001", "TATA MOTORS FINANCE LIMITED", "AA")],
+          D1)
+    r = CreditLookup(conn).by_name("Tata Motors Finance Ltd.")
+    assert r.found and r.issuer_name == "TATA MOTORS FINANCE LIMITED"
+    assert r.rating == "AA"
+
+
+@pytest.mark.parametrize("query,candidate", [
+    ("REC Ltd.", "REC LIMITED"),
+    ("Nuclear Power Corpn. Of India Ltd.",
+     "NUCLEAR POWER CORPORATION OF INDIA LIMITED"),
+    ("Small Industries Devp. Bank of India Ltd.",
+     "SMALL INDUSTRIES DEVELOPMENT BANK OF INDIA"),
+    ("L&T Finance Ltd.", "L&T FINANCE LIMITED"),
+    ("The Wealth Company Ltd", "WEALTH COMPANY LIMITED"),
+])
+def test_the_guard_does_not_break_matches_that_worked(query, candidate):
+    """Leading articles are skipped, so "The Wealth Company" still reaches
+    "Wealth Company"."""
+    assert brand_matches(normalise(query), normalise(candidate))
+
+
+def test_both_directions_are_checked_not_just_one():
+    """One direction alone is not enough, and the observed failures do not
+    show it because all three fail BOTH ways.
+
+    "Capital First Ltd" against "IDFC FIRST CAPITAL LIMITED" is the shape that
+    distinguishes them: the query's leading token CAPITAL does appear in the
+    candidate, so a one-directional check accepts a different company. The
+    candidate's leading token IDFC does not appear in the query, and that is
+    what rejects it."""
+    q, c = normalise("Capital First Ltd"), normalise("IDFC FIRST CAPITAL "
+                                                     "LIMITED")
+    from lookup.api import _tokens, head_token
+    assert head_token(q) in set(_tokens(c)), "one direction passes"
+    assert head_token(c) not in set(_tokens(q)), "the other does not"
+    assert brand_matches(q, c) is False
+
+
+def test_a_near_miss_within_the_same_brand_is_left_to_the_floor(conn):
+    """Aditya Birla Finance and Aditya Birla Housing Finance share a brand, so
+    the guard passes them and the 0.90 trust floor is what separates them --
+    which it does, at 0.833."""
+    assert brand_matches(normalise("Aditya Birla Finance Ltd."),
+                         normalise("ADITYA BIRLA HOUSING FINANCE LIMITED"))
+    _load(conn, [_rec("INE001A08001", "ADITYA BIRLA HOUSING FINANCE LIMITED",
+                      "AAA")], D1)
+    r = CreditLookup(conn).by_name("Aditya Birla Finance Ltd.")
+    assert r.confidence < 0.90
+
+
+# ── instrument-variant suffixes on the issuer's own name ────────────────────
+
+@pytest.mark.parametrize("etmoney,nsdl", [
+    ("Axis Bank Ltd. Warrant", "AXIS BANK LIMITED"),
+    ("LIC Housing Finance Ltd. GDR/GDS", "LIC HOUSING FINANCE LIMITED"),
+    ("Tata Capital Ltd.(Partly Paid Equity)", "TATA CAPITAL LIMITED"),
+    ("Vedanta Ltd - Pref. Shares 7.50", "VEDANTA LIMITED"),
+    ("Mahindra & Mahindra Financial Services Ltd. - Right Entitlement",
+     "MAHINDRA & MAHINDRA FINANCIAL SERVICES LIMITED"),
+    ("AU Small Finance Bank Ltd. Pref. Shares",
+     "AU SMALL FINANCE BANK LIMITED"),
+    ("TVS Motor Company Ltd - Pref. Shares", "TVS MOTOR COMPANY LIMITED"),
+])
+def test_a_security_class_suffix_does_not_hide_the_issuer(etmoney, nsdl):
+    """SAME LEGAL ENTITY, DIFFERENT CLASS OF SECURITY. Axis Bank is AAA in the
+    NSDL file and "Axis Bank Ltd. Warrant" resolved to nothing -- the suffix
+    was the only thing keeping them apart."""
+    assert normalise(etmoney) == normalise(nsdl)
+
+
+@pytest.mark.parametrize("name", [
+    "Equity Intelligence India Ltd", "Bonus Hospitality Ltd",
+    "Rights Issue Advisors Ltd",
+])
+def test_the_suffix_stripper_is_anchored_to_the_end(name):
+    """"SHARES", "EQUITY" or "BONUS" in the middle of a name belongs to the
+    company; only a trailing security class is a suffix."""
+    assert normalise(name).split()[0] == name.split()[0].upper()
+
+
+# ── group-implied ratings ───────────────────────────────────────────────────
+
+def test_a_cp_only_subsidiary_takes_its_groups_rating(conn):
+    """NSDL IS THE CORPORATE BOND DATABASE, so a company issuing only
+    commercial paper is absent from it -- HDFC Securities, Kotak Mahindra
+    Securities and Aditya Birla Finance all return zero rows, which is about
+    2% of the debt book with no rating obtainable by any amount of
+    matching."""
+    _load(conn, [_rec("INE040A08001", "HDFC BANK LIMITED", "AAA",
+                      sector="Private Sector Bank")], D1)
+    r = CreditLookup(conn).by_group("HDFC Securities Ltd.")
+    assert r.found and r.rating == "AAA"
+    assert r.source == "group_implied"
+    assert "HDFC group" in r.reason
+
+
+def test_the_worst_rating_in_the_group_is_used_without_an_anchor(conn):
+    """Same principle as taking the worst across an issuer's own paper: a
+    rating guessed upward is the error that costs money."""
+    _load(conn, [_rec("INE001A08001", "GODREJ PROPERTIES LIMITED", "AA"),
+                 _rec("INE002A08001", "GODREJ INDUSTRIES LIMITED", "A")], D1)
+    r = CreditLookup(conn).by_group("Godrej Consumer Products Ltd.")
+    assert r.found and r.rating == "A", "the weaker of the two"
+
+
+def test_an_anchor_entity_wins_over_the_worst(conn):
+    """Where the flagship is in the file, that is what "the group's rating"
+    means to anyone reading it."""
+    _load(conn, [_rec("INE040A08001", "HDFC BANK LIMITED", "AAA",
+                      sector="Private Sector Bank"),
+                 _rec("INE001A08002", "HDFC CREDILA LIMITED", "A")], D1)
+    assert CreditLookup(conn).by_group("HDFC Securities Ltd.").rating == "AAA"
+
+
+def test_a_group_rating_is_never_presented_as_an_agency_opinion(conn):
+    """CRISIL rates HDFC Securities in its own right, and a subsidiary can sit
+    below its parent. IL&FS was a AAA group with a subsidiary that
+    defaulted."""
+    _load(conn, [_rec("INE040A08001", "HDFC BANK LIMITED", "AAA",
+                      sector="Private Sector Bank")], D1)
+    lk = CreditLookup(conn)
+    rows = [dict(company="HDFC Securities Ltd.", company_id=1,
+                 instrument_type="Commercial Paper", instrument_code=2,
+                 asset_class="debt", percent=9.8, value=1e8, is_issuer=True,
+                 expected_in_nsdl=False, is_securitised=False, seniority=None)]
+    from lookup import portfolio_credit as _PC
+    out = _PC.enrich(rows, lk)
+    assert out[0]["rating"] == "A1+", "converted to the short-term scale"
+    assert out[0]["rating_source"] == "group_short_term"
+    assert out[0]["rating_trusted"] is False
+    assert out[0]["rating_confidence"] < 0.9
+
+
+def test_reliance_capital_does_not_borrow_reliance_industries_rating(conn):
+    """THE BRAND TOKEN ALONE IS DANGEROUS. "Reliance" names both Mukesh
+    Ambani's Reliance Industries, rated AAA, and Anil Ambani's Reliance
+    Capital, which defaulted at D. They share a word and nothing else."""
+    from fund_filters import groups as G
+    assert G.group_of("Reliance Industries Ltd") == "RELIANCE"
+    assert G.group_of("Reliance Retail Ventures Ltd.") == "RELIANCE"
+    assert G.group_of("Reliance Capital Ltd") is None
+    assert G.group_of("Reliance Home Finance Ltd") is None
+    _load(conn, [_rec("INE002A08001", "RELIANCE INDUSTRIES LIMITED", "AAA")],
+          D1)
+    assert CreditLookup(conn).by_group("Reliance Capital Ltd").found is False
+
+
+def test_kotak_mahindra_is_not_the_mahindra_group(conn):
+    from fund_filters import groups as G
+    assert G.group_of("Kotak Mahindra Prime Ltd.") == "KOTAK"
+    assert G.group_of("Mahindra & Mahindra Financial Services Ltd.") == \
+        "MAHINDRA"
+
+
+def test_a_company_in_no_group_gets_nothing(conn):
+    """Inventing a group for a company is worse than a gap.
+
+    The examples had to change: Infina and Panatone were the original two and
+    both have since been declared. Time Technoplast, Alembic and Redington
+    have not, and the point is the same -- a name with no group and no rated
+    sibling gets no rating at all."""
+    _load(conn, [_rec("INE001A08001", "ALPHA LIMITED", "AAA")], D1)
+    lk = CreditLookup(conn)
+    for name in ("Time Technoplast Ltd.", "Alembic Pharmaceuticals Ltd.",
+                 "Redington Ltd.", "SEIL Energy India Ltd."):
+        assert lk.by_group(name).found is False, name
+
+
+def test_the_group_mechanism_can_be_switched_off(conn):
+    _load(conn, [_rec("INE040A08001", "HDFC BANK LIMITED", "AAA",
+                      sector="Private Sector Bank")], D1)
+    from lookup import portfolio_credit as _PC
+    rows = [dict(company="HDFC Securities Ltd.", company_id=1,
+                 instrument_type="Commercial Paper", instrument_code=2,
+                 asset_class="debt", percent=9.8, value=1e8, is_issuer=True,
+                 expected_in_nsdl=False, is_securitised=False, seniority=None)]
+    out = _PC.enrich(rows, CreditLookup(conn), groups=False)
+    assert out[0]["rating"] is None and out[0]["gap"] == _PC.NOT_IN_NSDL
+
+
+def test_a_merged_bond_issuer_is_answered_by_its_group(conn):
+    """Tata Motors Finance and Tata Capital Financial Services are absent from
+    NSDL -- merged into their parents -- and were sitting unresolved."""
+    _load(conn, [_rec("INE306N08001", "TATA CAPITAL LIMITED", "AAA")], D1)
+    from lookup import portfolio_credit as _PC
+    rows = [dict(company="Tata Motors Finance Ltd.", company_id=1,
+                 instrument_type="Debenture", instrument_code=3,
+                 asset_class="debt", percent=13.5, value=1e8, is_issuer=True,
+                 expected_in_nsdl=True, is_securitised=False, seniority=None)]
+    out = _PC.enrich(rows, CreditLookup(conn))
+    assert out[0]["rating"] == "AAA"
+    assert out[0]["rating_source"] == "group_implied"
+    assert out[0]["rating_trusted"] is False
+
+
+# ── declared group ratings ──────────────────────────────────────────────────
+
+@pytest.mark.parametrize("company,key,grade", [
+    ("DSP Finance Pvt Ltd.", "DSP", "AA"),
+    ("City Union Bank Ltd.", "CITY UNION BANK", "AA"),
+    ("Mirae Asset Capital Markets (India) Pvt. Ltd.", "MIRAE", "AA"),
+    ("Mirae Asset Sharekhan Financial Services Ltd.", "MIRAE", "AA"),
+    ("Deutsche Investments (I) Pvt. Ltd.", "DEUTSCHE", "AA"),
+    ("Balrampur Chini Mills Ltd.", "BALRAMPUR", "AA"),
+    ("Nuvama Wealth Management Ltd.", "NUVAMA", "AA"),
+    ("Nuvama Clearing Services Ltd.", "NUVAMA", "AA"),
+    ("IIFL Capital Services Ltd", "IIFL", "AA-"),
+    ("MashreqBank PSC", "MASHREQ", "AAA"),
+    ("Avenue Supermarts Ltd.", "AVENUE SUPERMARTS", "AAA"),
+])
+def test_a_declared_group_rating_answers_where_nothing_can_be_inferred(
+        conn, company, key, grade):
+    """EVERY GROUP HERE FUNDS THROUGH COMMERCIAL PAPER, not listed bonds, so
+    it is absent from the NSDL corporate bond file entirely -- which is why
+    its members were in the review queue and why inference cannot reach
+    them."""
+    from fund_filters import groups as G
+    assert G.group_of(company) == key
+    _load(conn, [_rec("INE001A08001", "UNRELATED LIMITED", "AAA")], D1)
+    r = CreditLookup(conn).by_group(company)
+    assert r.found and r.rating == grade
+    assert r.source == "group_declared"
+    assert "declared for the" in r.reason
+
+
+def test_mashreq_matches_a_name_written_as_one_word():
+    """The source writes "MashreqBank PSC" with no space, and a trailing word
+    boundary does not match inside it."""
+    from fund_filters import groups as G
+    assert G.group_of("MashreqBank PSC") == "MASHREQ"
+    assert G.group_of("Mashreem Textiles Ltd") is None
+
+
+def test_iifl_wealth_stays_with_360_one_not_iifl():
+    """360 ONE was IIFL Wealth, and the two must not merge: 360 ONE has 62
+    rated instruments in NSDL while IIFL Capital Services has none and takes a
+    declared AA-.
+
+    TWO THINGS KEEP THEM APART AND ONLY ONE IS LOAD-BEARING. 360 ONE is listed
+    first and the first match wins, so ORDER alone is sufficient -- a
+    falsifier removing the exclusion did not bite. The exclusion is
+    belt-and-braces against someone reordering the registry, which is exactly
+    the mistake the rating_source column exists to survive elsewhere. Both are
+    asserted so a reorder fails here rather than silently."""
+    from fund_filters import groups
+    from fund_filters import groups as G
+    assert G.group_of("IIFL Wealth Prime Ltd") == "360 ONE"
+    assert G.group_of("IIFL Capital Services Ltd") == "IIFL"
+    keys = [k for k, _i, _e, _a in groups._GROUPS]
+    assert keys.index("360 ONE") < keys.index("IIFL"), "order is the guard"
+    iifl = next(e for k, _i, e, _a in groups._GROUPS if k == "IIFL")
+    assert iifl and "WEALTH" in iifl, "and the exclusion is the backup"
+
+
+def test_an_inferred_rating_beats_a_declared_one(conn):
+    """A rated sibling in NSDL is evidence; a declared grade is a judgement.
+    Where both exist the evidence wins."""
+    _load(conn, [_rec("INE001A08001", "IIFL FINANCE LIMITED", "AA+")], D1)
+    r = CreditLookup(conn).by_group("IIFL Capital Services Ltd")
+    assert r.source == "group_implied" and r.rating == "AA+"
+
+
+def test_a_declared_group_grade_is_converted_for_money_market_paper(conn):
+    """AA- on commercial paper is A1+, not AA-.
+
+    I first wrote A2+ here and the code was right: the agencies' linkage puts
+    everything from AAA down to AA- at the top of the short-term scale,
+    because a year of liquidity is a different question from a decade of
+    solvency. A2+ is where A- lands."""
+    from lookup import portfolio_credit as _PC
+    _load(conn, [_rec("INE001A08001", "UNRELATED LIMITED", "AAA")], D1)
+    rows = [dict(company="IIFL Capital Services Ltd", company_id=1,
+                 instrument_type="Commercial Paper", instrument_code=2,
+                 asset_class="debt", percent=2.18, value=1e7, is_issuer=True,
+                 expected_in_nsdl=False, is_securitised=False, seniority=None)]
+    out = _PC.enrich(rows, CreditLookup(conn))
+    assert out[0]["rating"] == "A1+"
+    assert out[0]["rating_source"] == "group_short_term"
+    assert out[0]["gap"] is None
+    from lookup.portfolio_credit import short_term_grade
+    assert short_term_grade("A-") == "A2+", "which is where A- lands"
+
+
+@pytest.mark.parametrize("company,key,grade", [
+    ("Panatone Finvest Ltd", "PANATONE", "AAA"),
+    ("Birla Group Holdings Pvt. Ltd.", "BIRLA GROUP HOLDINGS", "AAA"),
+    ("IDBI Capital Market Services Ltd.", "IDBI", "AA"),
+    ("Infina Finance Pvt. Ltd.", "INFINA", "AA"),
+    ("Sharekhan Ltd.", "SHAREKHAN", "AA"),
+    ("CTBC Bank Ltd.", "CTBC", "AAA"),
+])
+def test_holding_companies_with_no_group_brand_in_the_name(
+        conn, company, key, grade):
+    """Panatone Finvest is Tata's holding vehicle for Tata Communications and
+    Birla Group Holdings is Aditya Birla's; neither name reads as such."""
+    from fund_filters import groups as G
+    assert G.group_of(company) == key
+    assert G.declared_rating(key)[0] == grade
+
+
+@pytest.mark.parametrize("company", [
+    "Birla Corporation Limited", "Birla Tyres Limited",
+    "Himadri Birla Tyre Manufacturer Private Limited",
+])
+def test_the_birla_surname_is_shared_across_three_families(conn, company):
+    """MEASURED AGAINST THE REAL NSDL FILE, which has all of them: BIRLA
+    CORPORATION at AA and BIRLA TYRES are MP Birla and BK Birla, not Aditya
+    Birla. A bare \\bBIRLA\\b would hand them a declared AAA -- the Reliance
+    trap wearing a different coat.
+
+    They are left ungrouped rather than mis-grouped: no rating is better than
+    another family's."""
+    from fund_filters import groups as G
+    assert G.group_of(company) is None
+
+
+def test_aditya_birla_still_infers_from_its_own_entities(conn):
+    """Narrowing to BIRLA GROUP must not cost the group that does have rated
+    members in NSDL."""
+    from fund_filters import groups as G
+    assert G.group_of("Aditya Birla Finance Ltd.") == "ADITYA BIRLA"
+    _load(conn, [_rec("INE001A08001", "ADITYA BIRLA CAPITAL LIMITED", "AAA")],
+          D1)
+    r = CreditLookup(conn).by_group("Aditya Birla Finance Ltd.")
+    assert r.found and r.source == "group_implied"
+
+
+def test_mirae_asset_sharekhan_stays_with_mirae(conn):
+    """Both are AA so the grade is the same either way, and the assignment
+    should still be the one that reflects ownership."""
+    from fund_filters import groups as G
+    assert G.group_of("Mirae Asset Sharekhan Financial Services Ltd.") == \
+        "MIRAE"
+    assert G.group_of("Sharekhan Ltd.") == "SHAREKHAN"

@@ -126,6 +126,23 @@ _ROMAN = re.compile(
 _PUNCT = re.compile(r"[^A-Z0-9& ]+")
 _ISIN = re.compile(r"\b(IN[EFD0-9][0-9A-Z]{9})\b", re.I)
 
+# INSTRUMENT VARIANTS APPENDED TO THE ISSUER'S NAME. The source writes "Axis
+# Bank Ltd. Warrant", "LIC Housing Finance Ltd. GDR/GDS", "Tata Capital
+# Ltd.(Partly Paid Equity)", "Vedanta Ltd - Pref. Shares 7.50". These are the
+# SAME legal entity holding a different class of security, and NSDL lists the
+# entity -- so the suffix is the only thing keeping them apart. Axis Bank is
+# AAA in the file; "Axis Bank Ltd. Warrant" resolved to nothing.
+#
+# ANCHORED TO THE END, because that is where a security-class suffix sits and
+# because "SHARES" or "EQUITY" mid-name belongs to the company. Stripped only
+# from the query side in practice: NSDL never writes them.
+_VARIANT_TAIL = re.compile(
+    r"(?:[-(,]|\s)+\s*(?:WARRANTS?|GDR(?:\s*/\s*GDS)?|GDS|ADR|"
+    r"PREF\.?\s*SHARES?|PREFERENCE\s+SHARES?|"
+    r"RIGHTS?\s+ENTITLEMENTS?|RIGHTS?|"
+    r"PARTLY\s+PAID(?:\s+EQUITY)?|EQUITY\s+SHARES?|BONUS)\b"
+    r"[\s\d.%()/-]*$", re.I)
+
 # Corporate suffixes. Removed from BOTH sides so "Ltd" against "Limited" is not
 # a difference, but the distinctive part of the name is left intact. INDIA is
 # NOT in this list, deliberately: stripping it reduces "Bank of India" to
@@ -170,6 +187,75 @@ def seniority_of(tier):
     return _SENIORITY_BY_TIER.get(tier, SENIORITY_UNKNOWN)
 
 
+# ABBREVIATIONS THE SOURCE USES AND NSDL DOES NOT. Expanded BEFORE the suffix
+# stripper runs, and the order is what makes it work: "Nuclear Power Corpn. Of
+# India Ltd." kept CORPN while the NSDL side had CORPORATION stripped as a
+# corporate suffix, so the two were compared as "NUCLEAR POWER CORPN OF INDIA"
+# against "NUCLEAR POWER OF INDIA" -- 88.0, under the 90 trust floor, and a
+# 9.13% holding across ten funds went to the manual queue for a spelling.
+#
+# Expand first and both sides lose the same tokens. Measured on the three that
+# were failing: 88.0 -> 100, 90.9 -> 100, 82.9 -> 100.
+ABBREVIATIONS = {
+    "CORPN": "CORPORATION", "CORPORATIONS": "CORPORATION",
+    "DEVP": "DEVELOPMENT", "DEVLP": "DEVELOPMENT",
+    "DEVELOPMENTS": "DEVELOPMENT",
+    "INDL": "INDUSTRIAL", "INDS": "INDUSTRIES",
+    "MFG": "MANUFACTURING", "INTL": "INTERNATIONAL",
+    "NATL": "NATIONAL", "ENGG": "ENGINEERING",
+    "SVCS": "SERVICES", "SERV": "SERVICES",
+    "TELECOMM": "TELECOM", "INFRA": "INFRASTRUCTURE",
+}
+
+
+# THE BRAND TOKEN MUST APPEAR ON BOTH SIDES, and this is the guard that stops
+# the matcher naming the wrong company.
+#
+# Character similarity cannot separate these, measured live:
+#   Tata Motors Finance Ltd.             -> DHARA MOTOR FINANCE LIMITED    84.2
+#   Tata Capital Financial Services Ltd. -> SI CAPITAL & FINANCIAL SERVICES 90.0
+#   Aditya Birla Finance Ltd.            -> ADITYA BIRLA HOUSING FINANCE   83.3
+#
+# The second was AT the 0.90 trust floor, so a credit rating belonging to SI
+# Capital was about to be attached to Tata Capital paper. No floor setting
+# fixes this: the distinctive part of an Indian company name is two or three
+# characters of twenty, and the tail -- MOTOR FINANCE, CAPITAL FINANCIAL
+# SERVICES -- is shared industry vocabulary.
+#
+# Indian company names are BRAND FIRST. Requiring the leading token of each
+# side to appear somewhere in the other is structural rather than fuzzy, and
+# it rejects all three while touching none of the matches that work.
+_ARTICLES = frozenset({"THE", "M", "S", "MS"})
+
+
+def _tokens(normalised):
+    return [w for w in str(normalised or "").split() if w]
+
+
+def head_token(normalised):
+    """The first token that identifies rather than introduces."""
+    for w in _tokens(normalised):
+        if w not in _ARTICLES:
+            return w
+    return None
+
+
+def brand_matches(query_norm, candidate_norm):
+    """Does each side's leading token appear in the other?
+
+    Both directions, deliberately. One direction alone admits
+    "Tata Capital" -> "Tata Capital Financial Services Holdings", which is
+    usually right, and also admits the reverse pairing that is usually wrong.
+    """
+    q, c = _tokens(query_norm), _tokens(candidate_norm)
+    if not q or not c:
+        return False
+    qh, ch = head_token(query_norm), head_token(candidate_norm)
+    if qh is None or ch is None:
+        return False
+    return qh in set(c) and ch in set(q)
+
+
 class Result(dict):
     """A dict, so it serialises and prints without ceremony."""
 
@@ -182,6 +268,7 @@ class Result(dict):
 
 def _result(**kw):
     base = dict(found=False, isin=None, issuer_name=None, issuer_key=None,
+                reason=None,
                 rating=None, rating_rank=None, borrower_category=
                 _borrower.DEFAULT, source="not_found", confidence=0.0,
                 runner_up=None, margin=None, ambiguous=False,
@@ -204,6 +291,15 @@ def normalise(name):
     s = _NUMERIC.sub(" ", s)
     s = _NOISE.sub(" ", s)
     s = _ROMAN.sub(" ", s)
+    # The security-class suffix goes before the corporate one, so
+    # "AXIS BANK LTD WARRANT" loses WARRANT and then LTD, in that order.
+    prev = None
+    while prev != s:
+        prev = s
+        s = _VARIANT_TAIL.sub("", s).strip()
+    # BEFORE the suffix stripper, so an abbreviation that expands INTO a
+    # corporate suffix is then stripped from both sides alike.
+    s = " ".join(ABBREVIATIONS.get(w, w) for w in s.split())
     s = _SUFFIX.sub(" ", s)
     return " ".join(s.split())
 
@@ -224,6 +320,13 @@ class CreditLookup:
         self._index = None      # [(normalised, issuer_key)]
         self._choices = None    # [normalised]
         self._seniority_ok = None
+        self._groups = None
+        # NAME -> Result. The same issuers recur relentlessly: once per month
+        # for twenty-five months within one fund, and again in every other
+        # fund that holds them -- REC and NABARD are in most debt funds. A
+        # batch over 2,300 funds does hundreds of thousands of lookups over a
+        # few thousand distinct names.
+        self._name_cache = {}
 
     # ── the index ──────────────────────────────────────────────────────────
 
@@ -373,6 +476,14 @@ class CreditLookup:
         row.
         """
         raw = str(name or "")
+        cached = self._name_cache.get(raw)
+        if cached is not None:
+            return Result(cached)
+        result = self._by_name_uncached(raw, limit=limit)
+        self._name_cache[raw] = dict(result)
+        return result
+
+    def _by_name_uncached(self, raw, limit=3):
         m = _ISIN.search(raw)
         if m:
             res = self.by_isin(m.group(1).upper())
@@ -383,18 +494,42 @@ class CreditLookup:
         if not query:
             return _result()
 
-        matches = process.extract(query, self.index, scorer=fuzz.QRatio,
-                                  processor=lambda x: x[0] if isinstance(
-                                      x, tuple) else x, limit=max(limit, 2))
+        # MATCHED AGAINST A PLAIN LIST OF STRINGS, not against the (name, key)
+        # pairs with a processor lambda. A processor is invoked once per
+        # CANDIDATE per query, so a few thousand issuers meant a few thousand
+        # Python calls for every holding -- measured at 2.5x the cost of
+        # matching the strings directly and mapping the index back afterwards.
+        self.index                                   # ensure it is built
+        # More candidates than needed, because the top one may fail the brand
+        # guard and the right answer can sit below it.
+        matches = process.extract(query, self._choices, scorer=fuzz.QRatio,
+                                  limit=max(limit, 8))
         if not matches:
             return _result()
 
-        (best_norm, best_key), best_score = matches[0][0], matches[0][1]
+        accepted = [m for m in matches if brand_matches(query, m[0])]
+        rejected_top = (matches[0] if matches and not
+                        brand_matches(query, matches[0][0]) else None)
+        if not accepted:
+            # Nothing shares a brand token. Reported with the score it would
+            # have had, so a near miss is visible rather than silent.
+            top = matches[0]
+            return _result(confidence=top[1] / 100.0,
+                           runner_up=self._index[top[2]][1],
+                           reason="no candidate shares the leading token")
+
+        best_norm, best_score, best_i = accepted[0]
+        best_key = self._index[best_i][1]
         runner, margin = None, None
-        for cand, score, _ in matches[1:]:
-            if cand[1] != best_key:
-                runner, margin = cand[1], best_score - score
+        for _cand, score, i in accepted[1:]:
+            if self._index[i][1] != best_key:
+                runner, margin = self._index[i][1], best_score - score
                 break
+        if runner is None and rejected_top is not None:
+            # The rejected top candidate is still worth reporting: it is what
+            # a brand-blind matcher would have chosen.
+            runner = self._index[rejected_top[2]][1]
+            margin = best_score - rejected_top[1]
 
         if best_score < self.min_score:
             return _result(runner_up=best_key, margin=None,
@@ -407,6 +542,94 @@ class CreditLookup:
                            and margin < self.ambiguity_margin))
         res["matched_on"] = best_norm
         return res
+
+    def invalidate(self):
+        """Forget cached lookups. Call after loading new ratings mid-process.
+
+        The cache assumes the rating table is not changing underneath it,
+        which holds for a batch run and does not hold for a process that
+        ingests NSDL and then resolves funds without restarting.
+        """
+        self._name_cache.clear()
+        self._index = self._choices = None
+        self._seniority_ok = None
+        self._groups = None
+
+    # ── group-implied ratings ──────────────────────────────────────────────
+
+    def _group_index(self):
+        """{group key -> [(issuer_name, grade, rank, category)]}, built once."""
+        if self._groups is None:
+            from fund_filters import groups as _g
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    "SELECT issuer_name, worst_rating_grade, "
+                    "       worst_rating_rank, borrower_category "
+                    "FROM india.issuer_current "
+                    "WHERE worst_rating_grade IS NOT NULL")
+                rows = cur.fetchall()
+            index = {}
+            for name, grade, rank, cat in rows:
+                key = _g.group_of(name)
+                if key:
+                    index.setdefault(key, []).append((name, grade, rank, cat))
+            self._groups = index
+        return self._groups
+
+    def by_group(self, name):
+        """A rating implied by the company's corporate group, or not found.
+
+        THE WORST RATING IN THE GROUP, not the best, unless an anchor entity
+        is present. Same principle as taking the worst across an issuer's own
+        paper: a rating guessed upward is the error that costs money. Where an
+        anchor is in the file -- HDFC Bank for HDFC, State Bank of India for
+        SBI -- that is used instead, because the flagship is what "the group's
+        rating" means to anyone reading it.
+
+        A JUDGEMENT, NOT AN AGENCY OPINION. CRISIL rates HDFC Securities in
+        its own right and a subsidiary can sit below its parent; IL&FS was a
+        AAA group with a subsidiary that defaulted. Returned untrusted and at
+        reduced confidence so a consumer can exclude it wholesale.
+        """
+        from fund_filters import groups as _g
+        key = _g.group_of(name)
+        if not key:
+            return _result()
+        members = self._group_index().get(key) or []
+        if not members:
+            # NOTHING IN NSDL TO INFER FROM. Every group in DECLARED_RATINGS
+            # funds through commercial paper rather than listed bonds, so it
+            # is absent from the corporate bond file entirely -- which is why
+            # its members were in the review queue. A declared grade is a
+            # person's answer applied to a set, and says so.
+            declared = _g.declared_rating(key)
+            if not declared:
+                return _result()
+            grade, note = declared
+            return _result(found=True, issuer_name=key, issuer_key=key,
+                           rating=grade, source="group_declared",
+                           confidence=1.0,
+                           borrower_category=_borrower.DEFAULT,
+                           reason=f"declared for the {key} group ({note})")
+
+        pick = None
+        for pattern in _g.anchors_for(key):
+            hits = [m for m in members if pattern.search(m[0])]
+            if hits:
+                pick = max(hits, key=lambda m: m[2] if m[2] is not None else 0)
+                break
+        if pick is None:
+            # Worst rank is the weakest grade; rank ascends from AAA.
+            pick = max(members,
+                       key=lambda m: m[2] if m[2] is not None else 0)
+
+        return _result(found=True, issuer_name=pick[0], issuer_key=key,
+                       rating=pick[1], rating_rank=pick[2],
+                       borrower_category=pick[3] or _borrower.DEFAULT,
+                       source="group_implied", confidence=_g.GROUP_CONFIDENCE,
+                       instrument_count=len(members),
+                       reason=f"implied from the {key} group "
+                              f"({len(members)} rated entities)")
 
     def by_names(self, names):
         """Convenience for a whole portfolio. Same order as the input."""
