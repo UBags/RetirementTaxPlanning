@@ -1,0 +1,12 @@
+flowchart TD
+    A[AppState + GlidePath] --> B[run_monte_carlo\nn_sims simulations]
+    B --> C{use_bootstrap?}
+    C -- Yes --> D[Fetch Nifty 50 NAV\nmfapi.in / AMFI portal\nSaved to mc_nifty50_nav.csv]
+    D --> E[Extract Nifty Composite Debt\nFrom _NIFTY_DEBT_DATA table]
+    E --> F[Block Bootstrap\nblock_length consecutive years\nPreserves volatility clustering\nand fat tails]
+    C -- No / Fallback --> G[Log-Normal\nμ = return_chunks\nσ = Σ w_i·σ_i perfect-correlation]
+    F --> H[Centre returns per FY:\nr_centred = r_hist - mean + μ_det_fy\nFloor = μ_det - 3σ]
+    G --> H
+    H --> I[360 monthly sim steps\nper path]
+    I --> J[MCResults\ncorpus_p5/p25/p50/p75/p95\ncash_p5…p95\nruin_by_fy\nmedian / p5 final corpus\nruin_probability]
+    J --> K[MonteCarloChart\n5 views:\n1 Corpus Fan\n2 Cash Fan\n3 Ruin Probability\n4 Sequence-of-Returns Paths\n5 Summary Statistics]

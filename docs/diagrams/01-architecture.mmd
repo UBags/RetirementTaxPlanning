@@ -1,0 +1,36 @@
+graph TD
+    subgraph Data Sources
+        A[AMFI / mfapi.in<br/>NAV History]
+        B[Fund_Metrics_Output.csv<br/>742 funds × 60 metrics]
+    end
+
+    subgraph Optimiser Layer
+        C[allocate_funds.py<br/>MILP + SLSQP]
+        D[glide_path.py<br/>Transition Schedule]
+    end
+
+    subgraph Simulation Layer
+        E[engine.py<br/>30-yr Monthly SWP]
+        F[monte_carlo.py<br/>Block Bootstrap / Log-Normal]
+    end
+
+    subgraph Presentation Layer
+        G[main.py<br/>PySide6 MainWindow]
+        H[chart_dialog.py<br/>Matplotlib Charts]
+        I[optimization_report.py<br/>Post-Opt Report]
+    end
+
+    subgraph Persistence
+        J[*.swp.json<br/>Project Save]
+        K[per-user CSV outputs]
+    end
+
+    A -->|get_funds_data.py / fetch_amfi_aum.py| B
+    B --> C
+    C --> D
+    D --> E
+    E --> G
+    E --> F
+    F --> H
+    G --> J
+    G --> K

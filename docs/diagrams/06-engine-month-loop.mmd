@@ -1,0 +1,18 @@
+flowchart TD
+    Start([Month loop: m = 1..360]) --> A[Grow each fund lot by fund-specific CAGR]
+    A --> B{SWP month?\nm >= SWP_START}
+    B -- Yes --> C[Bounded Smart Withdrawal\nWaterfall: sell overweight funds first\nDrift cap Personal 0.15%, HUF 0.50%]
+    B -- No --> D[No withdrawal]
+    C --> E[Compute FIFO gains: STCG / LTCG\nper lot held < 12 months]
+    D --> E
+    E --> F{March = end of FY?}
+    F -- Yes --> G[LTCG Harvest\nRealise gains up to equity exempt limit\nStep-up cost basis → avoid future tax]
+    F -- No --> H
+    G --> H{Chunk boundary year?}
+    H -- Yes --> I[_rebalance_portfolio\nSell overweights → buy underweights\nSelf-funded: tax deducted from proceeds]
+    H -- No --> J
+    I --> J[HUF top-up\nIf Personal corpus exhausted\nHUF transfers deficit to Personal]
+    J --> K[Accumulate to p_acc / h_acc\nper FY totals]
+    K --> L{m == 360?}
+    L -- No --> Start
+    L -- Yes --> M[_build_yearly_summaries\n30 YearSummary rows]
