@@ -1014,7 +1014,7 @@ class MonteCarloChart(ChartWindow):
         # Alternating rows + highlight ruin milestones
         # MC_FIXED_HORIZON, not the plan horizon: this table renders Monte
         # Carlo output, which is 30-element until Phase D.
-        from monte_carlo import MC_FIXED_HORIZON
+        from swp_planner.simulation.monte_carlo import MC_FIXED_HORIZON
         for i in range(MC_FIXED_HORIZON):
             bg = "#f9f9f9" if i % 2 == 0 else "white"
             if i in highlight_rows:

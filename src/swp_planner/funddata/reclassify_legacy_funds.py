@@ -54,6 +54,8 @@ from typing import Optional
 
 import requests
 
+from swp_planner.paths import FUNDS_DIR
+
 # ─────────────────────────────────────────────────────────────────────────────
 # URL construction
 # ─────────────────────────────────────────────────────────────────────────────
@@ -363,12 +365,14 @@ def main():
         description="Reclassify legacy Income/Growth mutual funds using Groww.in data."
     )
     parser.add_argument(
-        "--input", "-i", default="/home/uddipan/PycharmProjects/RetirementTaxPlanning/Schemes_and_Funds/mutual_funds_unclassified.csv",
-        help="/home/uddipan/PycharmProjects/RetirementTaxPlanning/Schemes_and_Funds/mutual_funds_unclassified.csv",
+        "--input", "-i",
+        default=str(FUNDS_DIR / "Schemes_and_Funds" / "mutual_funds_unclassified.csv"),
+        help="Unclassified funds CSV (default: data/funds/Schemes_and_Funds/"
+             "mutual_funds_unclassified.csv)",
     )
     parser.add_argument(
-        "--output-dir", "-o", default="/home/uddipan/PycharmProjects/RetirementTaxPlanning/Schemes_and_Funds/",
-        help="/home/uddipan/PycharmProjects/RetirementTaxPlanning/Schemes_and_Funds/",
+        "--output-dir", "-o", default=str(FUNDS_DIR / "Schemes_and_Funds"),
+        help="Output directory (default: data/funds/Schemes_and_Funds/)",
     )
     parser.add_argument(
         "--delay", "-d", type=float, default=1.5,

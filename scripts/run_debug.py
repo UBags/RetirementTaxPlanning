@@ -3,17 +3,20 @@ Debug launcher for RetirementTaxPlanning.
 Sets SWP_DEBUG_LOG env var so engine, main, and models write trace logs.
 
 Usage:
-    cd C:\PythonProjects\RetirementTaxPlanning
-    python run_debug.py
+    python scripts/run_debug.py
 
-Log file: swp_debug.log (same directory)
+Log file: data/logs/swp_debug.log
 """
 import logging
 import os
 import sys
 
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(_ROOT, "src"))
+
 # ── Set log path BEFORE importing anything else ──
-LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "swp_debug.log")
+LOG_FILE = os.path.join(_ROOT, "data", "logs", "swp_debug.log")
+os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 os.environ["SWP_DEBUG_LOG"] = LOG_FILE
 
 # Clear previous log
@@ -34,15 +37,16 @@ for name in ("main.debug", "engine.debug", "models.debug"):
 # Delete __pycache__ to ensure fresh bytecode
 import shutil
 
-cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "__pycache__")
-if os.path.isdir(cache_dir):
-    shutil.rmtree(cache_dir)
-    print(f"Deleted {cache_dir}")
+for _dirpath, _dirnames, _ in os.walk(os.path.join(_ROOT, "src", "swp_planner")):
+    if "__pycache__" in _dirnames:
+        cache_dir = os.path.join(_dirpath, "__pycache__")
+        shutil.rmtree(cache_dir)
+        print(f"Deleted {cache_dir}")
 
 print(f"Debug logging to: {LOG_FILE}")
 print("Starting app...\n")
 
 # Now import and run the app
-from main import main
+from swp_planner.gui.main import main
 
 main()

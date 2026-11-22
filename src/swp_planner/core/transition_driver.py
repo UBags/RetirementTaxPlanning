@@ -42,11 +42,11 @@ import json
 import sys
 from typing import Dict, Optional
 
-from configuration import config
-from engine import Engine, free_gain_capacity
-from models import AppState
-from net_income_plan import project_plan
-from transition_plan import (
+from swp_planner.config.configuration import config
+from swp_planner.core.engine import Engine, free_gain_capacity
+from swp_planner.core.models import AppState
+from swp_planner.core.net_income_plan import project_plan
+from swp_planner.core.transition_plan import (
     PURSES,
     Boundary,
     Convergence,

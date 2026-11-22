@@ -28,8 +28,8 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from ingest import amfi_schemes as A  # noqa: E402
-from ingest import fund_store as F  # noqa: E402
+from swp_planner.ingest import amfi_schemes as A  # noqa: E402
+from swp_planner.ingest import fund_store as F  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location(
     "fund_batch", _ROOT / "scripts" / "fund_batch.py")
@@ -137,7 +137,7 @@ def test_every_amfi_code_that_produced_a_name_is_kept():
 def conn(dsn):
     import psycopg2
 
-    from ingest import store as S
+    from swp_planner.ingest import store as S
     c = psycopg2.connect(dsn)
     with c.cursor() as cur:
         cur.execute("DROP SCHEMA IF EXISTS india CASCADE")
@@ -590,7 +590,7 @@ def old_conn(dsn):
     """A database as it stood before category, line_no and cap_exempt."""
     import psycopg2
 
-    from ingest import store as S
+    from swp_planner.ingest import store as S
     c = psycopg2.connect(dsn)
     with c.cursor() as cur:
         cur.execute("DROP SCHEMA IF EXISTS india CASCADE")
@@ -860,7 +860,7 @@ def test_a_rejected_query_does_not_abort_the_whole_ladder():
     import io
     import json as _json
 
-    from ingest import etmoney as _E
+    from swp_planner.ingest import etmoney as _E
 
     hit = {"id": 7, "label": "Axis Childrens Fund",
            "name": "Axis Childrens Fund Regular-Growth",
@@ -901,7 +901,7 @@ def test_every_rung_rejected_is_reported_as_such():
     responses, and conflating them sends one to the other's queue."""
     import urllib.error
 
-    from ingest import etmoney as _E
+    from swp_planner.ingest import etmoney as _E
 
     def always_400(req, timeout=None):
         raise urllib.error.HTTPError("u", 400, "Bad Request", {}, None)
@@ -977,7 +977,7 @@ def test_the_retry_is_bounded(conn):
 
 
 def test_pick_can_be_told_to_skip_an_id():
-    from ingest import etmoney as _E
+    from swp_planner.ingest import etmoney as _E
     entries = [{"id": 1, "label": "Alpha Fund", "seoWebUrl": "/x/1"},
                {"id": 2, "label": "Alpha Fund", "seoWebUrl": "/x/2"}]
     assert _E.pick("Alpha Fund", entries).fund_id == 1
@@ -1021,7 +1021,7 @@ def test_stored_holdings_are_reclassified_when_the_rules_change(conn):
 def test_the_sql_and_python_non_issuer_rules_agree(conn):
     """The reclassifier duplicates etmoney_portfolio's patterns in SQL rather
     than refetching 1,392 pages. This is what stops the two drifting."""
-    from ingest import etmoney_portfolio as P
+    from swp_planner.ingest import etmoney_portfolio as P
     names = ["SBI Gold ETF", "Mirae Asset Silver ETF - Growth",
              "Bandhan Gold ETF-Growth", "Quantum Nifty 50 ETF-IDCW",
              "Nippon India Silver ETF FOF", "Others", "TREPS",
@@ -1140,7 +1140,7 @@ def test_a_rule_change_reaches_holdings_already_written(conn):
 
     Canara Bank stayed in the review queue across 112 funds after the rule
     that answers it had already shipped."""
-    from lookup import portfolio_credit as PC
+    from swp_planner.lookup import portfolio_credit as PC
     F.upsert_fund(conn, 1, "A Debt Fund", as_on=TODAY,
                   category="Debt Scheme - Liquid Fund")
     stale = dict(company_id=1, instrument_code=2, company="Canara Bank",
@@ -1171,7 +1171,7 @@ def test_re_enrichment_is_keyed_on_distinct_classifications(conn):
     """Seven hundred thousand holdings reduce to a few thousand distinct
     (company, instrument, class) combinations, so this is a few thousand
     lookups rather than a row-by-row pass."""
-    from lookup import portfolio_credit as PC
+    from swp_planner.lookup import portfolio_credit as PC
     for fid in (1, 2, 3):
         F.upsert_fund(conn, fid, f"Fund {fid}", as_on=TODAY)
         F.load_month(conn, fid, dt.date(2026, 7, 31), [
@@ -1205,7 +1205,7 @@ def test_re_enrichment_is_keyed_on_distinct_classifications(conn):
 def test_re_enrichment_leaves_rows_that_did_not_change(conn):
     """It must be safe to run every refresh, which means writing nothing when
     the rules produce what is already stored."""
-    from lookup import portfolio_credit as PC
+    from swp_planner.lookup import portfolio_credit as PC
     F.upsert_fund(conn, 1, "A Fund", as_on=TODAY)
     F.load_month(conn, 1, dt.date(2026, 7, 31), [
         dict(company_id=1, instrument_code=3, company="REC Ltd.",
@@ -1397,7 +1397,7 @@ def test_re_enrichment_never_overwrites_a_hand_entered_rating(conn):
 
     Ordering alone would fix it today and break again the next time someone
     reorders the steps. rating_source = 'override' is what survives that."""
-    from lookup import portfolio_credit as PC
+    from swp_planner.lookup import portfolio_credit as PC
     F.upsert_fund(conn, 1, "A Fund", as_on=TODAY)
     F.load_month(conn, 1, dt.date(2026, 7, 31), [
         dict(company_id=1, instrument_code=2, company="Karur Vysya Bank Ltd.",

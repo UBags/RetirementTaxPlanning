@@ -29,7 +29,7 @@ import pytest
 
 pytest.importorskip("PySide6", reason="Qt not available")
 
-from models import (  # noqa: E402
+from swp_planner.core.models import (  # noqa: E402
     AppState,
     FDRateChunk,
     HUFWithdrawalChunk,
@@ -37,7 +37,7 @@ from models import (  # noqa: E402
     TaxChunk,
     TaxSlab,
 )
-from pro_rated_utils import financial_year_of  # noqa: E402
+from swp_planner.core.pro_rated_utils import financial_year_of  # noqa: E402
 
 
 def _short_plan(horizon: int = 30) -> AppState:
@@ -90,7 +90,7 @@ def test_extending_stretches_the_last_chunk_rather_than_inventing_one():
 
 @pytest.fixture
 def dlg(qtbot):
-    from dialogs import PlanPeriodDialog
+    from swp_planner.gui.dialogs import PlanPeriodDialog
     state = _short_plan()
     d = PlanPeriodDialog(state)
     qtbot.addWidget(d)
@@ -114,7 +114,7 @@ def test_opening_and_cancelling_changes_nothing(dlg):
 
 
 def test_the_spinbox_is_bounded_by_the_configured_band(dlg):
-    from configuration import config
+    from swp_planner.config.configuration import config
     _state, d = dlg
     assert d.spin.minimum() == int(config.min_simulation_years)
     assert d.spin.maximum() == int(config.max_simulation_years)
@@ -134,7 +134,7 @@ def test_a_short_first_year_is_announced(dlg):
 
 
 def test_saving_applies_both_choices(qtbot):
-    from dialogs import PlanPeriodDialog
+    from swp_planner.gui.dialogs import PlanPeriodDialog
     state = _short_plan()
     d = PlanPeriodDialog(state)
     qtbot.addWidget(d)
@@ -146,7 +146,7 @@ def test_saving_applies_both_choices(qtbot):
 
 
 def test_saving_with_extend_repairs_the_short_lists(qtbot):
-    from dialogs import PlanPeriodDialog
+    from swp_planner.gui.dialogs import PlanPeriodDialog
     state = _short_plan()
     d = PlanPeriodDialog(state)
     qtbot.addWidget(d)
@@ -158,7 +158,7 @@ def test_saving_with_extend_repairs_the_short_lists(qtbot):
 
 def test_declining_to_extend_leaves_the_plan_short(qtbot):
     """Not silently repaired: the user said no."""
-    from dialogs import PlanPeriodDialog
+    from swp_planner.gui.dialogs import PlanPeriodDialog
     state = _short_plan()
     d = PlanPeriodDialog(state)
     qtbot.addWidget(d)
@@ -169,7 +169,7 @@ def test_declining_to_extend_leaves_the_plan_short(qtbot):
 
 
 def test_a_fully_covered_plan_offers_nothing_to_extend(qtbot):
-    from dialogs import PlanPeriodDialog
+    from swp_planner.gui.dialogs import PlanPeriodDialog
     state = AppState(horizon_years=30,
                      return_chunks=[ReturnChunk(1, 30, 0.07)])
     d = PlanPeriodDialog(state)

@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import pytest
 
-from engine import FIFOBucket, FolioSet, cash_within_gain_budget
+from swp_planner.core.engine import FIFOBucket, FolioSet, cash_within_gain_budget
 
 NAV = 2.0
 

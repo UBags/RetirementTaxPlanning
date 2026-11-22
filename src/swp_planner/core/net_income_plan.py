@@ -147,7 +147,7 @@ def prorated_targets(annual: Mapping[int, float], investment_date,
 
     Only FY1 is ever short, and only when the plan does not start in April.
     """
-    from pro_rated_utils import months_in_fy
+    from swp_planner.core.pro_rated_utils import months_in_fy
     return {fy: float(annual.get(fy, 0.0))
             * months_in_fy(investment_date, fy) / 12.0
             for fy in years}
@@ -276,8 +276,8 @@ def project_plan(state, auto_transition: bool = True, **engine_kwargs):
     """
     import copy
 
-    from engine import Engine
-    from pro_rated_utils import months_in_fy
+    from swp_planner.core.engine import Engine
+    from swp_planner.core.pro_rated_utils import months_in_fy
 
     # Phase 07. A chunk boundary used to move the whole portfolio in one FY,
     # and on the golden corpus that single act was very nearly the only source
@@ -289,7 +289,7 @@ def project_plan(state, auto_transition: bool = True, **engine_kwargs):
     # plan is cached on (identity, content fingerprint), so the five golden
     # scenarios each compute theirs once rather than once per caller.
     if auto_transition and "transition_plan" not in engine_kwargs:
-        from transition_driver import plan_transitions
+        from swp_planner.core.transition_driver import plan_transitions
         if state.chunk_boundary_years():
             engine_kwargs["transition_plan"] = plan_transitions(state).plan
 

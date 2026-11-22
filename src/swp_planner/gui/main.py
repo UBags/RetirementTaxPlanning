@@ -58,23 +58,24 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from engine import (
+from swp_planner.core.engine import (
     FundWithdrawalDetail,
     MonthlyRow,
     YearSummary,
     optimize_withdrawal_split,
     run_sensitivity,
 )
-from fund_dialog import FundAllocationDialog
-from models import AppState, default_state
-from tax_dialog import TaxRulesDialog
+from swp_planner.core.models import AppState, default_state
+from swp_planner.gui.fund_dialog import FundAllocationDialog
+from swp_planner.gui.tax_dialog import TaxRulesDialog
+from swp_planner.paths import child_env, module_command
 
 try:
-    from optimization_report import show_optimization_report
+    from swp_planner.optimiser.optimization_report import show_optimization_report
     _OPT_REPORT_AVAILABLE = True
 except ImportError:
     _OPT_REPORT_AVAILABLE = False
-from dialogs import (
+from swp_planner.gui.dialogs import (
     HUFWithdrawalDialog,
     IncomeDialog,
     MonteCarloDialog,
@@ -1533,7 +1534,7 @@ class MainWindow(QMainWindow):
         self._propagate_shared_fields()
 
     def _open_glide_path_params(self):
-        from dialogs import GlidePathParametersDialog
+        from swp_planner.gui.dialogs import GlidePathParametersDialog
         dlg = GlidePathParametersDialog(self.state, self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             # State already updated inside _save(); sync toolbar widgets too
@@ -1556,7 +1557,7 @@ class MainWindow(QMainWindow):
             )
 
     def _open_rebal_constraints(self):
-        from dialogs import RebalancingConstraintsDialog
+        from swp_planner.gui.dialogs import RebalancingConstraintsDialog
         dlg = RebalancingConstraintsDialog(self.state, self)
         dlg.exec()
     def _open_plan_period(self):
@@ -1567,7 +1568,7 @@ class MainWindow(QMainWindow):
         computed results, so the toolbar date picker is resynced and the
         status line refreshed; the user re-runs to see the effect.
         """
-        from dialogs import PlanPeriodDialog
+        from swp_planner.gui.dialogs import PlanPeriodDialog
         dlg = PlanPeriodDialog(self.state, self)
         if not dlg.exec():
             return
@@ -1592,7 +1593,7 @@ class MainWindow(QMainWindow):
                   f"{self.state.horizon} financial years.")
 
     def _open_fd_rate_chunks(self):
-        from dialogs import FDRateChunksDialog
+        from swp_planner.gui.dialogs import FDRateChunksDialog
         if FDRateChunksDialog(self.state, self).exec():
             self._propagate_shared_fields()
             self._update_fd_rate_label()
@@ -1674,7 +1675,7 @@ class MainWindow(QMainWindow):
             # annual_requirements is a NET target since Phase B -- cash the
             # plan must leave in hand. The withdrawal schedule that delivers
             # it is solved here, then projected.
-            from net_income_plan import project_plan
+            from swp_planner.core.net_income_plan import project_plan
             p_monthly, p_yearly, h_monthly, _, self._plan_solution = project_plan(
                 self.state,
                 conservative_mode=conservative,
@@ -1924,27 +1925,27 @@ class MainWindow(QMainWindow):
 
     # ── Chart launchers ────────────────────────────────────────────────────────
     def _show_chart_pm(self, rows):
-        from chart_dialog import PersonalMonthlyChart
+        from swp_planner.gui.chart_dialog import PersonalMonthlyChart
         self._keep_chart(PersonalMonthlyChart(rows, self))
 
     def _show_chart_py(self, rows):
-        from chart_dialog import PersonalAnnualChart
+        from swp_planner.gui.chart_dialog import PersonalAnnualChart
         self._keep_chart(PersonalAnnualChart(rows, self))
 
     def _show_chart_hm(self, rows):
-        from chart_dialog import HUFMonthlyChart
+        from swp_planner.gui.chart_dialog import HUFMonthlyChart
         self._keep_chart(HUFMonthlyChart(rows, self))
 
     def _show_chart_ann(self, rows):
-        from chart_dialog import AnnualSummaryChart
+        from swp_planner.gui.chart_dialog import AnnualSummaryChart
         self._keep_chart(AnnualSummaryChart(rows, self))
 
     def _show_chart_sens(self, results):
-        from chart_dialog import SensitivityChart
+        from swp_planner.gui.chart_dialog import SensitivityChart
         self._keep_chart(SensitivityChart(results, self))
 
     def _show_chart_mc(self, results):
-        from chart_dialog import MonteCarloChart
+        from swp_planner.gui.chart_dialog import MonteCarloChart
         self._keep_chart(MonteCarloChart(results, self))
 
     def _show_optimization_report(self):
@@ -1964,11 +1965,11 @@ class MainWindow(QMainWindow):
         show_optimization_report(self.state, yearly_rows=yearly, parent=self)
 
     def _show_chart_drift(self, glide_path):
-        from chart_dialog import AllocationDriftChart
+        from swp_planner.gui.chart_dialog import AllocationDriftChart
         self._keep_chart(AllocationDriftChart(glide_path, self.state, self))
 
     def _show_chart_rebal(self, glide_path, yearly_rows):
-        from chart_dialog import RebalancingCostChart
+        from swp_planner.gui.chart_dialog import RebalancingCostChart
         self._keep_chart(RebalancingCostChart(yearly_rows, glide_path, self.state, self))
 
     def _build_glide_path_table(self, gp) -> QTableWidget:
@@ -2154,7 +2155,7 @@ class MainWindow(QMainWindow):
         # MC_FIXED_HORIZON, not the plan horizon: Monte Carlo output is
         # 30-element until Phase D, and run_monte_carlo() refuses any other
         # horizon rather than silently truncating.
-        from monte_carlo import MC_FIXED_HORIZON
+        from swp_planner.simulation.monte_carlo import MC_FIXED_HORIZON
         for i in range(MC_FIXED_HORIZON):
             fy       = i + 1
             ret_pct  = res.marginal_ruin_returns[i] * 100
@@ -2282,7 +2283,7 @@ class MainWindow(QMainWindow):
         # the main thread with QApplication.processEvents() between stages is
         # simpler and gives immediate, reliable feedback.
         try:
-            from monte_carlo import (
+            from swp_planner.simulation.monte_carlo import (
                 MonteCarloHorizonUnsupported,
                 _fetch_debt_index_annual_returns,
                 _fetch_nifty50_annual_returns,
@@ -2370,7 +2371,7 @@ class MainWindow(QMainWindow):
             _caps = getattr(res, 'caps', None)
             if hasattr(res, 'floors') and hasattr(res, 'sigmas'):
                 seen = {}
-                from monte_carlo import MC_FIXED_HORIZON
+                from swp_planner.simulation.monte_carlo import MC_FIXED_HORIZON
                 for fy in range(MC_FIXED_HORIZON):
                     fl = res.floors[fy]
                     cp = _caps[fy] if _caps is not None else None
@@ -2536,7 +2537,7 @@ class MainWindow(QMainWindow):
             return
 
         # Always open the drift chart (always useful even for flat glide paths)
-        from chart_dialog import AllocationDriftChart, RebalancingCostChart
+        from swp_planner.gui.chart_dialog import AllocationDriftChart, RebalancingCostChart
         drift_win = AllocationDriftChart(gp, self.state, self)
         drift_win.show()
         self._keep_chart(drift_win)
@@ -2613,7 +2614,7 @@ class MainWindow(QMainWindow):
         QApplication.processEvents()
 
         try:
-            from allocate_funds import optimize_sticky_portfolio
+            from swp_planner.optimiser.allocate_funds import optimize_sticky_portfolio
 
             def _progress(msg: str):
                 # Highlight Pass 1 / Pass 2 headers in the progress dialog
@@ -2676,7 +2677,7 @@ class MainWindow(QMainWindow):
                     else:
                         # New fund from expanded universe — add it to the chunk
                         # with minimal metrics (the user should re-import metrics)
-                        from models import FundEntry
+                        from swp_planner.core.models import FundEntry
                         new_f = FundEntry(
                             name=fname, fund_type="debt",
                             allocation=round(w * total_corpus, 4))
@@ -2718,7 +2719,7 @@ class MainWindow(QMainWindow):
             # ── Refresh return_chunks from optimizer's updated target_weights ──
             # The optimizer may change fund weights per chunk, so recalculate
             # the per-chunk portfolio yield and update return_chunks accordingly.
-            from models import ReturnChunk
+            from swp_planner.core.models import ReturnChunk
             new_return_chunks = []
             for ac in self.state.allocation_chunks:
                 rate = ac.optimized_yield()
@@ -3131,7 +3132,7 @@ class _MCWorker(QThread):
 
     def run(self):
         try:
-            from monte_carlo import (
+            from swp_planner.simulation.monte_carlo import (
                 _fetch_debt_index_annual_returns,
                 _fetch_nifty50_annual_returns,
                 run_monte_carlo,
@@ -3183,6 +3184,7 @@ class _SubprocessWorker(QThread):
         try:
             proc = subprocess.Popen(
                 self._cmd,
+                env=child_env(),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 # Do NOT use text=True without encoding= on Windows — it falls
@@ -3425,21 +3427,9 @@ class FetchSchemeNamesDialog(QDialog):
     # ── run ───────────────────────────────────────────────────────────────────
 
     def _run(self):
-        import sys as _sys
-        script = Path(_sys.argv[0]).parent / "get_amfi_fund_schemes_names.py"
-        if not script.exists():
-            script = Path(__file__).parent / "get_amfi_fund_schemes_names.py"
-        if not script.exists():
-            QMessageBox.critical(
-                self, "Script Not Found",
-                "get_amfi_fund_schemes_names.py not found alongside main.py.\n"
-                f"Looked in: {script.parent}"
-            )
-            return
-
         min_aum = self.spin_aum.value()
-        cmd = [_sys.executable, str(script),
-               "--output-dir", str(self.output_dir)]
+        cmd = module_command("swp_planner.funddata.get_amfi_fund_schemes_names",
+                             "--output-dir", str(self.output_dir))
         if min_aum > 0:
             cmd += ["--min-aum", str(min_aum)]
             # Date in DD-Mon-YYYY format (e.g. "17-Feb-2026")
@@ -3605,18 +3595,13 @@ class FetchFundMetricsDialog(QDialog):
         output_path = str(self.output_dir / "Fund_Metrics_Output.csv")
         error_path  = str(self.output_dir / "Fund_Metrics_Errors.csv")
 
-        # Build command: invoke get_funds_data.py via the same Python interpreter
-        import sys as _sys
-        script = Path(_sys.argv[0]).parent / "get_funds_data.py"
-        if not script.exists():
-            # Try alongside the running script
-            script = Path(__file__).parent / "get_funds_data.py"
-        cmd = [
-            _sys.executable, str(script),
+        # Build command: run get_funds_data as a module under the same interpreter
+        cmd = module_command(
+            "swp_planner.funddata.get_funds_data",
             "--input",   input_path,
             "--output",  output_path,
             "--workers", str(self.workers_spin.value()),
-        ]
+        )
         self._log(f"\n$ {' '.join(cmd)}\n")
         self.btn_run.setEnabled(False)
 
@@ -3973,7 +3958,7 @@ class AllocateCapitalDialog(QDialog):
 
     def _rebuild_chunk_table(self, mode: str, preserve_data: list = None):
         """Tear down and rebuild the chunk table for the given mode."""
-        from chunk_editor import ChunkTableWidget
+        from swp_planner.gui.chunk_editor import ChunkTableWidget
 
         # Remove old widget if present
         if self.chunk_table is not None:
@@ -4173,20 +4158,15 @@ class AllocateCapitalDialog(QDialog):
             QMessageBox.critical(self, "Save Error", str(exc))
             return
 
-        import sys as _sys
-        script = Path(_sys.argv[0]).parent / "allocate_funds.py"
-        if not script.exists():
-            script = Path(__file__).parent / "allocate_funds.py"
-
-        cmd = [
-            _sys.executable, str(script),
+        cmd = module_command(
+            "swp_planner.optimiser.allocate_funds",
             "--input",             str(self.metrics_path),
             "--output-dir",        str(self.output_dir),
             "--total",             str(self.w_total.value()),
             "--commonality-bonus", str(round(self.w_bonus.value() / 100.0, 6)),
             "--chunks-file",       chunks_file,
             "--mode",              mode,
-        ]
+        )
         # Determine optimizer method from state (set by PuLP/Home-grown radio)
         _ap = getattr(self.state, 'allocation_params', None) or {}
         _use_pulp = _ap.get("pulp_commonality", True)  # default to PuLP
@@ -4725,7 +4705,7 @@ class AllocateCapitalDialog(QDialog):
         try:
             import pandas as pd
 
-            from models import AllocationChunk, FundEntry, ReturnChunk
+            from swp_planner.core.models import AllocationChunk, FundEntry, ReturnChunk
 
             new_alloc_chunks = []
             new_return_chunks = []
@@ -4897,7 +4877,7 @@ class AllocateCapitalDialog(QDialog):
         try:
             import pandas as pd
 
-            from models import FundEntry
+            from swp_planner.core.models import FundEntry
 
             df = pd.read_csv(csv_path, encoding="utf-8-sig")
             if "Allocation_L" not in df.columns or "Fund Name" not in df.columns:
@@ -4987,7 +4967,7 @@ class AllocateCapitalDialog(QDialog):
 
             # ── Compute portfolio ratios from loaded funds if not in CSV ──
             if (port_sharpe is None or port_sortino is None or port_calmar is None) and new_funds:
-                from models import _first_available
+                from swp_planner.core.models import _first_available
                 total_alloc = sum(f.allocation for f in new_funds if f.allocation > 0)
                 if total_alloc > 0:
                     w_sharpe = w_sortino = 0.0

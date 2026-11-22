@@ -41,7 +41,8 @@ from typing import Callable, Optional
 import requests
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-from configuration import config
+from swp_planner.config.configuration import config
+from swp_planner.paths import FUNDS_DIR
 
 PERF_URL        = "https://www.amfiindia.com/gateway/pollingsebi/api/amfi/fundperformance"
 REQUEST_TIMEOUT = 30
@@ -247,7 +248,7 @@ def fetch_amfi_aum(
     ValueError                 if API returns no data (wrong date, holiday, etc.).
     """
     if output_dir is None:
-        output_dir = Path(__file__).parent
+        output_dir = FUNDS_DIR
     output_dir = Path(output_dir)
     subdir     = output_dir / OUTPUT_SUBDIR
     csv_path   = subdir / OUTPUT_FILE

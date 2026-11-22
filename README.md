@@ -10,7 +10,7 @@ A comprehensive retirement-income planning application for Indian investors. It 
 ## Table of Contents
 
 1. [High-Level Architecture](#high-level-architecture)
-2. [Module Overview](#module-overview)
+2. [Repository Layout](#repository-layout) · [Module Overview](#module-overview)
 3. [Data Flow Diagram](#data-flow-diagram)
 4. [Core Data Models (Class Diagram)](#core-data-models-class-diagram)
 5. [Portfolio Optimisation Logic](#portfolio-optimisation-logic)
@@ -73,28 +73,59 @@ graph TD
 
 ---
 
+## Repository Layout
+
+```
+RetirementTaxPlanning/
+├── run.py                    # GUI launcher shim (no install needed)
+├── pyproject.toml            # package metadata; `pip install -e .`
+├── config/RetirementTaxPlanning.configuration
+├── src/swp_planner/
+│   ├── __main__.py           # python -m swp_planner
+│   ├── paths.py              # every on-disk location, in one place
+│   ├── config/               # configuration, chunk_defaults
+│   ├── core/                 # models, engine, tax/transition/plan logic
+│   ├── optimiser/            # allocate_funds, optimization_report
+│   ├── simulation/           # monte_carlo, percentile_metrics, nav_feed
+│   ├── funddata/             # NAV/AMFI download + metrics CLIs
+│   ├── gui/                  # app (launcher), main window, dialogs, charts
+│   ├── fund_filters/  ingest/  lookup/  data_synthesizer/
+├── scripts/                  # operational CLIs, probes, refresh.sh
+├── tests/                    # pytest suite; tests/golden = frozen snapshots
+├── db/                       # PostgreSQL schema DDL
+├── docs/                     # current design docs; docs/archive/ = superseded versions
+├── archive/                  # superseded code kept for reference
+├── data/                     # UNTRACKED inputs, caches, logs (see data/README.md)
+└── outputs/<user>/           # UNTRACKED per-user GUI output
+```
+
+---
+
 ## Module Overview
+
+Paths are relative to `src/swp_planner/`.
 
 | File | Role |
 |---|---|
-| `run.py` | Entry point. Prompts for username, creates per-user output directory, launches `MainWindow`. |
-| `main.py` | PySide6 `MainWindow`. Hosts 4 scenario tabs, all dialogs, calculation orchestration. |
-| `models.py` | All dataclasses: `AppState`, `FundEntry`, `AllocationChunk`, `GlidePath`, `TaxChunk`, `MonthlyRow`, `YearSummary`, etc. Also: `AppState.from_dict()` / `to_dict()` for JSON persistence. |
-| `engine.py` | 30-year monthly SWP simulation (per-fund FIFO lot tracking, rebalancing, tax, harvesting). Also `optimize_withdrawal_split()`. |
-| `allocate_funds.py` | Portfolio optimiser: loads `Fund_Metrics_Output.csv`, runs MILP (PuLP) + SLSQP (SciPy), multi-pass aim/track/frontier-walk strategies, sticky-portfolio Mode A & B. |
-| `glide_path.py` | Builds the year-by-year weight schedule (`GlidePath`) from chunk `target_weights`, with linear interpolation across transition windows. |
-| `monte_carlo.py` | Sequence-of-returns stress test: Historical Block Bootstrap (preferred) or Log-Normal. Produces `MCResults` with fan-chart percentile bands and ruin probabilities. |
-| `configuration.py` | Singleton config reader for `RetirementTaxPlanning.configuration`. |
-| `get_funds_data.py` | Downloads NAV history from mfapi.in / AMFI; computes rolling CAGR, Sharpe, Sortino, Calmar, Max-DD, Alpha, Beta, Treynor; writes `Fund_Metrics_Output.csv`. |
-| `fetch_amfi_aum.py` | Fetches AMFI AUM data and adds `Fund Size` column to metrics CSV. |
-| `get_amfi_fund_schemes_names.py` | Utility: downloads AMFI master scheme list. |
-| `reclassify_legacy_funds.py` | Utility: reclassifies fund types in saved project JSON. |
-| `chunk_editor.py` | Reusable PySide6 widget for editing year-range chunk tables. |
-| `dialogs.py` | Various input dialogs (funds, requirements, windfalls, income, splits, returns, sensitivity). |
-| `fund_dialog.py` | "View Fund Selection & Allocation" dialog (portfolio stats, fund-level CAGR table). |
-| `chart_dialog.py` | Non-modal chart windows: Corpus/Cash bar charts, Sensitivity Analysis, Monte Carlo fan charts. |
-| `optimization_report.py` | Post-optimisation multi-tab report: Glide Path Summary, Fund Selection, Tax Attribution, Robustness. |
-| `tax_dialog.py` | Tax rules editor (slab tables for debt/equity, Personal + HUF). |
+| `gui/app.py` | Entry point. Prompts for username, creates `outputs/<user>/`, launches `MainWindow`. |
+| `gui/main.py` | PySide6 `MainWindow`. Hosts 4 scenario tabs, all dialogs, calculation orchestration. |
+| `core/models.py` | All dataclasses: `AppState`, `FundEntry`, `AllocationChunk`, `GlidePath`, `TaxChunk`, `MonthlyRow`, `YearSummary`, etc. Also: `AppState.from_dict()` / `to_dict()` for JSON persistence. |
+| `core/engine.py` | 30-year monthly SWP simulation (per-fund FIFO lot tracking, rebalancing, tax, harvesting). Also `optimize_withdrawal_split()`. |
+| `optimiser/allocate_funds.py` | Portfolio optimiser: loads `Fund_Metrics_Output.csv`, runs MILP (PuLP) + SLSQP (SciPy), multi-pass aim/track/frontier-walk strategies, sticky-portfolio Mode A & B. |
+| `core/glide_path.py` | Builds the year-by-year weight schedule (`GlidePath`) from chunk `target_weights`, with linear interpolation across transition windows. |
+| `simulation/monte_carlo.py` | Sequence-of-returns stress test: Historical Block Bootstrap (preferred) or Log-Normal. Produces `MCResults` with fan-chart percentile bands and ruin probabilities. |
+| `config/configuration.py` | Singleton config reader for `config/RetirementTaxPlanning.configuration`. |
+| `paths.py` | Project root, `config/`, `data/` sub-folders and `outputs/`; all default paths resolve here. |
+| `funddata/get_funds_data.py` | Downloads NAV history from mfapi.in / AMFI; computes rolling CAGR, Sharpe, Sortino, Calmar, Max-DD, Alpha, Beta, Treynor; writes `Fund_Metrics_Output.csv`. |
+| `funddata/fetch_amfi_aum.py` | Fetches AMFI AUM data and adds `Fund Size` column to metrics CSV. |
+| `funddata/get_amfi_fund_schemes_names.py` | Utility: downloads AMFI master scheme list. |
+| `funddata/reclassify_legacy_funds.py` | Utility: reclassifies fund types in saved project JSON. |
+| `gui/chunk_editor.py` | Reusable PySide6 widget for editing year-range chunk tables. |
+| `gui/dialogs.py` | Various input dialogs (funds, requirements, windfalls, income, splits, returns, sensitivity). |
+| `gui/fund_dialog.py` | "View Fund Selection & Allocation" dialog (portfolio stats, fund-level CAGR table). |
+| `gui/chart_dialog.py` | Non-modal chart windows: Corpus/Cash bar charts, Sensitivity Analysis, Monte Carlo fan charts. |
+| `optimiser/optimization_report.py` | Post-optimisation multi-tab report: Glide Path Summary, Fund Selection, Tax Attribution, Robustness. |
+| `gui/tax_dialog.py` | Tax rules editor (slab tables for debt/equity, Personal + HUF). |
 
 ---
 
@@ -454,7 +485,7 @@ r_portfolio = (w_equity + w_other) × r_equity_centred
 
 ## Output File Formats
 
-All outputs are written to `<project_root>/<user_name>/`.
+All outputs are written to `<project_root>/outputs/<user_name>/`.
 
 ### `*_Personal_Monthly.csv` / `*_HUF_Monthly.csv`
 349 rows (months 1–349 of the 30-year plan), 21–23 columns.
@@ -535,7 +566,7 @@ All outputs are written to `<project_root>/<user_name>/`.
 
 This file is the **primary input** to the optimiser. It is generated by `get_funds_data.py` (see [CLI: get_funds_data.py](#cli-get_funds_datapy)).
 
-Place it in the project root directory (or as configured by `allocator_default_input` in the configuration file).
+The GUI reads it from `outputs/<user>/`. The command-line allocator defaults to `data/funds/Fund_Metrics_Output.csv` (the `allocator_default_input` configuration key, relative to the project root).
 
 ---
 
@@ -579,7 +610,7 @@ The application saves and loads the entire `AppState` as a JSON file (`*.swp.jso
 
 ## Configuration File
 
-`RetirementTaxPlanning.configuration` — plain `key = value` properties file in the project root.
+`config/RetirementTaxPlanning.configuration` — plain `key = value` properties file.
 
 Key parameters (auto-cast to int/float/bool):
 
@@ -593,8 +624,8 @@ Key parameters (auto-cast to int/float/bool):
 | `drift_cap_personal` | `0.0015` | Max weight drift before forced rebalance (Personal) |
 | `drift_cap_huf` | `0.005` | Max weight drift before forced rebalance (HUF) |
 | `max_simulation_years` | `30` | Number of FYs to simulate |
-| `allocator_default_input` | `Fund_Metrics_Output.csv` | Default fund metrics file |
-| `allocator_default_output` | `allocation_output.csv` | Default allocator output |
+| `allocator_default_input` | `data/funds/Fund_Metrics_Output.csv` | Default fund metrics file (relative to project root) |
+| `allocator_default_output` | `outputs/allocation_result.csv` | Default allocator output (relative to project root) |
 
 ---
 
@@ -603,8 +634,17 @@ Key parameters (auto-cast to int/float/bool):
 **Python:** 3.10 or later
 
 ```bash
-pip install PySide6 matplotlib pandas numpy scipy pulp requests
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt     # or requirements.txt without the test tools
+pip install -e . --no-deps              # makes `swp_planner` importable everywhere
 ```
+
+`pip install -e .` is optional: `python run.py`, the scripts and the test suite
+all add `src/` to the path themselves. In PyCharm, mark `src/` as a Sources Root.
+
+Moving an existing checkout to this layout: after `git pull`, run
+`python3 scripts/migrate_local_layout.py` (dry run) and then with `--apply`
+to move untracked inputs, caches and `<user>/` folders into `data/` and `outputs/`.
 
 Optional (for block-bootstrap Monte Carlo):
 - `requests` (already listed) — used to fetch Nifty 50 NAV from mfapi.in
@@ -621,29 +661,30 @@ python -c "import PySide6, matplotlib, pandas, numpy, scipy, pulp; print('OK')"
 ### 1. Generate Fund Metrics (one-time / periodic refresh)
 
 ```bash
-python get_funds_data.py
+python -m swp_planner.funddata.get_funds_data
 ```
 
-This fetches NAV history from mfapi.in for all AMFI-listed funds, computes all 60 metrics, and writes `Fund_Metrics_Output.csv` to the project root. This can take **20–60 minutes** depending on network speed.
+This fetches NAV history from mfapi.in for all AMFI-listed funds, computes all 60 metrics, and writes `data/funds/Fund_Metrics_Output.csv` (input: `data/funds/Fund Details.csv`). This can take **20–60 minutes** depending on network speed.
 
 Optionally add AUM data:
 ```bash
-python fetch_amfi_aum.py
+python -m swp_planner.funddata.fetch_amfi_aum
 ```
 
 ### 2. Launch the GUI
 
 ```bash
-python run.py
+python -m swp_planner      # after pip install -e .
+python run.py              # equivalent, from the project root
 ```
 
-At the welcome dialog, enter your name (e.g., `Uddi`). All outputs will be written to `<project_root>/Uddi/`.
+At the welcome dialog, enter your name (e.g., `Uddi`). All outputs will be written to `<project_root>/outputs/Uddi/`.
 
 ### 3. Typical GUI Workflow
 
 ```mermaid
 flowchart TD
-    S1[Open app: python run.py] --> S2[Enter user name]
+    S1[Open app: python -m swp_planner] --> S2[Enter user name]
     S2 --> S3[File → New or File → Open *.swp.json]
     S3 --> S4[Configure Funds\nDialog: Edit Funds]
     S4 --> S5[Configure Tax Rules\nDialog: Edit Tax Rules]
@@ -662,8 +703,8 @@ flowchart TD
 ### 4. Command-Line Allocator (single chunk)
 
 ```bash
-python allocate_funds.py \
-  --input Fund_Metrics_Output.csv \
+python -m swp_planner.optimiser.allocate_funds \
+  --input data/funds/Fund_Metrics_Output.csv \
   --total 500 \
   --min-return 6.85 \
   --max-std-dev 0.99 \
@@ -680,14 +721,14 @@ python allocate_funds.py \
 
 Or interactively (no arguments):
 ```bash
-python allocate_funds.py
+python -m swp_planner.optimiser.allocate_funds
 ```
 
 ### 5. Command-Line Allocator (multi-chunk / sticky portfolio)
 
 ```bash
-python allocate_funds.py \
-  --input Fund_Metrics_Output.csv \
+python -m swp_planner.optimiser.allocate_funds \
+  --input data/funds/Fund_Metrics_Output.csv \
   --chunks-file chunks_config.json \
   --output-dir ./my_allocation/ \
   --mode coarse \
@@ -721,19 +762,19 @@ All numeric constraint values in the JSON are in **percentage points** (e.g., `6
 ## CLI: allocate_funds.py
 
 ```
-usage: allocate_funds.py [-h] [--input INPUT] [--total TOTAL]
-                         [--chunks-file CHUNKS_FILE] [--output-dir OUTPUT_DIR]
-                         [--commonality-bonus COMMONALITY_BONUS]
-                         [--mode {coarse,fine}]
-                         [--frontier-walk] [--pulp-commonality]
-                         [--pulp-max-portfolios N] [--pulp-max-std PCT]
-                         [--risk-ref {portfolio,pct75}]
-                         [--output OUTPUT]
-                         [--min-return PCT] [--max-std-dev PCT] [--max-dd PCT]
-                         [--min-history YRS] [--max-per-fund PCT]
-                         [--max-per-type PCT] [--min-per-fund PCT]
-                         [--max-fund-std PCT] [--max-fund-dd PCT]
-                         [--max-per-amc PCT]
+usage: python -m swp_planner.optimiser.allocate_funds [-h] [--input INPUT] [--total TOTAL]
+                                                      [--chunks-file CHUNKS_FILE] [--output-dir OUTPUT_DIR]
+                                                      [--commonality-bonus COMMONALITY_BONUS]
+                                                      [--mode {coarse,fine}]
+                                                      [--frontier-walk] [--pulp-commonality]
+                                                      [--pulp-max-portfolios N] [--pulp-max-std PCT]
+                                                      [--risk-ref {portfolio,pct75}]
+                                                      [--output OUTPUT]
+                                                      [--min-return PCT] [--max-std-dev PCT] [--max-dd PCT]
+                                                      [--min-history YRS] [--max-per-fund PCT]
+                                                      [--max-per-type PCT] [--min-per-fund PCT]
+                                                      [--max-fund-std PCT] [--max-fund-dd PCT]
+                                                      [--max-per-amc PCT]
 ```
 
 **Multi-chunk outputs** (in `--output-dir`):
@@ -749,7 +790,7 @@ usage: allocate_funds.py [-h] [--input INPUT] [--total TOTAL]
 ## CLI: get_funds_data.py
 
 ```bash
-python get_funds_data.py [--output OUTPUT_CSV] [--workers N]
+python -m swp_planner.funddata.get_funds_data [--input CSV] [--output OUTPUT_CSV] [--workers N]
 ```
 
 Downloads NAV history from `https://api.mfapi.in/mf/{scheme_code}` for all active AMFI schemes, computes rolling metrics, and writes `Fund_Metrics_Output.csv`.

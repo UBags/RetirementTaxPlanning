@@ -21,7 +21,7 @@ import pytest
 
 
 def _run(state):
-    from engine import Engine
+    from swp_planner.core.engine import Engine
     return Engine(state).run()
 
 
@@ -39,7 +39,7 @@ def _with_fd_rate(state, rate: float):
     The FD rate drives fd_tax -> tax_saved -> the size of the HUF transfer,
     without touching the actual portfolio in any other way.
     """
-    from models import FDRateChunk
+    from swp_planner.core.models import FDRateChunk
 
     s = copy.deepcopy(state)
     s.fd_rate_chunks = [FDRateChunk(year_from=1, year_to=30, fd_rate=rate)]
@@ -86,7 +86,7 @@ def test_personal_tax_debits_corpus(scenario, monkeypatch):
     tax is being reported but never deducted from the portfolio.
     """
     label, state = scenario
-    import engine
+    from swp_planner.core import engine
 
     _, y_base, _, _ = _run(copy.deepcopy(state))
     total_tax = sum(r.tax_personal for r in y_base)

@@ -48,11 +48,11 @@ import re
 import sys
 
 _ROOT = pathlib.Path(__file__).resolve().parent.parent
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+if str(_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(_ROOT / "src"))
 
-from fund_filters import instruments as I  # noqa: E402
-from ingest import nsdl_securities as N  # noqa: E402
+from swp_planner.fund_filters import instruments as I  # noqa: E402
+from swp_planner.ingest import nsdl_securities as N  # noqa: E402
 
 PERPETUAL_SENTINEL = _dt.date(9999, 12, 31)
 SENTINEL_YEAR_FLOOR = 2100      # beyond this, a date is a placeholder

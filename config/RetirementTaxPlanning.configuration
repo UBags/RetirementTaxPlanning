@@ -109,10 +109,10 @@ amfi_sleep_between_calls = 0.4
 
 # ─── File Paths (relative to project root) ────────────────────────────────────
 # Default input CSV for the fund allocator (relative to project root)
-allocator_default_input = Fund_Metrics_Output.csv
+allocator_default_input = data/funds/Fund_Metrics_Output.csv
 
 # Default output CSV for the fund allocator (relative to project root)
-allocator_default_output = allocation_result.csv
+allocator_default_output = outputs/allocation_result.csv
 
 # Default CAGR fallback (%) when no CAGR data is available for a fund
 default_cagr_fallback = 7.0

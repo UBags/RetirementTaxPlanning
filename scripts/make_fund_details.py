@@ -38,8 +38,10 @@ import shutil
 import sys
 
 _ROOT = pathlib.Path(__file__).resolve().parent.parent
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+if str(_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(_ROOT / "src"))
+
+from swp_planner.paths import FUNDS_DIR  # noqa: E402
 
 DEFAULT_DSN = "dbname=RetirementPlanning"
 COLUMNS = ("Fund Type", "Fund Name", "Fund Size", "AMFI Code")
@@ -91,7 +93,7 @@ def write(rows, path, backup=True):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--dsn", default=DEFAULT_DSN)
-    ap.add_argument("--out", default="Fund Details.csv")
+    ap.add_argument("--out", default=str(FUNDS_DIR / "Fund Details.csv"))
     ap.add_argument("--all-funds", action="store_true",
                     help="include funds with no stored holdings")
     ap.add_argument("--no-backup", action="store_true")

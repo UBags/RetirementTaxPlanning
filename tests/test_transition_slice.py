@@ -23,9 +23,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent / "golden"))
 
 from golden_projects import PROJECTS  # noqa: E402
 
-from engine import Engine  # noqa: E402
-from models import AppState  # noqa: E402
-from transition_plan import TransitionPlan, Window  # noqa: E402
+from swp_planner.core.engine import Engine  # noqa: E402
+from swp_planner.core.models import AppState  # noqa: E402
+from swp_planner.core.transition_plan import TransitionPlan, Window  # noqa: E402
 
 BOUNDARY_FY = 16
 
@@ -212,14 +212,14 @@ def _ledger(plan, boundary: int = BOUNDARY_FY):
 
 def test_gain_within_cash_is_zero_for_a_fresh_lot():
     """No gain in it, so selling it costs nothing."""
-    from engine import FIFOBucket, gain_within_cash
+    from swp_planner.core.engine import FIFOBucket, gain_within_cash
     bk = FIFOBucket()
     bk.invest(100.0, 1.0, 1)
     assert gain_within_cash(bk, 1.0, 50.0) == pytest.approx(0.0)
 
 
 def test_gain_within_cash_tracks_the_gain_fraction():
-    from engine import FIFOBucket, gain_within_cash
+    from swp_planner.core.engine import FIFOBucket, gain_within_cash
     bk = FIFOBucket()
     bk.invest(100.0, 1.0, 1)          # 100 units at 1.00
     # NAV doubles: half of any sale is gain.
@@ -227,7 +227,7 @@ def test_gain_within_cash_tracks_the_gain_fraction():
 
 
 def test_gain_within_cash_is_capped_by_the_bucket():
-    from engine import FIFOBucket, gain_within_cash
+    from swp_planner.core.engine import FIFOBucket, gain_within_cash
     bk = FIFOBucket()
     bk.invest(100.0, 1.0, 1)
     everything = gain_within_cash(bk, 2.0, 200.0)
@@ -235,7 +235,7 @@ def test_gain_within_cash_is_capped_by_the_bucket():
 
 
 def test_gain_within_cash_rejects_nonsense():
-    from engine import gain_within_cash
+    from swp_planner.core.engine import gain_within_cash
     assert gain_within_cash(None, 1.0, 10.0) == 0.0
     assert gain_within_cash(object(), 0.0, 10.0) == 0.0
 
@@ -301,7 +301,7 @@ def test_exact_and_average_estimate_diverge_on_mixed_lots():
     opens when `folio_cohort_threshold` creates real cohorts, which is
     exactly when the fixed point would be depending on it.
     """
-    from engine import FIFOBucket, gain_within_cash
+    from swp_planner.core.engine import FIFOBucket, gain_within_cash
     bk = FIFOBucket()
     bk.invest(100.0, 1.0, 1)
     bk.invest(200.0, 2.0, 13)

@@ -41,15 +41,15 @@ import time
 import urllib.request
 
 _ROOT = pathlib.Path(__file__).resolve().parent.parent
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+if str(_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(_ROOT / "src"))
 
-from ingest import amfi_schemes as A  # noqa: E402
-from ingest import etmoney as E  # noqa: E402
-from ingest import etmoney_portfolio as P  # noqa: E402
-from ingest import fund_store as F  # noqa: E402
-from ingest import store as S  # noqa: E402
-from lookup.api import CreditLookup  # noqa: E402
+from swp_planner.ingest import amfi_schemes as A  # noqa: E402
+from swp_planner.ingest import etmoney as E  # noqa: E402
+from swp_planner.ingest import etmoney_portfolio as P  # noqa: E402
+from swp_planner.ingest import fund_store as F  # noqa: E402
+from swp_planner.ingest import store as S  # noqa: E402
+from swp_planner.lookup.api import CreditLookup  # noqa: E402
 
 DEFAULT_DSN = "dbname=RetirementPlanning"
 DELAY = 1.0
@@ -288,8 +288,8 @@ def main(argv=None):
               f"known company ids"
               + (f" ({bf['ambiguous_ids']:,} ids left alone: two names)"
                  if bf["ambiguous_ids"] else ""))
-        from lookup import portfolio_credit as _pc
-        from lookup.api import CreditLookup as _CL
+        from swp_planner.lookup import portfolio_credit as _pc
+        from swp_planner.lookup.api import CreditLookup as _CL
         rep = F.reenrich(conn, _pc.enrich, _CL(conn),
                          progress=lambda msg: print(f"  {msg}", flush=True))
         print(f"re-enriched {rep['keys']:,} distinct holdings; "

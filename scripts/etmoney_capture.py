@@ -39,10 +39,10 @@ import urllib.request
 import zipfile
 
 _ROOT = pathlib.Path(__file__).resolve().parent.parent
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+if str(_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(_ROOT / "src"))
 
-from ingest import etmoney as E  # noqa: E402
+from swp_planner.ingest import etmoney as E  # noqa: E402
 
 # Chosen for SHAPE, not for quality. Each is a different holdings problem:
 # corporate debt with ratings; a liquid fund of CP and CD, which carry no ISIN

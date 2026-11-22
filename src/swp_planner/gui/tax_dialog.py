@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from models import AppState, EquityTaxChunk, TaxChunk, TaxSlab
+from swp_planner.core.models import AppState, EquityTaxChunk, TaxChunk, TaxSlab
 
 
 class SlabTableWidget(QWidget):

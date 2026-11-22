@@ -401,7 +401,7 @@ class OtherIncome:
         *entity* -- an HUF has no salary or pension head, so it gets no
         s.16(ia) allowance.  It can own property, so s.24(a) applies to both.
         """
-        from configuration import config
+        from swp_planner.config.configuration import config
         frac = max(0, int(months)) / 12.0
 
         salary_head = sum(self._grown(a, g, fy) for a, g in self._SALARY_HEAD) * frac
@@ -627,7 +627,7 @@ class AppState:
         hand-constructed, loaded from a pre-horizon save file, or carrying a
         nonsense value someone typed into a JSON file by hand.
         """
-        from configuration import config
+        from swp_planner.config.configuration import config
         ceiling = int(config.max_simulation_years)
         floor = min(int(config.min_simulation_years), ceiling)
         return max(floor, min(int(self.horizon_years or ceiling), ceiling))
@@ -858,7 +858,7 @@ class AppState:
             if "fd_rate" in d and result.fd_rate > 0:
                 result.fd_rate_chunks = [FDRateChunk(1, _h, result.fd_rate)]
             else:
-                from chunk_defaults import default_fd_benchmark_chunks
+                from swp_planner.config.chunk_defaults import default_fd_benchmark_chunks
                 result.fd_rate_chunks = [
                     FDRateChunk(a, b, r)
                     for a, b, r in default_fd_benchmark_chunks(_h)
@@ -1249,7 +1249,7 @@ class AppState:
 
 def default_state() -> AppState:
     """Create a default AppState with sample data pre-loaded."""
-    from chunk_defaults import default_fd_benchmark_chunks
+    from swp_planner.config.chunk_defaults import default_fd_benchmark_chunks
 
     funds = [FundEntry(
         name=f["name"], fund_type=f["type"], allocation=f["allocation"],

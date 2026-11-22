@@ -35,8 +35,8 @@ from __future__ import annotations
 
 import re
 
-from fund_filters import caps as _caps
-from fund_filters import instruments as _instruments
+from swp_planner.fund_filters import caps as _caps
+from swp_planner.fund_filters import instruments as _instruments
 
 GOI = "GoI"
 STATE = "State"

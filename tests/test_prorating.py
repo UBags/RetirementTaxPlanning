@@ -16,8 +16,8 @@ from datetime import date
 
 import pytest
 
-from models import AppState, OtherIncome
-from pro_rated_utils import (
+from swp_planner.core.models import AppState, OtherIncome
+from swp_planner.core.pro_rated_utils import (
     financial_year_of,
     fy_fraction,
     months_in_fy,

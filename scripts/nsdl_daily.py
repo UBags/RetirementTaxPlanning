@@ -21,13 +21,13 @@ import pathlib
 import sys
 
 _ROOT = pathlib.Path(__file__).resolve().parent.parent
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+if str(_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(_ROOT / "src"))
 
-from fund_filters import borrower as _borrower  # noqa: E402
-from ingest import nsdl_securities as _nsdl  # noqa: E402
-from ingest import store as _store  # noqa: E402
-from lookup.api import CreditLookup  # noqa: E402
+from swp_planner.fund_filters import borrower as _borrower  # noqa: E402
+from swp_planner.ingest import nsdl_securities as _nsdl  # noqa: E402
+from swp_planner.ingest import store as _store  # noqa: E402
+from swp_planner.lookup.api import CreditLookup  # noqa: E402
 
 DEFAULT_DSN = "dbname=RetirementPlanning"
 DEFAULT_DIR = "data"

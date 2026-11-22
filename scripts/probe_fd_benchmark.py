@@ -58,14 +58,14 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tests" / "golden"))
 
 from golden_projects import PROJECTS  # noqa: E402
 
-from engine import compute_slab_tax  # noqa: E402
-from models import AppState  # noqa: E402
-from pro_rated_utils import months_in_fy  # noqa: E402
+from swp_planner.core.engine import compute_slab_tax  # noqa: E402
+from swp_planner.core.models import AppState  # noqa: E402
+from swp_planner.core.pro_rated_utils import months_in_fy  # noqa: E402
 
 SCENARIOS = [
     ("main", 0, "s0_1chunk"), ("main", 1, "s1_2chunk"),

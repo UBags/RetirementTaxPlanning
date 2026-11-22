@@ -62,10 +62,10 @@ OUT = ROOT / "tests" / "golden" / "fixtures" / "mc_history.json"
 
 
 def main() -> int:
-    sys.path.insert(0, str(ROOT))
+    sys.path.insert(0, str(ROOT / "src"))
     import numpy as np
 
-    import monte_carlo as mc
+    from swp_planner.simulation import monte_carlo as mc
 
     print("Fetching Nifty 50 annual returns (network) ...")
     eq = mc._fetch_nifty50_annual_returns()

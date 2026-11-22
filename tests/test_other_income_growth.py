@@ -20,7 +20,8 @@ import re
 
 import pytest
 
-from models import AppState, OtherIncome
+from swp_planner.core.models import AppState, OtherIncome
+from swp_planner.paths import PACKAGE_DIR
 
 # ── the growth calculation ───────────────────────────────────────────────────
 
@@ -137,7 +138,7 @@ def test_no_engine_site_still_flattens_income_inline(project_root):
     five copies of a compounding expression — and §2.1 exists because two
     copies of a metric drifted apart.
     """
-    src = (project_root / "engine.py").read_text(encoding="utf-8")
+    src = (PACKAGE_DIR / "core" / "engine.py").read_text(encoding="utf-8")
     offenders = [ln.strip() for ln in src.splitlines()
                  if "pi.salary" in ln or "hi.salary" in ln]
     assert not offenders, (
@@ -151,7 +152,7 @@ def test_the_optimiser_resolves_income_inside_the_fy_loop(project_root):
     it once — correct only while the streams were flat. A hoisted value would
     apply FY1 income to all thirty years and understate tax in every later one.
     """
-    src = (project_root / "engine.py").read_text(encoding="utf-8")
+    src = (PACKAGE_DIR / "core" / "engine.py").read_text(encoding="utf-8")
     assert "# ── Personal other taxable income (constant) ──" not in src, (
         "the optimiser still describes other income as constant")
     # Match on WHAT is being asserted, not on one spelling of it. This test
@@ -200,7 +201,7 @@ def test_growth_reaches_the_projection():
     import copy
     import sys
 
-    from engine import Engine
+    from swp_planner.core.engine import Engine
     sys.path.insert(0, str(pathlib.Path(__file__).parent / "golden"))
     from golden_projects import PROJECTS
 
@@ -228,7 +229,7 @@ def test_growth_reaches_the_projection():
 
 def _parse_growth(project_root):
     """Lift parse_growth out of dialogs.py without importing PySide6."""
-    src = (project_root / "dialogs.py").read_text(encoding="utf-8")
+    src = (PACKAGE_DIR / "gui" / "dialogs.py").read_text(encoding="utf-8")
     tree = ast.parse(src)
     fn = next(n for n in tree.body
               if isinstance(n, ast.FunctionDef) and n.name == "parse_growth")

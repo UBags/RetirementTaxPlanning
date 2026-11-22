@@ -61,7 +61,7 @@ TOL = 1e-6          # Rs lakh. These are exact identities, not solver output.
 
 
 def _run(state):
-    from engine import Engine
+    from swp_planner.core.engine import Engine
     return Engine(state).run()
 
 

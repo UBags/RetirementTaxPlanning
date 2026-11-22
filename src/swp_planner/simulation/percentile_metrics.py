@@ -313,7 +313,7 @@ def configured() -> Dict[str, float]:
     notional FD comparator should be credited with a decade or two out -- and
     a single knob would tie them together silently.
     """
-    from configuration import config
+    from swp_planner.config.configuration import config
     return {
         "risk_free_rate_percentile": float(config.risk_free_rate_percentile),
         "risk_free_rate_mid_percentile": float(config.risk_free_rate_mid_percentile),

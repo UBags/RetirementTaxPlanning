@@ -32,8 +32,6 @@ exclude = [
     # Retired snapshot of the allocator, kept for reference. Slated for
     # deletion in Phase 2.3 (dead code); linting it now is noise.
     "allocate_funds_v0.9.py",
-    # Legacy scratch scripts, not part of the application.
-    "test/",
     # Superseded code kept for the record.  Linting it would demand that dead
     # code satisfy live standards, which is the opposite of why it is there.
     # See archive/README.md.
@@ -60,22 +58,19 @@ ignore = [
 # `import models` inside a try/except ImportError is an availability probe,
 # not an unused import. Ruff suggests importlib.util.find_spec; rewriting a
 # standalone-runnable script for a linter is the wrong trade.
-"test_swp_engine.py" = ["F401"]
+"tests/test_swp_engine.py" = ["F401"]
 
 # Patchers and one-off scripts import lazily inside functions on purpose.
 "scripts/*" = ["F401"]
 # conftest sets sys.path before importing project modules, so the E402-style
 # ordering is intentional; ruff's I rules would reorder it wrongly.
+# run.py does the same for src/.
 "conftest.py" = ["I001"]
 "tests/golden/conftest.py" = ["I001"]
+"run.py" = ["I001"]
 
 [lint.isort]
-known-first-party = [
-    "allocate_funds", "chart_dialog", "chunk_editor", "configuration",
-    "dialogs", "engine", "fund_dialog", "get_funds_data", "glide_path",
-    "main", "models", "monte_carlo", "needs_assessment",
-    "optimization_report", "tax_dialog",
-]
+known-first-party = ["swp_planner"]
 
 [format]
 # Not used yet. `ruff format` would reflow every file in the repo; that is a

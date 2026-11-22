@@ -57,6 +57,8 @@ from collections import defaultdict
 from datetime import date, timedelta
 from pathlib import Path
 
+from swp_planner.paths import NAV_DIR, ensure_parent
+
 DEFAULT_SPEC = "Liquid:3,Overnight:3,Large Cap:2,Mid Cap:2"
 
 
@@ -85,8 +87,8 @@ def _shortname(name):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--corpus", default="nav_corpus.json")
-    ap.add_argument("--out", default="nav_sample.csv")
+    ap.add_argument("--corpus", default=str(NAV_DIR / "nav_corpus.json"))
+    ap.add_argument("--out", default=str(NAV_DIR / "nav_sample.csv"))
     ap.add_argument("--spec", default=DEFAULT_SPEC)
     ap.add_argument("--exclude", default="",
                     metavar="CODE,CODE",
@@ -174,7 +176,7 @@ def main():
         header.append(f"{f['amfi_code']}|{f['category_bucket']}|"
                       f"{_shortname(f['scheme_name'])}")
 
-    with open(a.out, "w", newline="") as fh:
+    with open(ensure_parent(a.out), "w", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(header)
         for i, iso in enumerate(axis):

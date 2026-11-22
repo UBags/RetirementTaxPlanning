@@ -106,7 +106,7 @@ class EntityYear:
     def tax(self, debt_gain: float = 0.0, equity_gain: float = 0.0,
             other_gain: float = 0.0) -> float:
         """Total tax for this entity given the gains realised into it."""
-        from engine import (
+        from swp_planner.core.engine import (
             compute_ltcg_individual,
             compute_ltcg_other_individual,
             compute_slab_tax,
@@ -162,7 +162,7 @@ class EntityYear:
         are increasing and the gap closes once, so a bisection finds it. If
         it never binds, there is nothing to add.
         """
-        from engine import compute_slab_tax
+        from swp_planner.core.engine import compute_slab_tax
         if limit <= 0 or self.debt_chunk is None:
             return None
         lo, hi = limit, limit

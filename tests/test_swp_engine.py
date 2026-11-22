@@ -18,7 +18,7 @@ Covers:
 Run with:
     python -m pytest test_swp_engine.py -v
   or standalone:
-    python test_swp_engine.py
+    python tests/test_swp_engine.py
 """
 
 import copy
@@ -29,7 +29,7 @@ import os
 import sys
 from datetime import date
 
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
 # ─── Test helpers ─────────────────────────────────────────────────────────────
 
@@ -63,7 +63,7 @@ def _section(title: str):
 
 def _make_fund(name="Fund A", fund_type="debt", allocation=100.0,
                cagr5=7.0, std=0.02, max_dd=0.01):
-    from models import FundEntry
+    from swp_planner.core.models import FundEntry
     f = FundEntry(
         name=name, fund_type=fund_type, allocation=allocation,
         std_dev=std, sharpe=2.0, sortino=2.5, calmar=1.0,
@@ -84,7 +84,13 @@ def _make_state(funds=None, total_alloc=100.0, req_annual=8.0,
     ``total_alloc`` is accepted for signature compatibility but unused --
     each FundEntry carries its own ``allocation``.
     """
-    from models import AllocationChunk, FDRateChunk, OtherIncome, ReturnChunk, default_state
+    from swp_planner.core.models import (
+        AllocationChunk,
+        FDRateChunk,
+        OtherIncome,
+        ReturnChunk,
+        default_state,
+    )
 
     state = default_state()
     state.investment_date = inv_date or date(2024, 4, 1)
@@ -131,7 +137,7 @@ def _make_state(funds=None, total_alloc=100.0, req_annual=8.0,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _run_engine(state, glide_path=None):
-    from engine import Engine
+    from swp_planner.core.engine import Engine
     eng = Engine(state, glide_path=glide_path)
     p_rows, yearly, h_rows, _ = eng.run()
     return p_rows, yearly, h_rows
@@ -218,8 +224,8 @@ def test_rebalancing_tax_reduces_cash_and_the_solver_covers_it():
     The second is the one that matters. It is the design intent the old test
     could not express, because under the old identity the tax never bit.
     """
-    from glide_path import build_glide_path
-    from models import AllocationChunk
+    from swp_planner.core.glide_path import build_glide_path
+    from swp_planner.core.models import AllocationChunk
 
     state = _make_state(funds=[
         _make_fund("Debt Big", "debt", 160.0),
@@ -257,7 +263,7 @@ def test_rebalancing_tax_reduces_cash_and_the_solver_covers_it():
            f"net_cash={y11.net_cash_personal:.2f}L vs req=8.00L")
 
     # ── 2. through the solver: the requirement is still met ──────────────
-    from net_income_plan import PLAN_TOL, project_plan
+    from swp_planner.core.net_income_plan import PLAN_TOL, project_plan
     _, y2, _, _, sol = project_plan(state, glide_path=gp)
     got = y2[10].net_cash_total
     want = sol.targets[11]
@@ -268,7 +274,7 @@ def test_rebalancing_tax_reduces_cash_and_the_solver_covers_it():
 
 def test_engine_windfall():
     _section("Engine — Windfall in Final Year")
-    from models import WindfallEntry
+    from swp_planner.core.models import WindfallEntry
     state = _make_state(funds=[_make_fund("Debt", "debt", 100.0)])
     state.windfalls = [WindfallEntry(year=30, amount=50.0, target="personal")]
     p_rows, yearly, _ = _run_engine(state)
@@ -283,7 +289,7 @@ def test_engine_windfall():
 
 def test_glide_path_single_chunk():
     _section("GlidePath — Single Chunk (flat)")
-    from glide_path import build_flat_glide_path
+    from swp_planner.core.glide_path import build_flat_glide_path
     weights = {"Debt A": 0.7, "Eq A": 0.3}
     gp = build_flat_glide_path(weights)
     _check("Single chunk: is_flat() == True", gp.is_flat())
@@ -294,8 +300,8 @@ def test_glide_path_single_chunk():
 
 def test_glide_path_year1_and_year30_are_clean():
     _section("GlidePath — Year 1 never in transition, Year 30 fully anchored")
-    from glide_path import build_glide_path
-    from models import AllocationChunk
+    from swp_planner.core.glide_path import build_glide_path
+    from swp_planner.core.models import AllocationChunk
 
     c1 = AllocationChunk(year_from=1, year_to=5, funds=[])
     c1.target_weights = {"Eq": 1.0}
@@ -313,8 +319,8 @@ def test_glide_path_year1_and_year30_are_clean():
 
 def test_glide_path_zero_spread():
     _section("GlidePath — Zero Spread (hard cut)")
-    from glide_path import build_glide_path
-    from models import AllocationChunk
+    from swp_planner.core.glide_path import build_glide_path
+    from swp_planner.core.models import AllocationChunk
 
     c1 = AllocationChunk(year_from=1, year_to=15, funds=[])
     c1.target_weights = {"Eq": 1.0}
@@ -336,8 +342,8 @@ def test_glide_path_zero_spread():
 
 def test_optimizer_empty_universe():
     _section("Optimizer — Empty Universe (graceful failure)")
-    from allocate_funds import run_aim_pass
-    from models import AllocationChunk
+    from swp_planner.core.models import AllocationChunk
+    from swp_planner.optimiser.allocate_funds import run_aim_pass
     c = AllocationChunk(year_from=1, year_to=30, funds=[])
     c.min_return = 0.065; c.max_std_dev = 0.04; c.max_dd = 0.03
     c.max_per_fund = 0.40; c.min_per_fund = 0.01
@@ -351,8 +357,8 @@ def test_optimizer_empty_universe():
 
 def test_optimizer_single_fund_universe():
     _section("Optimizer — Single Fund Universe")
-    from allocate_funds import run_aim_pass
-    from models import AllocationChunk
+    from swp_planner.core.models import AllocationChunk
+    from swp_planner.optimiser.allocate_funds import run_aim_pass
     c = AllocationChunk(year_from=1, year_to=30,
                         funds=[_make_fund("Single", "debt", 100.0)])
     c.min_return = 0.065; c.max_std_dev = 0.04; c.max_dd = 0.03
@@ -369,8 +375,8 @@ def test_optimizer_single_fund_universe():
 
 def test_optimizer_type_ratios_locked():
     _section("Optimizer — Track Pass: type ratios enforced as hard constraints")
-    from allocate_funds import run_aim_pass, run_track_pass
-    from models import AllocationChunk
+    from swp_planner.core.models import AllocationChunk
+    from swp_planner.optimiser.allocate_funds import run_aim_pass, run_track_pass
 
     # Three debt funds and three equity funds
     funds = [
@@ -426,8 +432,8 @@ def test_optimizer_type_ratios_locked():
 
 def test_tax_87a_marginal_relief():
     _section("Tax — 87A Marginal Relief (individual)")
-    from engine import compute_slab_tax
-    from models import TaxChunk, TaxSlab
+    from swp_planner.core.engine import compute_slab_tax
+    from swp_planner.core.models import TaxChunk, TaxSlab
 
     # Simple slabs: 0% up to 3L, 5% 3-7L, 10% 7-10L, 30% above
     chunk = TaxChunk(year_from=1, year_to=5, exempt_limit=7.0,
@@ -453,8 +459,8 @@ def test_tax_87a_marginal_relief():
 
 def test_tax_equity_ltcg_exemption():
     _section("Tax — Equity LTCG ₹1.25L exemption")
-    from engine import compute_ltcg_individual
-    from models import EquityTaxChunk
+    from swp_planner.core.engine import compute_ltcg_individual
+    from swp_planner.core.models import EquityTaxChunk
 
     chunk = EquityTaxChunk(year_from=1, year_to=5, tax_rate=0.125, exempt_limit=1.25)
 
@@ -475,8 +481,8 @@ def test_tax_equity_ltcg_exemption():
 
 def test_tax_other_ltcg_no_exemption():
     _section("Tax — Other LTCG (Gold/International): no exemption")
-    from engine import compute_ltcg_other_individual
-    from models import OtherTaxChunk
+    from swp_planner.core.engine import compute_ltcg_other_individual
+    from swp_planner.core.models import OtherTaxChunk
 
     chunk = OtherTaxChunk(year_from=1, year_to=5, tax_rate=0.125)
 
@@ -494,7 +500,7 @@ def test_tax_other_ltcg_no_exemption():
 
 def test_fifo_bucket_basic():
     _section("FIFO Bucket — Basic invest/redeem")
-    from engine import FIFOBucket
+    from swp_planner.core.engine import FIFOBucket
 
     bk = FIFOBucket()
     bk.invest(100.0, 1.0, 0)    # 100 units @ NAV 1.0
@@ -573,7 +579,7 @@ def run_all():
 if __name__ == "__main__":
     # Try to import models — if it fails, print a helpful message
     try:
-        import models
+        from swp_planner.core import models
     except ImportError:
         print("ERROR: Could not import 'models'. Run from the project root directory.")
         print("       python test_swp_engine.py")

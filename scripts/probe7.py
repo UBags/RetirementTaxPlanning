@@ -23,14 +23,14 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tests" / "golden"))
 
 from golden_projects import PROJECTS  # noqa: E402
 
-from engine import Engine, free_gain_capacity  # noqa: E402
-from models import AppState  # noqa: E402
-from net_income_plan import project_plan  # noqa: E402
+from swp_planner.core.engine import Engine, free_gain_capacity  # noqa: E402
+from swp_planner.core.models import AppState  # noqa: E402
+from swp_planner.core.net_income_plan import project_plan  # noqa: E402
 
 
 def main() -> None:

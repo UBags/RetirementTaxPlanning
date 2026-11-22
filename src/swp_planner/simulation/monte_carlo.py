@@ -90,7 +90,8 @@ from typing import TYPE_CHECKING, List, Optional
 
 import numpy as np
 
-from models import AppState
+from swp_planner.core.models import AppState
+from swp_planner.paths import CACHE_DIR, ensure_parent
 
 if TYPE_CHECKING:                       # never executed
     # Seven functions below annotate parameters and returns as
@@ -178,12 +179,11 @@ class MCResults:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Cache file paths  (same directory as this script)
+# Cache file paths  (data/cache/, see swp_planner.paths)
 # ─────────────────────────────────────────────────────────────────────────────
 
-_SCRIPT_DIR       = Path(__file__).resolve().parent
-_EQUITY_CACHE_CSV = _SCRIPT_DIR / "mc_nifty50_nav.csv"
-_DEBT_CACHE_CSV   = _SCRIPT_DIR / "mc_debt_index.csv"
+_EQUITY_CACHE_CSV = CACHE_DIR / "mc_nifty50_nav.csv"
+_DEBT_CACHE_CSV   = CACHE_DIR / "mc_debt_index.csv"
 _CACHE_MAX_AGE_DAYS = 7          # re-download if cached file is older than this
 
 
@@ -393,7 +393,7 @@ def _save_equity_cache(df: "pd.DataFrame") -> None:
     Columns saved: date (YYYY-MM-DD), nav.  Failure is non-fatal."""
     try:
         df[["date", "nav"]].to_csv(
-            _EQUITY_CACHE_CSV, index=False, date_format="%Y-%m-%d")
+            ensure_parent(_EQUITY_CACHE_CSV), index=False, date_format="%Y-%m-%d")
     except Exception:
         pass
 
@@ -475,7 +475,7 @@ def _save_debt_cache(annual_returns: np.ndarray,
         pd.DataFrame({
             "fy": fy_labels,
             "annual_return_fraction": annual_returns,
-        }).to_csv(_DEBT_CACHE_CSV, index=False)
+        }).to_csv(ensure_parent(_DEBT_CACHE_CSV), index=False)
     except Exception:
         pass
 
@@ -501,16 +501,9 @@ def _fetch_debt_index_annual_returns() -> "Optional[np.ndarray]":
 
     # ── 2. Import get_funds_data and call get_debt_benchmark_monthly ──────────
     try:
-        import importlib
-        import sys
-
         import pandas as pd
 
-        _here = str(_SCRIPT_DIR)
-        if _here not in sys.path:
-            sys.path.insert(0, _here)
-
-        gfd = importlib.import_module("get_funds_data")
+        from swp_planner.funddata import get_funds_data as gfd
 
         # Returns monthly return fractions from 2000-01 onward
         monthly: pd.Series = gfd.get_debt_benchmark_monthly(
@@ -840,7 +833,7 @@ def run_monte_carlo(
         r_sim = _lognormal_returns(mu_det, sigmas, n_sims, floors, caps, rng)
 
     # ── Deterministic base from engine ───────────────────────────────────────
-    from engine import Engine
+    from swp_planner.core.engine import Engine
     # The deterministic spine every simulated path is scaled against. It has
     # to use the same withdrawal schedule the paths do, or the baseline and
     # the simulation are describing different plans.

@@ -28,13 +28,14 @@ from __future__ import annotations
 import datetime as _dt
 import pathlib
 
+from swp_planner.paths import DB_DIR
+
 # The fields whose movement creates a new historical row. See the module
 # docstring before adding to this.
 WATCHED_FIELDS = ("raw_rating", "rating_grade", "borrower_category",
                   "issuer_key")
 
-SCHEMA_FILE = pathlib.Path(__file__).resolve().parent.parent / "db" \
-    / "india_debt_schema.sql"
+SCHEMA_FILE = DB_DIR / "india_debt_schema.sql"
 
 TABLE = "india.debt_security"
 

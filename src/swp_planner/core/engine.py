@@ -51,8 +51,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from configuration import config
-from models import (
+from swp_planner.config.configuration import config
+from swp_planner.core.models import (
     AppState,
     EquityTaxChunk,
     FundEntry,
@@ -61,8 +61,8 @@ from models import (
     TaxChunk,
     _first_available,
 )
-from pro_rated_utils import months_in_fy, plan_months, prorate_annual
-from transition_plan import (
+from swp_planner.core.pro_rated_utils import months_in_fy, plan_months, prorate_annual
+from swp_planner.core.transition_plan import (
     TransitionPlan,
     distance_to_target,
     normalise,

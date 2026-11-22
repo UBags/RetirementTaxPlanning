@@ -36,10 +36,10 @@ import hashlib
 import json
 import pathlib
 
-from fund_filters import ratings as _ratings
+from swp_planner.fund_filters import ratings as _ratings
+from swp_planner.paths import DB_DIR
 
-SCHEMA_FILE = pathlib.Path(__file__).resolve().parent.parent / "db" \
-    / "india_fund_schema.sql"
+SCHEMA_FILE = DB_DIR / "india_fund_schema.sql"
 
 BAND_AAA = "AAA"
 BAND_AA = "AA"
@@ -548,8 +548,8 @@ def reapply_overrides(conn, on=None):
     """
     from psycopg2.extras import execute_values
 
-    from lookup.api import normalise as _norm
-    from lookup.portfolio_credit import SHORT_TERM_FROM_LONG
+    from swp_planner.lookup.api import normalise as _norm
+    from swp_planner.lookup.portfolio_credit import SHORT_TERM_FROM_LONG
 
     on = on or _dt.date.today()
     with conn.cursor() as cur:
@@ -636,7 +636,7 @@ def issuer_exposures(rows, cap=ISSUER_CAP):
     the largest line's. An issuer with a senior bond and a perpetual in the
     same fund is not a senior-only exposure.
     """
-    from fund_filters import quasi_sovereign as _qs
+    from swp_planner.fund_filters import quasi_sovereign as _qs
 
     agg = {}
     for h in rows:

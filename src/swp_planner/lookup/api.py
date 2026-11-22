@@ -91,8 +91,8 @@ import re
 
 from rapidfuzz import fuzz, process
 
-from fund_filters import borrower as _borrower
-from fund_filters import instruments as _instruments
+from swp_planner.fund_filters import borrower as _borrower
+from swp_planner.fund_filters import instruments as _instruments
 
 # Below this the name has not been resolved and the answer is not_found.
 # A NAMED CHOICE, tuned so "HDFC" alone does not resolve to HDFC Bank.
@@ -560,7 +560,7 @@ class CreditLookup:
     def _group_index(self):
         """{group key -> [(issuer_name, grade, rank, category)]}, built once."""
         if self._groups is None:
-            from fund_filters import groups as _g
+            from swp_planner.fund_filters import groups as _g
             with self.conn.cursor() as cur:
                 cur.execute(
                     "SELECT issuer_name, worst_rating_grade, "
@@ -591,7 +591,7 @@ class CreditLookup:
         AAA group with a subsidiary that defaulted. Returned untrusted and at
         reduced confidence so a consumer can exclude it wholesale.
         """
-        from fund_filters import groups as _g
+        from swp_planner.fund_filters import groups as _g
         key = _g.group_of(name)
         if not key:
             return _result()

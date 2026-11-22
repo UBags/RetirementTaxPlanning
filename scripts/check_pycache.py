@@ -2,16 +2,16 @@
 # See LICENSE in the project root for license information.
 
 """
-Quick diagnostic: run from your app directory.
-  cd C:\PythonProjects\RetirementTaxPlanning
-  python check_pycache.py
+Quick diagnostic for stale bytecode in swp_planner/core/.
+  python scripts/check_pycache.py
 """
 import os
 import shutil
 import sys
 from pathlib import Path
 
-app = Path(os.path.dirname(os.path.abspath(__file__)))
+SRC = Path(os.path.dirname(os.path.abspath(__file__))).parent / "src"
+app = SRC / "swp_planner" / "core"
 pc = app / "__pycache__"
 
 print("=== Step 1: Check __pycache__ ===")
@@ -35,8 +35,8 @@ else:
     print("  No __pycache__ found (clean)")
 
 print("\n=== Step 3: Verify engine.py version ===")
-sys.path.insert(0, str(app))
-import engine
+sys.path.insert(0, str(SRC))
+from swp_planner.core import engine
 
 print(f"  Loaded from: {engine.__file__}")
 has_cat = hasattr(engine.Engine, '_category_monthly_factor')
@@ -44,13 +44,13 @@ has_fund = hasattr(engine.Engine, '_fund_monthly_factor')
 print(f"  _category_monthly_factor: {has_cat}")
 print(f"  _fund_monthly_factor: {has_fund}")
 
-import models
+from swp_planner.core import models
 
 has_init = hasattr(models.AppState, '_init_funds')
 print(f"  models._init_funds: {has_init}")
 
 # Quick sanity: create test state and run
-from models import AllocationChunk, FundEntry, ReturnChunk, default_state
+from swp_planner.core.models import AllocationChunk, FundEntry, ReturnChunk, default_state
 
 state = default_state()
 funds = [

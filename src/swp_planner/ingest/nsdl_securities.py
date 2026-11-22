@@ -49,8 +49,8 @@ import datetime as _dt
 import hashlib
 import re
 
-from fund_filters import instruments as _instruments
-from fund_filters import ratings as _ratings
+from swp_planner.fund_filters import instruments as _instruments
+from swp_planner.fund_filters import ratings as _ratings
 
 URL = ("https://www.indiabondinfo.nsdl.com/bds-service/v1/public/bdsinfo/"
        "listofsecurities")

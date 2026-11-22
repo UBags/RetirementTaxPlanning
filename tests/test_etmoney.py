@@ -30,7 +30,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from ingest import etmoney as E  # noqa: E402
+from swp_planner.ingest import etmoney as E  # noqa: E402
 
 # Captured verbatim from the live endpoint on 2026-08-06.
 REAL_RESPONSE = {

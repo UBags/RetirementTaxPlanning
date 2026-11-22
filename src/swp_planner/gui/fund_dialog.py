@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from models import SCORE_COLUMNS, AppState, FundEntry, _first_available
+from swp_planner.core.models import SCORE_COLUMNS, AppState, FundEntry, _first_available
 
 SORT_OPTIONS = [c[1] for c in SCORE_COLUMNS]
 SORT_KEYS    = [c[0] for c in SCORE_COLUMNS]

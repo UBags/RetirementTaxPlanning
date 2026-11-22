@@ -114,7 +114,7 @@ def extract_amc(fund_name: str) -> str:
 
 from typing import TYPE_CHECKING
 
-from configuration import config, get_project_root
+from swp_planner.config.configuration import config, get_project_root
 
 if TYPE_CHECKING:                       # never executed
     # _merge_chunks_strict() and the top-level orchestrator annotate their
@@ -122,8 +122,8 @@ if TYPE_CHECKING:                       # never executed
     # Same reasoning as monte_carlo.py: string annotations that no checker
     # can resolve.  This module has no other `from typing` import, so the
     # import lives here rather than being merged into one.
-    from glide_path import GlidePath
-    from models import AllocationChunk
+    from swp_planner.core.glide_path import GlidePath
+    from swp_planner.core.models import AllocationChunk
 
 DEFAULT_INPUT  = str(get_project_root() / config.allocator_default_input)
 DEFAULT_OUTPUT = str(get_project_root() / config.allocator_default_output)
@@ -3347,7 +3347,10 @@ def build_expanded_universe(
 
     Returns a deduplicated list[FundEntry] (seed + up to 50 additions).
     """
-    from models import FundEntry, _first_available  # local import to avoid circular at module level
+    from swp_planner.core.models import (  # local import to avoid circular at module level
+        FundEntry,
+        _first_available,
+    )
 
     # ── Step 1: seed set ─────────────────────────────────────────────────────
     seed_map: dict[str, FundEntry] = {}
@@ -5542,7 +5545,7 @@ def _merge_chunks_strict(chunks: list, total_money: float) -> "AllocationChunk":
     Merge all chunks into one virtual chunk using the strictest constraints
     across all chunks.  Used by Mode A (singular allocation).
     """
-    from models import AllocationChunk
+    from swp_planner.core.models import AllocationChunk
     # Union of all funds
     funds_seen = {}
     for c in chunks:
@@ -5601,11 +5604,11 @@ def optimize_sticky_portfolio(
     # Import glide_path builder lazily so this module doesn't hard-require
     # glide_path.py at import time (the module is in the same package).
     try:
-        from glide_path import build_flat_glide_path, build_glide_path
+        from swp_planner.core.glide_path import build_flat_glide_path, build_glide_path
     except ImportError:
         # glide_path.py not yet present — provide stubs so the rest works
         def build_glide_path(chunks, spread, horizon=None):
-            from models import GlidePath
+            from swp_planner.core.models import GlidePath
             sched = {}
             for c in chunks:
                 for y in range(c.year_from, c.year_to + 1):
@@ -5613,9 +5616,9 @@ def optimize_sticky_portfolio(
             return GlidePath(sched)
 
         def build_flat_glide_path(weights, horizon=None):
-            from models import GlidePath
+            from swp_planner.core.models import GlidePath
             if horizon is None:
-                from configuration import config
+                from swp_planner.config.configuration import config
                 horizon = int(config.max_simulation_years)
             return GlidePath({y: dict(weights) for y in range(1, horizon + 1)})
 
@@ -5627,7 +5630,7 @@ def optimize_sticky_portfolio(
     chunks = state.allocation_chunks
     if not chunks:
         _emit("optimize_sticky_portfolio: no allocation chunks defined.")
-        from models import GlidePath
+        from swp_planner.core.models import GlidePath
         state.glide_path = GlidePath({})
         return state.glide_path
 

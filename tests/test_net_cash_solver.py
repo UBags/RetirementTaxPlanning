@@ -25,8 +25,8 @@ from __future__ import annotations
 
 import pytest
 
-from models import TaxChunk, TaxSlab
-from net_cash_solver import constant_fraction_net, solve_gross_for_net
+from swp_planner.core.models import TaxChunk, TaxSlab
+from swp_planner.core.net_cash_solver import constant_fraction_net, solve_gross_for_net
 
 SLABS = [TaxSlab(0, 4, 0.0), TaxSlab(4, 8, 0.05), TaxSlab(8, 12, 0.10),
          TaxSlab(12, 16, 0.15), TaxSlab(16, 20, 0.20), TaxSlab(20, 24, 0.25),
@@ -34,7 +34,7 @@ SLABS = [TaxSlab(0, 4, 0.0), TaxSlab(4, 8, 0.05), TaxSlab(8, 12, 0.10),
 
 
 def _tax(limit=12.0, entity="individual"):
-    from engine import compute_slab_tax
+    from swp_planner.core.engine import compute_slab_tax
     chunk = TaxChunk(1, 30, limit,
                      [TaxSlab(s.lower, s.upper, s.rate) for s in SLABS])
     return lambda income: compute_slab_tax(income, chunk, entity)
@@ -50,7 +50,7 @@ def _kinks(base_income, gain_fraction, limit=12.0):
     In the engine these come from tax_allocator.EntityYear.breakpoints();
     here they are built directly so the test does not depend on that module.
     """
-    from tax_allocator import EntityYear
+    from swp_planner.core.tax_allocator import EntityYear
     chunk = TaxChunk(1, 30, limit,
                      [TaxSlab(s.lower, s.upper, s.rate) for s in SLABS])
     gains = EntityYear("individual", base_income, chunk, None, None).breakpoints()

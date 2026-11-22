@@ -20,14 +20,14 @@ import pytest
 
 pytest.importorskip("PySide6", reason="Qt not available")
 
-import chunk_defaults as cd  # noqa: E402
-from models import AppState, FDRateChunk  # noqa: E402
+from swp_planner.config import chunk_defaults as cd  # noqa: E402
+from swp_planner.core.models import AppState, FDRateChunk  # noqa: E402
 
 
 @pytest.fixture
 def fd_dialog(qtbot):
     """A dialog over a plan carrying a user-set flat rate."""
-    from dialogs import FDRateChunksDialog
+    from swp_planner.gui.dialogs import FDRateChunksDialog
     state = AppState(fd_rate_chunks=[FDRateChunk(1, 30, 0.07)], fd_rate=0.07)
     dlg = FDRateChunksDialog(state)
     qtbot.addWidget(dlg)
@@ -69,7 +69,7 @@ def test_save_after_reset_writes_the_ladder_through(fd_dialog):
 
 def test_added_chunk_on_an_empty_table_takes_the_anchored_rate(qtbot):
     """Not a hardcoded 0.07 from nowhere."""
-    from dialogs import FDRateChunksDialog
+    from swp_planner.gui.dialogs import FDRateChunksDialog
     state = AppState(fd_rate_chunks=[])
     dlg = FDRateChunksDialog(state)
     qtbot.addWidget(dlg)
@@ -80,7 +80,7 @@ def test_added_chunk_on_an_empty_table_takes_the_anchored_rate(qtbot):
 
 
 def test_the_dialog_follows_the_plan_horizon(qtbot):
-    from dialogs import FDRateChunksDialog
+    from swp_planner.gui.dialogs import FDRateChunksDialog
     state = AppState(horizon_years=15, fd_rate_chunks=[])
     dlg = FDRateChunksDialog(state)
     qtbot.addWidget(dlg)

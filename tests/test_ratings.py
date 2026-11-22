@@ -8,7 +8,7 @@ did not.
 """
 import pytest
 
-from fund_filters import ratings as R
+from swp_planner.fund_filters import ratings as R
 
 
 @pytest.mark.parametrize("raw,agency,grade", [

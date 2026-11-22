@@ -13,7 +13,7 @@ import datetime as dt
 import openpyxl
 import pytest
 
-from ingest import nsdl_securities as NS
+from swp_planner.ingest import nsdl_securities as NS
 
 HEADER = [
     "Sr. No.", "ISIN", "Name of Issuer", "Series", "Security Description",

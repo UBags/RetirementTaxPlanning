@@ -22,7 +22,7 @@ from datetime import date
 
 import pytest
 
-import percentile_metrics as pm
+from swp_planner.simulation import percentile_metrics as pm
 
 # ── classification ───────────────────────────────────────────────────────────
 
@@ -407,7 +407,7 @@ def test_rf_series_concat_is_not_deprecated(recwarn):
     call site, and turning every FutureWarning in the process into an error
     would fail on unrelated pandas churn elsewhere.
     """
-    import get_funds_data as gfd
+    from swp_planner.funddata import get_funds_data as gfd
 
     gfd._rf_cache = None
     try:

@@ -72,7 +72,7 @@ def snapshot_dir() -> Path:
 
 @pytest.fixture(scope="session")
 def config_fingerprint() -> str:
-    from configuration import config
+    from swp_planner.config.configuration import config
     return ";".join(f"{k}={config.get(k, '<missing>')}"
                     for k in CONFIG_FINGERPRINT_KEYS)
 
@@ -84,7 +84,7 @@ def load_scenario(project_root: Path, rel_path: str, index: int):
     fixtures resolve against FIXTURE_DIR so that editing a plan in the GUI can
     never move a golden snapshot.
     """
-    from models import AppState
+    from swp_planner.core.models import AppState
 
     from golden_projects import PROJECTS
 

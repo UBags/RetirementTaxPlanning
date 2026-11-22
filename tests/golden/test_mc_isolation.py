@@ -76,7 +76,7 @@ def test_mc_caches_point_outside_the_project(project_root):
     A test run must neither read the owner's cache (results would depend on
     when it was last refreshed) nor let _save_equity_cache() overwrite it.
     """
-    import monte_carlo as mc
+    from swp_planner.simulation import monte_carlo as mc
     for name in ("_EQUITY_CACHE_CSV", "_DEBT_CACHE_CSV"):
         p = Path(getattr(mc, name)).resolve()
         assert project_root.resolve() not in p.parents, (
@@ -91,14 +91,14 @@ def test_equity_fetch_degrades_to_none_offline():
     was invisible, and if it ever changes to a raise, run_monte_carlo() stops
     falling back and starts crashing.
     """
-    import monte_carlo as mc
+    from swp_planner.simulation import monte_carlo as mc
     assert mc._fetch_nifty50_annual_returns() is None
 
 
 def test_debt_history_needs_no_network():
     """The debt series is embedded in get_funds_data.py, so it must survive
     the block. If this skips, the bootstrap fixture cannot be built either."""
-    import monte_carlo as mc
+    from swp_planner.simulation import monte_carlo as mc
     dbt = mc._fetch_debt_index_annual_returns()
     if dbt is None:
         pytest.skip("get_funds_data.py not importable — debt history unavailable")
@@ -112,7 +112,7 @@ def test_bootstrap_falls_back_to_lognormal_offline(scenario):
     The honest statement of what the suite currently covers: with no network
     and no fixture, the default path is NOT being exercised.
     """
-    from monte_carlo import run_monte_carlo
+    from swp_planner.simulation.monte_carlo import run_monte_carlo
     label, state = scenario
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -127,7 +127,7 @@ def test_bootstrap_falls_back_to_lognormal_offline(scenario):
 
 @pytest.mark.slow
 def test_same_seed_same_everything(scenario):
-    from monte_carlo import run_monte_carlo
+    from swp_planner.simulation.monte_carlo import run_monte_carlo
     label, state = scenario
     a = run_monte_carlo(state, n_sims=120, seed=7, use_bootstrap=False)
     b = run_monte_carlo(state, n_sims=120, seed=7, use_bootstrap=False)
@@ -138,7 +138,7 @@ def test_same_seed_same_everything(scenario):
 @pytest.mark.slow
 def test_different_seed_different_paths(scenario):
     """Guards the opposite failure: a seed that is accepted and ignored."""
-    from monte_carlo import run_monte_carlo
+    from swp_planner.simulation.monte_carlo import run_monte_carlo
     label, state = scenario
     a = run_monte_carlo(state, n_sims=120, seed=7, use_bootstrap=False)
     b = run_monte_carlo(state, n_sims=120, seed=8, use_bootstrap=False)
@@ -164,7 +164,7 @@ def mc_history():
 @pytest.fixture
 def frozen_bootstrap(mc_history, monkeypatch):
     """Feed the committed history to run_monte_carlo in place of the fetchers."""
-    import monte_carlo as mc
+    from swp_planner.simulation import monte_carlo as mc
     eq, dbt = mc_history
     monkeypatch.setattr(mc, "_fetch_nifty50_annual_returns", lambda: eq)
     monkeypatch.setattr(mc, "_fetch_debt_index_annual_returns", lambda: dbt)
@@ -173,7 +173,7 @@ def frozen_bootstrap(mc_history, monkeypatch):
 
 @pytest.mark.slow
 def test_bootstrap_runs_against_frozen_history(frozen_bootstrap, scenario):
-    from monte_carlo import run_monte_carlo
+    from swp_planner.simulation.monte_carlo import run_monte_carlo
     label, state = scenario
     res = run_monte_carlo(state, n_sims=200, seed=42, use_bootstrap=True)
     assert res.method_used == "block_bootstrap", (
@@ -209,8 +209,8 @@ def test_bootstrap_percentiles_snapshot(frozen_bootstrap, scenario, request):
     still catches band changes, clamp-order changes and reseeding, which is
     what §2.2 needed and did not have.
     """
-    from monte_carlo import run_monte_carlo
-    from net_income_plan import project_plan
+    from swp_planner.core.net_income_plan import project_plan
+    from swp_planner.simulation.monte_carlo import run_monte_carlo
     label, state = scenario
     _, _, _, _, solution = project_plan(state)
     res = run_monte_carlo(state, n_sims=500, seed=42, use_bootstrap=True,
@@ -269,8 +269,8 @@ def test_equity_history_is_dead_weight_for_all_debt_portfolios(
     point the equity series starts mattering and the snapshot above gains
     coverage it does not currently have.
     """
-    import monte_carlo as mc
-    from monte_carlo import run_monte_carlo
+    from swp_planner.simulation import monte_carlo as mc
+    from swp_planner.simulation.monte_carlo import run_monte_carlo
     label, state = scenario
 
     w_eq = state.total_equity_allocation()
@@ -309,8 +309,8 @@ def test_bootstrap_is_refused_when_the_irrelevant_fetch_fails(
     Filed as an observation, not fixed here: the gate belongs in §2.x, and
     changing it changes which generator the owner's real runs use.
     """
-    import monte_carlo as mc
-    from monte_carlo import run_monte_carlo
+    from swp_planner.simulation import monte_carlo as mc
+    from swp_planner.simulation.monte_carlo import run_monte_carlo
     label, state = scenario
     if (state.total_equity_allocation() + state.total_other_allocation()) > 0:
         pytest.skip(f"{label} holds equity — the equity fetch is load-bearing")
@@ -350,7 +350,7 @@ def test_band_clamps_a_large_share_of_bootstrap_draws(frozen_bootstrap, scenario
     collapses to the point where the bootstrap is a two-point distribution,
     which would make the whole method decorative.
     """
-    import monte_carlo as mc
+    from swp_planner.simulation import monte_carlo as mc
     label, state = scenario
     eq, dbt = frozen_bootstrap
 

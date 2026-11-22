@@ -89,6 +89,8 @@ import requests
 from scipy import stats
 from tqdm import tqdm
 
+from swp_planner.paths import FUNDS_DIR, LOGS_DIR, ensure_parent
+
 warnings.filterwarnings("ignore", category=RuntimeWarning, module=r"(numpy|pandas|scipy).*")
 
 # ── optional: yfinance ────────────────────────────────────────────────────────
@@ -112,10 +114,12 @@ HYBRID_DEBT_WEIGHT = 0.35
 # False → always use the synthetic 5Y bond index derived from the Rf series.
 USE_ACTUAL_BOND_INDEX = True
 
-INPUT_FILE         = "../Personal/Fund Details.csv"
-OUTPUT_FILE        = "../Personal/Fund_Metrics_Output.csv"
-ERROR_FILE         = "../Personal/Fund_Metrics_Errors.csv"
-AMFI_MAP_FILE      = "../Personal/amfi_map.csv"
+# CLI defaults, all under data/funds/ (see swp_planner.paths). The GUI always
+# passes explicit --input/--output paths inside the per-user output folder.
+INPUT_FILE         = str(FUNDS_DIR / "Fund Details.csv")
+OUTPUT_FILE        = str(FUNDS_DIR / "Fund_Metrics_Output.csv")
+ERROR_FILE         = str(FUNDS_DIR / "Fund_Metrics_Errors.csv")
+AMFI_MAP_FILE      = str(FUNDS_DIR / "amfi_map.csv")
 
 MFAPI_BASE         = "https://api.mfapi.in/mf"
 
@@ -281,7 +285,7 @@ HYBRID_TYPES   = {
 log = logging.getLogger(__name__)
 
 
-def configure_logging(logfile: str = "fund_analyser.log") -> None:
+def configure_logging(logfile: str = str(LOGS_DIR / "fund_analyser.log")) -> None:
     """Install console + file logging.  Called from main(), never on import.
 
     This ran at module level until it was found to break any importer.
@@ -295,15 +299,17 @@ def configure_logging(logfile: str = "fund_analyser.log") -> None:
     basicConfig() is a no-op once the root logger has handlers, but the
     wrapper is constructed regardless, and constructing it is what seizes the
     buffer.  Importing also reconfigured root logging process-wide and wrote
-    fund_analyser.log into whatever the cwd happened to be.
+    fund_analyser.log into whatever the cwd happened to be.  It now defaults
+    to data/logs/fund_analyser.log.
 
     monte_carlo._fetch_debt_index_annual_returns() imports this module to
     reach the embedded debt-index table, so "anyone who imports it" includes
     the Monte Carlo path.
 
-    The body below is unchanged from the original, so running this file as a
-    script logs exactly as it always did.
+    Apart from the log file's location, the body below is unchanged from the
+    original.
     """
+    ensure_parent(logfile)
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s  %(levelname)-8s  %(message)s",
@@ -1636,7 +1642,7 @@ def _rolling_stats(nav: pd.Series, ret: pd.Series, window_months: int) -> dict:
     # averages the good windows in) and the minimum (one window, and one bad
     # month in the NAV history can own it).
     try:
-        from configuration import config
+        from swp_planner.config.configuration import config
         _pct = float(config.fund_return_percentile)
     except Exception:
         _pct = 33.0
@@ -1647,7 +1653,7 @@ def _rolling_stats(nav: pd.Series, ret: pd.Series, window_months: int) -> dict:
     # later, and expected_return() takes a MIN -- an under-resolved 10Y value
     # is selected exactly when its noise happens to be low.
     try:
-        from percentile_metrics import MIN_READINGS as _MIN_READINGS
+        from swp_planner.simulation.percentile_metrics import MIN_READINGS as _MIN_READINGS
     except Exception:
         _MIN_READINGS = {"3Y": 24, "5Y": 18, "7Y": 12, "10Y": 12}
     _label = {36: "3Y", 60: "5Y", 84: "7Y", 120: "10Y"}.get(window_months)
@@ -2039,9 +2045,9 @@ def _write_risk_free_rate(results: list, df_out) -> None:
     configuration with a number built from four funds and six months is worse
     than leaving it alone.
     """
-    import percentile_metrics as _pm
-    from configuration import config as _config
-    from configuration import set_value as _set_value
+    from swp_planner.config.configuration import config as _config
+    from swp_planner.config.configuration import set_value as _set_value
+    from swp_planner.simulation import percentile_metrics as _pm
 
     tunables = _pm.configured()
     pct       = tunables["risk_free_rate_percentile"]
@@ -2143,9 +2149,8 @@ def main():
     # ── Ensure output directory exists ────────────────────────────────────────
     # The --output path is supplied by main.py as an absolute path inside the
     # per-user output_dir (e.g. .../Uddipan/Fund_Metrics_Output.csv).
-    # The module-level ERROR_FILE constant uses a relative '../Personal/' path
-    # that may not exist.  Derive error_file from the same directory as
-    # args.output so both files always land in the correct, existing folder.
+    # Derive error_file from the same directory as args.output (not the
+    # module-level ERROR_FILE default) so both files always land together.
     output_path = Path(args.output).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     error_file  = str(output_path.parent / "Fund_Metrics_Errors.csv")

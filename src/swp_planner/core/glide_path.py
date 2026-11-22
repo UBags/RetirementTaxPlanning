@@ -38,7 +38,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from models import GlidePath
+    from swp_planner.core.models import GlidePath
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -48,7 +48,7 @@ if TYPE_CHECKING:
 def _resolve_horizon(horizon: "int | None") -> int:
     """Plan length in financial years, defaulting to the configured ceiling."""
     if horizon is None:
-        from configuration import config
+        from swp_planner.config.configuration import config
         horizon = int(config.max_simulation_years)
     return max(1, int(horizon))
 
@@ -58,7 +58,7 @@ def build_flat_glide_path(weights: dict, horizon: "int | None" = None) -> "Glide
     Return a GlidePath where every plan year (1..horizon) carries the same
     weight dict.  Used for Mode A (singular buy-and-hold).
     """
-    from models import GlidePath
+    from swp_planner.core.models import GlidePath
     horizon = _resolve_horizon(horizon)
     w = dict(weights)   # defensive copy
     return GlidePath(schedule={y: w for y in range(1, horizon + 1)})
@@ -125,7 +125,7 @@ def build_glide_path(
     -------
     GlidePath
     """
-    from models import GlidePath
+    from swp_planner.core.models import GlidePath
 
     horizon = _resolve_horizon(horizon)
 

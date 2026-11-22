@@ -75,8 +75,8 @@ from __future__ import annotations
 
 import re
 
-from fund_filters import borrower as _borrower
-from ingest import etmoney_portfolio as _portfolio
+from swp_planner.fund_filters import borrower as _borrower
+from swp_planner.ingest import etmoney_portfolio as _portfolio
 
 # A name match below this is reported but not trusted for a rating. It is
 # deliberately ABOVE lookup.api.MIN_SCORE: that floor decides whether a name

@@ -8,8 +8,8 @@ form that fails.
 """
 import pytest
 
-from fund_filters import amc_registry as A
-from fund_filters import deviation as D
+from swp_planner.fund_filters import amc_registry as A
+from swp_planner.fund_filters import deviation as D
 
 
 def month_ends(n, start=2005):
@@ -204,7 +204,7 @@ def test_format_priority_says_so_when_nothing_fires():
 
 # ── concentration ───────────────────────────────────────────────────────────
 
-from fund_filters import concentration as K  # noqa: E402
+from swp_planner.fund_filters import concentration as K  # noqa: E402
 
 
 def test_the_loss_from_one_default_is_arithmetic():

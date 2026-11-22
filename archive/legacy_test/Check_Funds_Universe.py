@@ -1,3 +1,13 @@
+"""
+ARCHIVED. Formerly test/Check_Funds_Universe.py: a scratch script, never a
+pytest test, that printed how many funds in a per-user Fund_Metrics_Output.csv
+passed the old test/portfolio_allocator.py eligibility screen.
+
+Replaced by: allocate_funds' own eligibility filtering and its run report
+(swp_planner.optimiser.allocate_funds). The precursor allocator it checked
+against is untracked (older_versions/), so the thresholds here describe a
+screen that no longer exists. The relative path below predates outputs/<user>/.
+"""
 import pandas as pd
 import numpy as np
 

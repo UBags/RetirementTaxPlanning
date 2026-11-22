@@ -6,13 +6,13 @@ Configuration.py
 ================
 Singleton configuration reader for the SWP Financial Planner.
 
-Reads key-value pairs from ``RetirementTaxPlanning.configuration`` located
-alongside this file (project root).  Values are auto-parsed into int, float,
+Reads key-value pairs from ``config/RetirementTaxPlanning.configuration`` under
+the project root.  Values are auto-parsed into int, float,
 or str.
 
 Usage
 -----
-    from configuration import config, get_project_root
+    from swp_planner.config.configuration import config, get_project_root
 
     cess = config.cess_rate                   # float 0.04
     path = get_project_root() / "some_file"   # Path
@@ -20,20 +20,26 @@ Usage
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+from swp_planner.paths import CONFIG_FILENAME, PROJECT_ROOT
 
 # ─── Project root ─────────────────────────────────────────────────────────────
 
 def get_project_root() -> Path:
-    """Return the project root directory (the directory containing this file)."""
-    return Path(os.path.dirname(os.path.abspath(__file__)))
+    """Return the project root directory (the repository checkout)."""
+    return PROJECT_ROOT
+
+
+def get_config_path() -> Path:
+    """Return the path of RetirementTaxPlanning.configuration (under config/)."""
+    return get_project_root() / "config" / _CONFIG_FILENAME
 
 
 # ─── Configuration singleton ──────────────────────────────────────────────────
 
-_CONFIG_FILENAME = "RetirementTaxPlanning.configuration"
+_CONFIG_FILENAME = CONFIG_FILENAME
 
 # Every key the application reads at runtime.  Validated as a set when the
 # file loads, so a missing key is one error at startup naming all of them,
@@ -162,7 +168,7 @@ class _Configuration:
         if self._loaded:
             return
         self._loaded = True
-        config_path = get_project_root() / _CONFIG_FILENAME
+        config_path = get_config_path()
         if not config_path.exists():
             # There are no built-in defaults.  The previous code warned and
             # continued, leaving _data empty, so the next attribute access
@@ -174,7 +180,7 @@ class _Configuration:
                 f"Configuration file not found: {config_path}\n"
                 "There are no built-in defaults. The application cannot start "
                 "without it. Restore it from git:\n"
-                f"    git checkout -- {_CONFIG_FILENAME}"
+                f"    git checkout -- config/{_CONFIG_FILENAME}"
             )
         self._data = _parse_properties(config_path)
 
@@ -231,7 +237,7 @@ def set_value(key: str, value: object, path: "Path | None" = None) -> None:
     The in-memory singleton is refreshed afterwards, so a process that writes
     a value sees it immediately rather than the value it started with.
     """
-    cfg_path = Path(path) if path is not None else get_project_root() / _CONFIG_FILENAME
+    cfg_path = Path(path) if path is not None else get_config_path()
     lines = cfg_path.read_text(encoding="utf-8").splitlines(keepends=True)
 
     hit = None

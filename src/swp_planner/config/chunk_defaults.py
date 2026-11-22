@@ -137,10 +137,10 @@ def default_fd_benchmark_chunks(
     dialog is a user decision and always wins.
     """
     if rates is None:
-        from configuration import config
+        from swp_planner.config.configuration import config
         rates = [float(getattr(config, k)) for k in _FD_RATE_KEYS]
     if spread is None:
-        from configuration import config
+        from swp_planner.config.configuration import config
         spread = float(config.fd_benchmark_spread)
     if len(rates) != FD_BENCHMARK_CHUNKS:
         raise ValueError(
@@ -172,7 +172,7 @@ def default_chunk_layout(n_chunks: int, horizon: Optional[int] = None) -> List[T
             f"n_chunks must be one of {sorted(_CANONICAL_ENDS)}, got {n_chunks!r}"
         )
     if horizon is None:
-        from configuration import config
+        from swp_planner.config.configuration import config
         horizon = int(config.max_simulation_years)
     if horizon < n_chunks:
         raise ValueError(
@@ -213,7 +213,7 @@ def default_chunks_for_option(
     ``min_return`` in PERCENT.
     """
     if risk_free_rate is None:
-        from configuration import config
+        from swp_planner.config.configuration import config
         risk_free_rate = float(config.risk_free_rate)
     if not 0.0 < risk_free_rate < 1.0:
         raise ValueError(

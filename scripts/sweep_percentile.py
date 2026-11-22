@@ -12,8 +12,14 @@ separately from the debt gate, because the two signals were measured to run in
 OPPOSITE directions and a single knob would net them against each other and
 report a wash.
 """
-import nav_feed as N
-from redemption_gate import (
+import pathlib
+import sys
+
+_ROOT = pathlib.Path(__file__).resolve().parent.parent
+if str(_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(_ROOT / "src"))
+
+from swp_planner.core.redemption_gate import (  # noqa: E402
     CORPORATE,
     EQUITY,
     MONEY_MARKET,
@@ -23,6 +29,7 @@ from redemption_gate import (
     classify,
     execute_month,
 )
+from swp_planner.simulation import nav_feed as N  # noqa: E402
 
 START_CORPUS = 580.0          # lakh, personal 390 + HUF 190
 DEBT_SHARE = 0.70
@@ -83,7 +90,7 @@ def run(months, fmap, percentiles):
 
 
 def main():
-    fmap = N.build_fund_map(path="nav_sample.csv")
+    fmap = N.build_fund_map(path=N.NAV_SAMPLE_CSV)
     months = [d for yr in N.monthly_prices(fmap)["months"] for d in yr]
     base = run(months, fmap, {})
 

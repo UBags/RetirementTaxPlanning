@@ -2,14 +2,16 @@
 # See LICENSE in the project root for license information.
 
 """
-Debug script: Add to your project directory and run from there.
-  python debug_other.py
+Debug script: run from a per-user output directory (outputs/<user>/).
+  python ../../scripts/debug.py
 
 Loads the saved project and checks "other" category status.
 """
 import json
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 # Find the project file
 candidates = list(Path(".").glob("*_project.swp.json")) + list(Path(".").glob("*.swp.json"))
@@ -54,7 +56,7 @@ print(f"\nindividual_other_chunks: {ind_other}")
 print(f"huf_other_chunks: {huf_other}")
 
 # Load via AppState
-from models import AppState
+from swp_planner.core.models import AppState
 
 state = AppState.from_dict(raw)
 
@@ -69,7 +71,7 @@ for f in init_funds:
         print(f"  {f.name[:40]:40s} type={f.fund_type:6s} alloc={f.allocation:.2f}L cagr_5={f.cagr_5}")
 
 # Run engine and check month 0
-from engine import Engine
+from swp_planner.core.engine import Engine
 
 engine = Engine(state)
 p_rows, yearly, _, _ = engine.run()

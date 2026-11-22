@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import re
 
-from fund_filters import borrower as _borrower
+from swp_planner.fund_filters import borrower as _borrower
 
 # Categories the cap does not bind on. Derived from NSDL data rather than kept
 # by hand, so they follow the source.

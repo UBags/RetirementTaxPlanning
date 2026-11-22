@@ -27,10 +27,10 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-import lookup.api as A  # noqa: E402
-from fund_filters import borrower as B  # noqa: E402
-from ingest import store as S  # noqa: E402
-from lookup.api import CreditLookup, brand_matches, normalise  # noqa: E402
+import swp_planner.lookup.api as A  # noqa: E402
+from swp_planner.fund_filters import borrower as B  # noqa: E402
+from swp_planner.ingest import store as S  # noqa: E402
+from swp_planner.lookup.api import CreditLookup, brand_matches, normalise  # noqa: E402
 
 DSN = os.environ.get("RTP_TEST_DSN")
 pytestmark = pytest.mark.skipif(
@@ -686,7 +686,7 @@ def test_both_directions_are_checked_not_just_one():
     what rejects it."""
     q, c = normalise("Capital First Ltd"), normalise("IDFC FIRST CAPITAL "
                                                      "LIMITED")
-    from lookup.api import _tokens, head_token
+    from swp_planner.lookup.api import _tokens, head_token
     assert head_token(q) in set(_tokens(c)), "one direction passes"
     assert head_token(c) not in set(_tokens(q)), "the other does not"
     assert brand_matches(q, c) is False
@@ -779,7 +779,7 @@ def test_a_group_rating_is_never_presented_as_an_agency_opinion(conn):
                  instrument_type="Commercial Paper", instrument_code=2,
                  asset_class="debt", percent=9.8, value=1e8, is_issuer=True,
                  expected_in_nsdl=False, is_securitised=False, seniority=None)]
-    from lookup import portfolio_credit as _PC
+    from swp_planner.lookup import portfolio_credit as _PC
     out = _PC.enrich(rows, lk)
     assert out[0]["rating"] == "A1+", "converted to the short-term scale"
     assert out[0]["rating_source"] == "group_short_term"
@@ -791,7 +791,7 @@ def test_reliance_capital_does_not_borrow_reliance_industries_rating(conn):
     """THE BRAND TOKEN ALONE IS DANGEROUS. "Reliance" names both Mukesh
     Ambani's Reliance Industries, rated AAA, and Anil Ambani's Reliance
     Capital, which defaulted at D. They share a word and nothing else."""
-    from fund_filters import groups as G
+    from swp_planner.fund_filters import groups as G
     assert G.group_of("Reliance Industries Ltd") == "RELIANCE"
     assert G.group_of("Reliance Retail Ventures Ltd.") == "RELIANCE"
     assert G.group_of("Reliance Capital Ltd") is None
@@ -802,7 +802,7 @@ def test_reliance_capital_does_not_borrow_reliance_industries_rating(conn):
 
 
 def test_kotak_mahindra_is_not_the_mahindra_group(conn):
-    from fund_filters import groups as G
+    from swp_planner.fund_filters import groups as G
     assert G.group_of("Kotak Mahindra Prime Ltd.") == "KOTAK"
     assert G.group_of("Mahindra & Mahindra Financial Services Ltd.") == \
         "MAHINDRA"
@@ -825,7 +825,7 @@ def test_a_company_in_no_group_gets_nothing(conn):
 def test_the_group_mechanism_can_be_switched_off(conn):
     _load(conn, [_rec("INE040A08001", "HDFC BANK LIMITED", "AAA",
                       sector="Private Sector Bank")], D1)
-    from lookup import portfolio_credit as _PC
+    from swp_planner.lookup import portfolio_credit as _PC
     rows = [dict(company="HDFC Securities Ltd.", company_id=1,
                  instrument_type="Commercial Paper", instrument_code=2,
                  asset_class="debt", percent=9.8, value=1e8, is_issuer=True,
@@ -838,7 +838,7 @@ def test_a_merged_bond_issuer_is_answered_by_its_group(conn):
     """Tata Motors Finance and Tata Capital Financial Services are absent from
     NSDL -- merged into their parents -- and were sitting unresolved."""
     _load(conn, [_rec("INE306N08001", "TATA CAPITAL LIMITED", "AAA")], D1)
-    from lookup import portfolio_credit as _PC
+    from swp_planner.lookup import portfolio_credit as _PC
     rows = [dict(company="Tata Motors Finance Ltd.", company_id=1,
                  instrument_type="Debenture", instrument_code=3,
                  asset_class="debt", percent=13.5, value=1e8, is_issuer=True,
@@ -870,7 +870,7 @@ def test_a_declared_group_rating_answers_where_nothing_can_be_inferred(
     it is absent from the NSDL corporate bond file entirely -- which is why
     its members were in the review queue and why inference cannot reach
     them."""
-    from fund_filters import groups as G
+    from swp_planner.fund_filters import groups as G
     assert G.group_of(company) == key
     _load(conn, [_rec("INE001A08001", "UNRELATED LIMITED", "AAA")], D1)
     r = CreditLookup(conn).by_group(company)
@@ -882,7 +882,7 @@ def test_a_declared_group_rating_answers_where_nothing_can_be_inferred(
 def test_mashreq_matches_a_name_written_as_one_word():
     """The source writes "MashreqBank PSC" with no space, and a trailing word
     boundary does not match inside it."""
-    from fund_filters import groups as G
+    from swp_planner.fund_filters import groups as G
     assert G.group_of("MashreqBank PSC") == "MASHREQ"
     assert G.group_of("Mashreem Textiles Ltd") is None
 
@@ -898,8 +898,8 @@ def test_iifl_wealth_stays_with_360_one_not_iifl():
     belt-and-braces against someone reordering the registry, which is exactly
     the mistake the rating_source column exists to survive elsewhere. Both are
     asserted so a reorder fails here rather than silently."""
-    from fund_filters import groups
-    from fund_filters import groups as G
+    from swp_planner.fund_filters import groups
+    from swp_planner.fund_filters import groups as G
     assert G.group_of("IIFL Wealth Prime Ltd") == "360 ONE"
     assert G.group_of("IIFL Capital Services Ltd") == "IIFL"
     keys = [k for k, _i, _e, _a in groups._GROUPS]
@@ -923,7 +923,7 @@ def test_a_declared_group_grade_is_converted_for_money_market_paper(conn):
     everything from AAA down to AA- at the top of the short-term scale,
     because a year of liquidity is a different question from a decade of
     solvency. A2+ is where A- lands."""
-    from lookup import portfolio_credit as _PC
+    from swp_planner.lookup import portfolio_credit as _PC
     _load(conn, [_rec("INE001A08001", "UNRELATED LIMITED", "AAA")], D1)
     rows = [dict(company="IIFL Capital Services Ltd", company_id=1,
                  instrument_type="Commercial Paper", instrument_code=2,
@@ -933,7 +933,7 @@ def test_a_declared_group_grade_is_converted_for_money_market_paper(conn):
     assert out[0]["rating"] == "A1+"
     assert out[0]["rating_source"] == "group_short_term"
     assert out[0]["gap"] is None
-    from lookup.portfolio_credit import short_term_grade
+    from swp_planner.lookup.portfolio_credit import short_term_grade
     assert short_term_grade("A-") == "A2+", "which is where A- lands"
 
 
@@ -949,7 +949,7 @@ def test_holding_companies_with_no_group_brand_in_the_name(
         conn, company, key, grade):
     """Panatone Finvest is Tata's holding vehicle for Tata Communications and
     Birla Group Holdings is Aditya Birla's; neither name reads as such."""
-    from fund_filters import groups as G
+    from swp_planner.fund_filters import groups as G
     assert G.group_of(company) == key
     assert G.declared_rating(key)[0] == grade
 
@@ -966,14 +966,14 @@ def test_the_birla_surname_is_shared_across_three_families(conn, company):
 
     They are left ungrouped rather than mis-grouped: no rating is better than
     another family's."""
-    from fund_filters import groups as G
+    from swp_planner.fund_filters import groups as G
     assert G.group_of(company) is None
 
 
 def test_aditya_birla_still_infers_from_its_own_entities(conn):
     """Narrowing to BIRLA GROUP must not cost the group that does have rated
     members in NSDL."""
-    from fund_filters import groups as G
+    from swp_planner.fund_filters import groups as G
     assert G.group_of("Aditya Birla Finance Ltd.") == "ADITYA BIRLA"
     _load(conn, [_rec("INE001A08001", "ADITYA BIRLA CAPITAL LIMITED", "AAA")],
           D1)
@@ -984,7 +984,7 @@ def test_aditya_birla_still_infers_from_its_own_entities(conn):
 def test_mirae_asset_sharekhan_stays_with_mirae(conn):
     """Both are AA so the grade is the same either way, and the assignment
     should still be the one that reflects ownership."""
-    from fund_filters import groups as G
+    from swp_planner.fund_filters import groups as G
     assert G.group_of("Mirae Asset Sharekhan Financial Services Ltd.") == \
         "MIRAE"
     assert G.group_of("Sharekhan Ltd.") == "SHAREKHAN"

@@ -30,15 +30,15 @@ import sys
 import urllib.request
 
 _ROOT = pathlib.Path(__file__).resolve().parent.parent
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+if str(_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(_ROOT / "src"))
 
-from ingest import etmoney as E  # noqa: E402
-from ingest import etmoney_portfolio as P  # noqa: E402
-from ingest import fund_store as F  # noqa: E402
-from ingest import store as S  # noqa: E402
-from lookup import portfolio_credit as PC  # noqa: E402
-from lookup.api import CreditLookup  # noqa: E402
+from swp_planner.ingest import etmoney as E  # noqa: E402
+from swp_planner.ingest import etmoney_portfolio as P  # noqa: E402
+from swp_planner.ingest import fund_store as F  # noqa: E402
+from swp_planner.ingest import store as S  # noqa: E402
+from swp_planner.lookup import portfolio_credit as PC  # noqa: E402
+from swp_planner.lookup.api import CreditLookup  # noqa: E402
 
 DEFAULT_DSN = "dbname=RetirementPlanning"
 

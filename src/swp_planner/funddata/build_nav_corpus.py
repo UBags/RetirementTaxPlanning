@@ -76,6 +76,8 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from swp_planner.paths import NAV_DIR, ensure_parent
+
 log = logging.getLogger("nav_corpus")
 
 # Categories worth a retirement model, in the order they are filled. The names
@@ -243,7 +245,7 @@ def _fetch_with_backoff(G, code, attempts, first_wait):
 def _module():
     """Import get_funds_data, which must be importable from the CWD or path."""
     try:
-        import get_funds_data as G
+        from swp_planner.funddata import get_funds_data as G
     except ImportError:
         sys.exit(
             "FATAL: cannot import get_funds_data. Run this from the directory "
@@ -385,7 +387,7 @@ def harvest(G, plan, years, min_years, per_category, cache_path, resume,
                 "nav": nav_map,
             }
             cache[code] = rec
-            cache_path.write_text(json.dumps(cache))
+            ensure_parent(cache_path).write_text(json.dumps(cache))
             kept[cat].append(rec)
             log.info("kept %s %-46s %5.1f yr  %5d days",
                      code, name[:46], rec["years"], rec["trading_days"])
@@ -396,8 +398,8 @@ def harvest(G, plan, years, min_years, per_category, cache_path, resume,
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--out", default="nav_corpus.json")
-    ap.add_argument("--cache", default=".nav_corpus_cache.json")
+    ap.add_argument("--out", default=str(NAV_DIR / "nav_corpus.json"))
+    ap.add_argument("--cache", default=str(NAV_DIR / ".nav_corpus_cache.json"))
     ap.add_argument("--years", type=float, default=20.0)
     ap.add_argument("--min-years", type=float, default=18.0,
                     help="a fund shorter than this is dropped. Below --years "
@@ -513,7 +515,7 @@ def main():
                    "years": a.years},
         "funds": funds,
     }
-    Path(a.out).write_text(json.dumps(doc, indent=1))
+    ensure_parent(a.out).write_text(json.dumps(doc, indent=1))
 
     print()
     print(f"{'category':26s}{'kept':>6}{'yrs':>7}{'CAGR':>16}{'vol':>16}")

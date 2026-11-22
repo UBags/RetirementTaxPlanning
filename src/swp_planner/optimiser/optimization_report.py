@@ -45,10 +45,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from models import _first_available
+from swp_planner.core.models import _first_available
 
 if TYPE_CHECKING:
-    from models import AppState
+    from swp_planner.core.models import AppState
 
 
 # ─── Palette ──────────────────────────────────────────────────────────────────

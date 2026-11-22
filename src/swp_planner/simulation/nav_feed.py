@@ -62,6 +62,10 @@ import csv
 import statistics as st
 from pathlib import Path
 
+from swp_planner.paths import NAV_DIR
+
+NAV_SAMPLE_CSV = str(NAV_DIR / "nav_sample.csv")
+
 DEBT_CATEGORIES = (
     "Overnight Fund", "Liquid Fund", "Money Market Fund",
     "Ultra Short Duration Fund", "Low Duration Fund",
@@ -71,7 +75,7 @@ EQUITY_CATEGORIES = ("Large Cap Fund", "Flexi Cap Fund", "Mid Cap Fund",
                      "Large & Mid Cap Fund")
 
 
-def load_nav_sample(path="nav_sample.csv"):
+def load_nav_sample(path=NAV_SAMPLE_CSV):
     """Parse the wide CSV into one record per fund.
 
     Header is code|category|name. A blank cell means the fund did not exist on
@@ -153,7 +157,7 @@ def blend_equal_weight(funds):
     return index
 
 
-def build_fund_map(sample=None, n_base=35, path="nav_sample.csv"):
+def build_fund_map(sample=None, n_base=35, path=NAV_SAMPLE_CSV):
     """THE ALLOCATION RULE. Change this function, change the allocation.
 
     Returns
@@ -610,4 +614,4 @@ def describe(fmap):
 if __name__ == "__main__":
     import sys
     print(describe(build_fund_map(
-        path=sys.argv[1] if len(sys.argv) > 1 else "nav_sample.csv")))
+        path=sys.argv[1] if len(sys.argv) > 1 else NAV_SAMPLE_CSV)))

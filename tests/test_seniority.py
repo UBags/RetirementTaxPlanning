@@ -29,9 +29,9 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from fund_filters import caps as C  # noqa: E402
-from fund_filters import instruments as I  # noqa: E402
-from ingest import nsdl_securities as N  # noqa: E402
+from swp_planner.fund_filters import caps as C  # noqa: E402
+from swp_planner.fund_filters import instruments as I  # noqa: E402
+from swp_planner.ingest import nsdl_securities as N  # noqa: E402
 
 
 def _rec(isin="INE528G08300", itype="Bonds", desc="", redemption=None,

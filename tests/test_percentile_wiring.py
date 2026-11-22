@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from get_funds_data import _rolling_stats
+from swp_planner.funddata.get_funds_data import _rolling_stats
 
 
 def _series(months=120, drift=0.005, vol=0.001, seed=7):
@@ -42,7 +42,7 @@ def test_percentile_is_exported_beside_mean_and_minimum():
 
 
 def test_percentile_uses_the_configured_value():
-    from configuration import config
+    from swp_planner.config.configuration import config
     r = _rolling_stats(*_series(), 36)
     assert r["pctile_used"] == pytest.approx(float(config.fund_return_percentile))
 
@@ -163,7 +163,7 @@ def test_output_is_shaped_for_cross_fund_averaging():
     without reshaping, or the two halves have been designed against different
     assumptions.
     """
-    import percentile_metrics as pm
+    from swp_planner.simulation import percentile_metrics as pm
 
     per_fund = {}
     for i in range(12):
@@ -185,7 +185,7 @@ def _cols_whitelist():
     import inspect
     import re
 
-    import get_funds_data as g
+    from swp_planner.funddata import get_funds_data as g
     src = inspect.getsource(g.main)
     block = re.search(r"cols = \[(.*?)\n    \]", src, re.S)
     assert block, "could not locate the `cols` whitelist in get_funds_data.main()"

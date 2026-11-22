@@ -38,6 +38,8 @@ from typing import Callable, Optional
 
 import requests
 
+from swp_planner.paths import FUNDS_DIR
+
 AMFI_URL        = "https://portal.amfiindia.com/spages/NAVAll.txt"
 OUTPUT_FILE     = "mutual_funds.csv"
 OUTPUT_SUBDIR   = "Schemes_and_Funds"
@@ -680,7 +682,7 @@ def fetch_scheme_fund_names(
     Returns (csv_path, stats).
     """
     if output_dir is None:
-        output_dir = Path(__file__).parent
+        output_dir = FUNDS_DIR
     output_dir = Path(output_dir)
     subdir     = output_dir / OUTPUT_SUBDIR
     csv_path   = subdir / OUTPUT_FILE
@@ -785,7 +787,7 @@ def fetch_scheme_fund_names_filtered(
     Returns (all_csv, filtered_csv, stats).
     """
     if output_dir is None:
-        output_dir = Path(__file__).parent
+        output_dir = FUNDS_DIR
     output_dir   = Path(output_dir)
     subdir       = output_dir / OUTPUT_SUBDIR
     all_csv      = subdir / OUTPUT_FILE
@@ -856,7 +858,7 @@ def fetch_scheme_fund_names_filtered(
     # Import here so the module works even if fetch_amfi_aum.py is absent
     # (fetch_scheme_fund_names without filtering still works)
     try:
-        from fetch_amfi_aum import _default_report_date, fetch_amfi_aum
+        from swp_planner.funddata.fetch_amfi_aum import _default_report_date, fetch_amfi_aum
     except ImportError as e:
         raise ImportError(
             "fetch_amfi_aum.py must be in the same directory as "

@@ -4026,26 +4026,23 @@ def main():
     globals()["LEDGER_ON"] = bool(a.redemption_csv)
 
     if a.real_navs:
-        # nav_feed.py lives in the PROJECT ROOT while this file lives in
-        # scripts/, and running "python3 scripts/swp_dp_model.py" puts
-        # scripts/ on sys.path rather than the directory you are standing in.
-        # So the root has to be added explicitly: both the working directory
-        # and this file's parent's parent, which covers being run from the
-        # root, from scripts/, or by absolute path.
+        # nav_feed lives in src/swp_planner/simulation/ while this file lives
+        # in scripts/, and running "python3 scripts/swp_dp_model.py" puts
+        # scripts/ on sys.path. Add <root>/src explicitly (a no-op after
+        # `pip install -e .`), which covers any working directory.
         import os.path as _op
-        _root = _op.dirname(_op.dirname(_op.abspath(__file__)))
-        for _cand in (_op.abspath(_op.curdir), _root):
-            if _cand not in sys.path:
-                sys.path.insert(0, _cand)
+        _src = _op.join(_op.dirname(_op.dirname(_op.abspath(__file__))), "src")
+        if _src not in sys.path:
+            sys.path.insert(0, _src)
         try:
-            import nav_feed
+            from swp_planner.simulation import nav_feed
         except ImportError:
             sys.exit(
-                f"FATAL: --real_navs needs nav_feed.py, and it is not on the "
-                f"path.\n"
-                f"       Looked in {_op.abspath(_op.curdir)} and {_root}.\n"
-                f"       Either run from the directory holding nav_feed.py, "
-                f"or set PYTHONPATH to it.")
+                f"FATAL: --real_navs needs swp_planner.simulation.nav_feed, "
+                f"and it is not importable.\n"
+                f"       Looked in {_src}.\n"
+                f"       Run `pip install -e .` from the project root, "
+                f"or set PYTHONPATH to src/.")
         _fm = nav_feed.build_fund_map(path=a.real_navs)
         _ar = nav_feed.annual_returns(_fm)
         _need = get_scenario(a.scenario)["n_funds"]
@@ -4061,7 +4058,7 @@ def main():
                 f"       Either run --scenario 1chunk, which addresses 21, or "
                 f"rebuild the sample with\n"
                 f"       five funds in each of the seven debt categories:\n"
-                f"         python3 extract_nav_sample.py --out nav_sample.csv "
+                f"         python3 -m swp_planner.funddata.extract_nav_sample "
                 f"--spec \\\n"
                 f"           \"Overnight Fund:5,Liquid Fund:5,Money Market "
                 f"Fund:5,Ultra Short Duration Fund:5,\\\n"

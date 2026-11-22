@@ -7,7 +7,7 @@ SWP Financial Planner – Launch Script
 
 Changes vs original:
   - Prompts for user name at startup (via a Qt dialog, before the main window opens).
-  - Creates  <project_root>/<user_name>/  and passes it to MainWindow as output_dir.
+  - Creates  <project_root>/outputs/<user_name>/  and passes it to MainWindow as output_dir.
   - All file outputs (CSVs, project JSON, fund metrics, allocation results) are
     written into that directory automatically.
 
@@ -15,14 +15,10 @@ Requirements:
   pip install PySide6
 
 Usage:
-  python3 run.py
+  python -m swp_planner        (after `pip install -e .`)
+  python run.py                (from the project root, no install needed)
 """
-import os
 import sys
-from pathlib import Path
-
-# ── Make sure the app directory is on sys.path ────────────────────────────────
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
@@ -37,15 +33,14 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-# ── Project root is the directory that contains run.py ───────────────────────
-PROJECT_ROOT = Path(os.path.dirname(os.path.abspath(__file__)))
+from swp_planner.paths import OUTPUTS_DIR
 
 
 class UserNameDialog(QDialog):
     """
     Modal startup dialog that asks for a user name.
     The name is used to create (or reuse) a per-user output directory under
-    the project root.  Empty or whitespace-only names are rejected.
+    <project_root>/outputs/.  Empty or whitespace-only names are rejected.
     """
 
     def __init__(self):
@@ -67,7 +62,7 @@ class UserNameDialog(QDialog):
 
         sub = QLabel(
             "All outputs (fund metrics, allocation results, project files, CSVs)\n"
-            "are stored in a folder named after you under the application directory."
+            "are stored in a folder named after you under outputs/ in the project."
         )
         sub.setWordWrap(True)
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -99,7 +94,7 @@ class UserNameDialog(QDialog):
     def _update_dir_label(self, text: str):
         name = text.strip()
         if name:
-            path = PROJECT_ROOT / name
+            path = OUTPUTS_DIR / name
             self.dir_label.setText(f"Output folder: {path}")
         else:
             self.dir_label.setText("")
@@ -133,11 +128,11 @@ def main():
     user_name = dlg.user_name()
 
     # ── Step 2: create (or reuse) the per-user output directory ──────────────
-    output_dir = PROJECT_ROOT / user_name
+    output_dir = OUTPUTS_DIR / user_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Step 3: open the main window, passing output_dir ─────────────────────
-    from main import MainWindow
+    from swp_planner.gui.main import MainWindow
     win = MainWindow(output_dir=output_dir, user_name=user_name)
     win.show()
     sys.exit(app.exec())

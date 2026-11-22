@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from models import (
+from swp_planner.core.models import (
     AppState,
     FDRateChunk,
     HUFWithdrawalChunk,
@@ -700,7 +700,7 @@ class PlanPeriodDialog(QDialog):
         self.resize(560, 340)
         self.state = state
 
-        from configuration import config
+        from swp_planner.config.configuration import config
         self._floor = int(config.min_simulation_years)
         self._ceiling = int(config.max_simulation_years)
 
@@ -768,7 +768,7 @@ class PlanPeriodDialog(QDialog):
         return s
 
     def _refresh(self, *_):
-        from pro_rated_utils import financial_year_of, months_in_fy
+        from swp_planner.core.pro_rated_utils import financial_year_of, months_in_fy
         start = self._chosen_start()
         fy = financial_year_of(start)
         today_fy = financial_year_of(date.today())
@@ -790,7 +790,7 @@ class PlanPeriodDialog(QDialog):
                 "figures — other income, the FD benchmark, withdrawals — are "
                 f"pro-rated to {m}/12 in that year only.")
 
-        from monte_carlo import MC_FIXED_HORIZON
+        from swp_planner.simulation.monte_carlo import MC_FIXED_HORIZON
         if years != MC_FIXED_HORIZON:
             self.lbl_end.setText(
                 f"ends 31 March {fy + years}   \u2014 no Monte Carlo at this "
@@ -891,7 +891,7 @@ class FDRateChunksDialog(QDialog):
         self._validate()
 
     def _default_ladder(self):
-        from chunk_defaults import default_fd_benchmark_chunks
+        from swp_planner.config.chunk_defaults import default_fd_benchmark_chunks
         return [FDRateChunk(a, b, r)
                 for a, b, r in default_fd_benchmark_chunks(self.horizon)]
 
@@ -1102,12 +1102,12 @@ class MonteCarloDialog(QDialog):
 
         import numpy as _np
 
-        from monte_carlo import _per_chunk_sigmas, _portfolio_sigma
+        from swp_planner.simulation.monte_carlo import _per_chunk_sigmas, _portfolio_sigma
         auto_sigma = _portfolio_sigma(state) * 100.0   # in %
         chunk_sigmas = _per_chunk_sigmas(state)
         # MC_FIXED_HORIZON, not state.horizon: these arrays are compared
         # against Monte Carlo output, which is 30-element until Phase D.
-        from monte_carlo import MC_FIXED_HORIZON
+        from swp_planner.simulation.monte_carlo import MC_FIXED_HORIZON
         mu_det = _np.array([state.get_return_rate(fy)
                             for fy in range(1, MC_FIXED_HORIZON + 1)])
 
