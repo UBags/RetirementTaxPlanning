@@ -21,9 +21,9 @@ from datetime import date
 
 import pytest
 
-from engine import Engine
-from models import AppState, ReturnChunk, SplitChunk, TaxChunk, TaxSlab
-from net_income_plan import (
+from swp_planner.core.engine import Engine
+from swp_planner.core.models import AppState, ReturnChunk, SplitChunk, TaxChunk, TaxSlab
+from swp_planner.core.net_income_plan import (
     PlanSolution,
     project_plan,
     prorated_targets,
@@ -106,7 +106,7 @@ def test_an_april_start_needs_no_pro_rating():
 # ── the engine contract ──────────────────────────────────────────────────────
 
 def _fund(name="Fund A", fund_type="debt", allocation=250.0, cagr=7.0):
-    from models import FundEntry
+    from swp_planner.core.models import FundEntry
     f = FundEntry(name=name, fund_type=fund_type, allocation=allocation,
                   std_dev=0.02, sharpe=2.0, sortino=2.5, calmar=1.0,
                   alpha=0.5, treynor=0.8, max_dd=0.01, beta=0.3,
@@ -195,7 +195,7 @@ def test_the_gross_schedule_equals_the_target_when_no_tax_is_due():
 
 
 def test_other_income_reduces_what_must_be_withdrawn():
-    from models import OtherIncome
+    from swp_planner.core.models import OtherIncome
     bare = _plan()
     rich = _plan()
     rich.personal_income = OtherIncome(taxable_interest=4.0)

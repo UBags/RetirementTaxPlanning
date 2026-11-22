@@ -22,10 +22,12 @@ from __future__ import annotations
 
 import pytest
 
+from swp_planner.paths import PACKAGE_DIR
+
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 def _mk_fund(**kw):
-    from models import FundEntry
+    from swp_planner.core.models import FundEntry
     base = dict(name="F", fund_type="debt", allocation=10.0)
     base.update(kw)
     return FundEntry(**base)
@@ -37,8 +39,8 @@ def _bare_engine(**kw):
     Adequate for every branch of _fund_annual_return() that does not reach the
     category-average fallback, which is the only branch that touches state.
     """
-    from engine import Engine
-    from models import AppState
+    from swp_planner.core.engine import Engine
+    from swp_planner.core.models import AppState
     return Engine(AppState(), **kw)
 
 
@@ -135,7 +137,7 @@ def test_conservative_mode_still_reads_worst_exp_ret():
 
 def test_sensitivity_override_still_beats_the_fund_metric():
     """run_sensitivity() passes alt_return_chunks; it must win over per-fund data."""
-    from models import ReturnChunk
+    from swp_planner.core.models import ReturnChunk
     eng = _bare_engine(alt_return_chunks=[ReturnChunk(year_from=1, year_to=30,
                                                       annual_return=0.05)])
     f = _mk_fund(avg_cagr_3=7.52, avg_cagr_5=7.49,
@@ -258,7 +260,7 @@ def test_worst_exp_ret_docstring_describes_the_actual_computation(project_root):
     uses the Avg_CAGR_* columns and excludes 1Y. That single wrong line is why
     "Conservative mode" was taken for a worst-case stress test.
     """
-    src = (project_root / "get_funds_data.py").read_text(encoding="utf-8")
+    src = (PACKAGE_DIR / "funddata" / "get_funds_data.py").read_text(encoding="utf-8")
     header = src.split('"""')[1] if src.count('"""') >= 2 else ""
 
     stale = "min(1Y, 3Y, 5Y, 10Y CAGR) adjusted" in src
@@ -275,7 +277,7 @@ def test_worst_exp_ret_docstring_describes_the_actual_computation(project_root):
 def test_mode_toggle_tooltip_no_longer_claims_5y_cagr(project_root):
     """The scenario-tab tooltip is the only place a user is told what the
     modes mean. §2.1 made its first sentence false."""
-    src = (project_root / "main.py").read_text(encoding="utf-8")
+    src = (PACKAGE_DIR / "gui" / "main.py").read_text(encoding="utf-8")
 
     claims_cagr_5 = "per-fund returns use 5Y CAGR" in src
     assert not claims_cagr_5, (

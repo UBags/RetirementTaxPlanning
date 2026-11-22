@@ -21,8 +21,8 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from fund_filters import borrower as B  # noqa: E402
-from fund_filters import instruments as I  # noqa: E402
+from swp_planner.fund_filters import borrower as B  # noqa: E402
+from swp_planner.fund_filters import instruments as I  # noqa: E402
 
 
 def _r(issuer="SOME LIMITED", sector="", ownership="Non PSU",

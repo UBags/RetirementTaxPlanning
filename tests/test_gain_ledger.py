@@ -34,8 +34,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent / "golden"))
 
 from golden_projects import PROJECTS  # noqa: E402
 
-from engine import Engine  # noqa: E402
-from models import AppState  # noqa: E402
+from swp_planner.core.engine import Engine  # noqa: E402
+from swp_planner.core.models import AppState  # noqa: E402
 
 GAIN_KEYS = ("gain_d", "gain_e", "gain_o")
 _CACHE: dict = {}

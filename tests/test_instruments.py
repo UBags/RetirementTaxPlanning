@@ -8,8 +8,8 @@ corporate tier, this test is the argument it has to answer.
 """
 import pytest
 
-from fund_filters import concentration as K
-from fund_filters import instruments as I
+from swp_planner.fund_filters import concentration as K
+from swp_planner.fund_filters import instruments as I
 
 # ── sovereign and state ─────────────────────────────────────────────────────
 

@@ -19,10 +19,13 @@ REQUIRED_CONFIG_KEYS = [
     "weight_drift_threshold",
 ]
 
-HEADLESS_MODULES = ["configuration", "models", "engine", "glide_path"]
+HEADLESS_MODULES = ["swp_planner.config.configuration", "swp_planner.core.models",
+                    "swp_planner.core.engine", "swp_planner.core.glide_path"]
 
-GUI_MODULES = ["chunk_editor", "tax_dialog", "fund_dialog", "chart_dialog",
-               "dialogs", "optimization_report", "main"]
+GUI_MODULES = ["swp_planner.gui.chunk_editor", "swp_planner.gui.tax_dialog",
+               "swp_planner.gui.fund_dialog", "swp_planner.gui.chart_dialog",
+               "swp_planner.gui.dialogs", "swp_planner.optimiser.optimization_report",
+               "swp_planner.gui.main", "swp_planner.gui.app"]
 
 
 def test_configuration_file_is_tracked(config_path):
@@ -35,7 +38,7 @@ def test_configuration_file_is_tracked(config_path):
 
 @pytest.mark.parametrize("key", REQUIRED_CONFIG_KEYS)
 def test_configuration_key_present(key):
-    from configuration import config
+    from swp_planner.config.configuration import config
     assert config.get(key, None) is not None, f"Missing configuration key: {key}"
 
 
@@ -56,7 +59,7 @@ def test_models_exports_names_used_by_test_suite():
     RequirementChunk and four DEFAULT_*_CHUNKS factories that no longer exist.
     This guard pins the names that DO exist so they stay in sync.
     """
-    import models
+    from swp_planner.core import models
     required = ["AppState", "AllocationChunk", "TaxChunk", "TaxSlab",
                 "EquityTaxChunk", "OtherTaxChunk", "ReturnChunk", "SplitChunk",
                 "FDRateChunk", "FundEntry", "GlidePath", "OtherIncome",

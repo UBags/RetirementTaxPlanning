@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "swp-planner"
+version = "0.10.0"
+description = "Tax-optimised retirement SWP planner for Indian investors (Personal + HUF)"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Uddipan Bagchi" }]
+# requirements.txt is a full pin of the working environment; it stays the
+# source of truth so `pip install -r requirements.txt` and `pip install -e .`
+# resolve the same versions.
+dynamic = ["dependencies"]
+
+[project.scripts]
+swp-planner = "swp_planner.gui.app:main"
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"swp_planner.data_synthesizer" = ["*.md"]

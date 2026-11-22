@@ -38,8 +38,9 @@ import re
 
 import pytest
 
-from configuration import config
-from engine import FIFOBucket, FolioSet, Lot, new_folio_set
+from swp_planner.config.configuration import config
+from swp_planner.core.engine import FIFOBucket, FolioSet, Lot, new_folio_set
+from swp_planner.paths import PACKAGE_DIR
 
 STCG = config.stcg_holding_months
 
@@ -330,7 +331,7 @@ def test_the_engine_holds_no_hifo(project_root):
     archived. This asserts it does not come back, in the same spirit as
     test_gui_horizon's assertion that no module carries a bare range(30).
     """
-    src = (project_root / "engine.py").read_text(encoding="utf-8")
+    src = (PACKAGE_DIR / "core" / "engine.py").read_text(encoding="utf-8")
     assert "use_hifo" not in src, (
         "use_hifo is back in engine.py. Lot selection within a folio is FIFO "
         "and not negotiable; the lever is which folio.")

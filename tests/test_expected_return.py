@@ -25,7 +25,8 @@ from __future__ import annotations
 
 import pytest
 
-from models import FundEntry
+from swp_planner.core.models import FundEntry
+from swp_planner.paths import PACKAGE_DIR
 
 
 def _f(**kw):
@@ -95,7 +96,7 @@ def test_a_partially_populated_percentile_tier_uses_what_it_has():
 # ── everything delegates ─────────────────────────────────────────────────────
 
 def _chunk(funds, **kw):
-    from models import AllocationChunk
+    from swp_planner.core.models import AllocationChunk
     return AllocationChunk(year_from=1, year_to=30, funds=funds, **kw)
 
 
@@ -131,7 +132,7 @@ def test_no_module_still_inlines_the_metric(project_root):
     a new copy is how it happens again.
     """
     offenders = []
-    for py in sorted(project_root.glob("*.py")):
+    for py in sorted(PACKAGE_DIR.rglob("*.py")):
         if py.name in ("percentile_metrics.py",):
             continue
         text = py.read_text(encoding="utf-8")
@@ -165,7 +166,7 @@ def test_percentile_is_withheld_from_under_resolved_windows(
     import numpy as np
     import pandas as pd
 
-    from get_funds_data import _rolling_stats
+    from swp_planner.funddata.get_funds_data import _rolling_stats
 
     idx = pd.date_range("2010-01-31", periods=months, freq="ME")
     rng = np.random.default_rng(1)
@@ -181,7 +182,7 @@ def test_percentile_is_withheld_from_under_resolved_windows(
 
 
 def test_the_guard_thresholds_are_shared_not_copied():
-    import percentile_metrics as pm
+    from swp_planner.simulation import percentile_metrics as pm
     assert set(pm.MIN_READINGS) == {"3Y", "5Y", "7Y", "10Y"}
     assert pm.MIN_READINGS["3Y"] > pm.MIN_READINGS["10Y"], (
         "a 3Y series has far more windows available than a 10Y one, so its "

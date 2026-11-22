@@ -49,7 +49,7 @@ set -uo pipefail
 DSN="${RTP_DSN:-host=localhost user=postgres dbname=RetirementPlanning}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PY="${RTP_PYTHON:-python3}"
-METRICS="${RTP_METRICS:-$ROOT/Fund_Metrics_Output.csv}"
+METRICS="${RTP_METRICS:-$ROOT/data/funds/Fund_Metrics_Output.csv}"
 LOG_DIR="${RTP_LOG_DIR:-$ROOT/data/logs}"
 STAMP="$(date +%Y-%m-%d_%H%M%S)"
 STALE_DAYS="${RTP_METRICS_STALE_DAYS:-45}"

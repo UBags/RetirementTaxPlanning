@@ -32,9 +32,9 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from fund_filters import borrower as B  # noqa: E402
-from ingest import etmoney_portfolio as P  # noqa: E402
-from lookup import portfolio_credit as PC  # noqa: E402
+from swp_planner.fund_filters import borrower as B  # noqa: E402
+from swp_planner.ingest import etmoney_portfolio as P  # noqa: E402
+from swp_planner.lookup import portfolio_credit as PC  # noqa: E402
 
 FIX = Path(__file__).resolve().parent / "fixtures"
 DEBT = json.loads((FIX / "etmoney_44228.json").read_text())
@@ -318,9 +318,9 @@ def test_end_to_end_through_the_real_lookup(dsn):
 
     import psycopg2
 
-    from fund_filters import borrower as _b
-    from ingest import store as S
-    from lookup.api import CreditLookup
+    from swp_planner.fund_filters import borrower as _b
+    from swp_planner.ingest import store as S
+    from swp_planner.lookup.api import CreditLookup
 
     conn = psycopg2.connect(dsn)
     with conn.cursor() as cur:

@@ -22,8 +22,8 @@ from __future__ import annotations
 
 import pytest
 
-from engine import compute_slab_tax, free_gain_capacity
-from models import TaxChunk, TaxSlab
+from swp_planner.core.engine import compute_slab_tax, free_gain_capacity
+from swp_planner.core.models import TaxChunk, TaxSlab
 
 _SLABS = [TaxSlab(0, 4, 0.0), TaxSlab(4, 8, 0.05), TaxSlab(8, 12, 0.10),
           TaxSlab(12, 16, 0.15), TaxSlab(16, 20, 0.20), TaxSlab(20, 24, 0.25),

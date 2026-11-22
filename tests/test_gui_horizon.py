@@ -21,7 +21,8 @@ import pytest
 
 pytest.importorskip("PySide6", reason="Qt not available")
 
-from models import AppState, FDRateChunk, ReturnChunk  # noqa: E402
+from swp_planner.core.models import AppState, FDRateChunk, ReturnChunk  # noqa: E402
+from swp_planner.paths import PACKAGE_DIR
 
 HORIZONS = [30, 20, 12, 10]
 
@@ -37,7 +38,7 @@ def _state(horizon: int) -> AppState:
 
 @pytest.mark.parametrize("horizon", HORIZONS)
 def test_requirements_table_has_one_row_per_financial_year(qtbot, horizon):
-    from dialogs import RequirementsDialog
+    from swp_planner.gui.dialogs import RequirementsDialog
     dlg = RequirementsDialog(_state(horizon))
     qtbot.addWidget(dlg)
     assert dlg.table.rowCount() == horizon
@@ -46,7 +47,7 @@ def test_requirements_table_has_one_row_per_financial_year(qtbot, horizon):
 
 @pytest.mark.parametrize("horizon", HORIZONS)
 def test_requirements_round_trip_at_any_horizon(qtbot, horizon):
-    from dialogs import RequirementsDialog
+    from swp_planner.gui.dialogs import RequirementsDialog
     state = _state(horizon)
     dlg = RequirementsDialog(state)
     qtbot.addWidget(dlg)
@@ -56,7 +57,7 @@ def test_requirements_round_trip_at_any_horizon(qtbot, horizon):
 
 @pytest.mark.parametrize("horizon", HORIZONS)
 def test_fd_dialog_validation_covers_exactly_the_plan(qtbot, horizon):
-    from dialogs import FDRateChunksDialog
+    from swp_planner.gui.dialogs import FDRateChunksDialog
     dlg = FDRateChunksDialog(_state(horizon))
     qtbot.addWidget(dlg)
     dlg._reset_to_defaults()
@@ -69,7 +70,7 @@ def test_fd_dialog_validation_covers_exactly_the_plan(qtbot, horizon):
 
 def test_chunk_editors_refuse_to_add_past_the_horizon(qtbot):
     """Add Chunk used to stop at 30 whatever the plan length was."""
-    from dialogs import FDRateChunksDialog
+    from swp_planner.gui.dialogs import FDRateChunksDialog
     state = _state(12)
     dlg = FDRateChunksDialog(state)
     qtbot.addWidget(dlg)
@@ -85,11 +86,10 @@ def test_monte_carlo_sites_are_not_tied_to_the_plan_horizon():
     will already have refused the run -- but the indexing would break first,
     with an IndexError instead of the clear refusal.
     """
-    from monte_carlo import MC_FIXED_HORIZON
+    from swp_planner.simulation.monte_carlo import MC_FIXED_HORIZON
     assert MC_FIXED_HORIZON == 30
     for mod in ("main.py", "chart_dialog.py", "dialogs.py"):
-        import pathlib
-        src = pathlib.Path(mod).read_text(encoding="utf-8")
+        src = (PACKAGE_DIR / "gui" / mod).read_text(encoding="utf-8")
         assert "range(30)" not in src, (
             f"{mod} still has a bare range(30); make it explicit -- either "
             "state.horizon or MC_FIXED_HORIZON, so the reader can tell which "
@@ -98,8 +98,7 @@ def test_monte_carlo_sites_are_not_tied_to_the_plan_horizon():
 
 def test_layout_constants_were_not_swept_up():
     """addSpacing(30) is pixels. A horizon sweep must not touch it."""
-    import pathlib
-    src = pathlib.Path("main.py").read_text(encoding="utf-8")
+    src = (PACKAGE_DIR / "gui" / "main.py").read_text(encoding="utf-8")
     assert src.count("addSpacing(30)") == 2, (
         "the toolbar spacing constants were rewritten by a horizon pass")
 
@@ -114,7 +113,7 @@ def test_tax_chunk_editors_span_the_plan(qtbot, horizon):
     straight from the GUI: a tax band list that stops short leaves those
     years with no band, and the engine then applies no slab to them.
     """
-    from tax_dialog import TaxRulesDialog
+    from swp_planner.gui.tax_dialog import TaxRulesDialog
     state = _state(horizon)
     dlg = TaxRulesDialog(state)
     qtbot.addWidget(dlg)
@@ -131,7 +130,7 @@ def test_the_87a_column_is_marked_unavailable_for_an_huf(qtbot):
     into that column for an HUF changes nothing. A control that silently does
     nothing is the pattern HANDOVER 9.2 objects to.
     """
-    from tax_dialog import DebtTaxEditor
+    from swp_planner.gui.tax_dialog import DebtTaxEditor
     ind = DebtTaxEditor("individual"); qtbot.addWidget(ind)
     huf = DebtTaxEditor("huf"); qtbot.addWidget(huf)
     assert "87A Limit" in ind.chunk_table.horizontalHeaderItem(2).text()
@@ -139,17 +138,16 @@ def test_the_87a_column_is_marked_unavailable_for_an_huf(qtbot):
 
 
 def test_needs_assessment_year_spinboxes_span_the_plan(qtbot):
-    from needs_assessment import NeedsAssessmentDialog
+    from swp_planner.core.needs_assessment import NeedsAssessmentDialog
     state = _state(20)
     dlg = NeedsAssessmentDialog(state)
     qtbot.addWidget(dlg)
-    src = __import__("pathlib").Path("needs_assessment.py").read_text()
+    src = (PACKAGE_DIR / "core" / "needs_assessment.py").read_text()
     assert "ys.setRange(1, 30)" not in src and "ye.setRange(1, 30)" not in src
 
 
 def test_row_height_constants_were_not_swept_up():
     """setRowHeight(..., 30) is PIXELS, like main.py's addSpacing(30)."""
-    import pathlib
-    src = pathlib.Path("needs_assessment.py").read_text()
+    src = (PACKAGE_DIR / "core" / "needs_assessment.py").read_text()
     assert src.count("setRowHeight(0, 30)") == 1
     assert src.count("setRowHeight(r, 30)") == 1

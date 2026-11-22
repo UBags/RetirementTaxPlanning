@@ -26,14 +26,14 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent / "golden"))
 
 from golden_projects import PROJECTS  # noqa: E402
 
-from models import AppState  # noqa: E402
-from transition_driver import (  # noqa: E402
+from swp_planner.core.models import AppState  # noqa: E402
+from swp_planner.core.transition_driver import (  # noqa: E402
     _blend,
     clear_plan_cache,
     measure,
     plan_transitions,
 )
-from transition_plan import PURSES, Boundary, Measurement  # noqa: E402
+from swp_planner.core.transition_plan import PURSES, Boundary, Measurement  # noqa: E402
 
 
 def _state(index: int):
@@ -270,10 +270,10 @@ def test_projection_is_identical_across_hash_seeds():
 
     script = textwrap.dedent("""
         import hashlib, sys
-        sys.path.insert(0, '.'); sys.path.insert(0, 'tests/golden')
+        sys.path.insert(0, 'src'); sys.path.insert(0, 'tests/golden')
         from golden_projects import PROJECTS
-        from models import AppState
-        from net_income_plan import project_plan
+        from swp_planner.core.models import AppState
+        from swp_planner.core.net_income_plan import project_plan
         st = AppState.from_dict(PROJECTS['main']['scenarios'][1])
         _pm, py, _hm, _hy, _s = project_plan(st)
         print(hashlib.sha256(repr([(y.year, y.corpus_debt_huf, y.tax_huf)

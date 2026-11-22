@@ -42,10 +42,10 @@ import pathlib
 import sys
 
 _ROOT = pathlib.Path(__file__).resolve().parent.parent
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+if str(_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(_ROOT / "src"))
 
-from ingest import fund_store as F  # noqa: E402
+from swp_planner.ingest import fund_store as F  # noqa: E402
 
 DEFAULT_DSN = "dbname=RetirementPlanning"
 

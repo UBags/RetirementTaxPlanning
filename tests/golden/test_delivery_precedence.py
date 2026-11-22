@@ -29,7 +29,7 @@ TOL = 1e-2
 
 
 def _plan(state):
-    from net_income_plan import project_plan
+    from swp_planner.core.net_income_plan import project_plan
     return project_plan(state)
 
 

@@ -10,12 +10,13 @@
 !.gitignore
 !.gitattributes
 !pytest.ini
+!pyproject.toml
 !requirements.txt
 !requirements-dev.txt
 !*.yml
 !*.yaml
 !*.config
-# Root-level markdown: ReadMe.md and HANDOVER.md are both documents the
+# Root-level markdown: README.md and the handover notes are documents the
 # repo cannot be understood without. A pattern rather than another
 # exact-name rule, because this allowlist has now silently swallowed
 # three files (mc_history.json, archive/README.md, HANDOVER.md).
@@ -37,6 +38,9 @@
 # Denied regardless of the above — last match wins
 __pycache__/
 *.py[cod]
+*.egg-info/
+build/
+dist/
 *.bak
 older_versions/
 allocate_funds_v0.9.py
@@ -62,13 +66,14 @@ Code packaged into MDs for LLMs/
 # and backups; it swallowed db/ratings_schema.sql silently once.
 !db/*.sql
 
-!ingest/
-!ingest/*.py
-
-!lookup/
-!lookup/*.py
-
 # Re-admitted: test fixtures, package docs, shell scripts
 !tests/fixtures/*.json
-!data_synthesizer/*.md
+!src/swp_planner/data_synthesizer/*.md
 !scripts/*.sh
+
+# Inputs, caches, logs and per-user outputs are never tracked; their layout is
+# defined in src/swp_planner/paths.py. Only the READMEs describing it are.
+/data/**
+/outputs/**
+!/data/README.md
+!/outputs/README.md

@@ -16,9 +16,9 @@ import math
 
 import pytest
 
-from data_synthesizer import metrics as M
-from data_synthesizer import quality as Q
-from data_synthesizer import verify as V
+from swp_planner.data_synthesizer import metrics as M
+from swp_planner.data_synthesizer import quality as Q
+from swp_planner.data_synthesizer import verify as V
 
 
 def daily_dates(n, start_year=2010):

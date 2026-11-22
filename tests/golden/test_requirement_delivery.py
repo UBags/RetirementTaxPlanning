@@ -32,7 +32,7 @@ TOL = 1e-2          # Rs lakh; matches net_income_plan.PLAN_TOL
 
 
 def _plan(state):
-    from net_income_plan import project_plan
+    from swp_planner.core.net_income_plan import project_plan
     return project_plan(state)
 
 

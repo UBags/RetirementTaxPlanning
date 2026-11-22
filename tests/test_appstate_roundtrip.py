@@ -30,7 +30,7 @@ from datetime import date
 
 import pytest
 
-from models import DEFAULT_HORIZON_YEARS, AppState
+from swp_planner.core.models import DEFAULT_HORIZON_YEARS, AppState
 
 # Fields deliberately not persisted.  Keep this list short and justified --
 # every entry is a field whose value cannot survive a save, and each needs a
@@ -107,7 +107,7 @@ def test_horizon_clamps_into_the_configured_band(stored, expected):
 def test_the_floor_can_never_exceed_the_ceiling():
     """A config with min > max must not yield a horizon longer than the
     30-element arrays behind it."""
-    import configuration
+    from swp_planner.config import configuration
     cfg = configuration.config
     real = cfg._data["min_simulation_years"]
     try:
@@ -124,22 +124,22 @@ def test_the_default_plan_length_is_not_the_ceiling():
     max_simulation_years answers "how long will the engine project". Conflating
     them would silently make every new plan forty years long.
     """
-    from configuration import config
+    from swp_planner.config.configuration import config
     assert AppState().horizon == DEFAULT_HORIZON_YEARS == 30
     assert int(config.max_simulation_years) > DEFAULT_HORIZON_YEARS
 
 
 def test_monte_carlo_is_not_what_the_ceiling_means():
     """The ceiling is an ENGINE limit; MC has its own, smaller one."""
-    from configuration import config
-    from monte_carlo import MC_FIXED_HORIZON
+    from swp_planner.config.configuration import config
+    from swp_planner.simulation.monte_carlo import MC_FIXED_HORIZON
     assert int(config.max_simulation_years) > MC_FIXED_HORIZON, (
         "if these are equal again, check that run_monte_carlo()'s refusal is "
         "still reachable rather than masked by the clamp")
 
 
 def test_the_horizon_band_is_self_consistent():
-    from configuration import config
+    from swp_planner.config.configuration import config
     assert 1 <= int(config.min_simulation_years) <= int(config.max_simulation_years), (
         "min_simulation_years must be at least 1 and no greater than "
         "max_simulation_years")
@@ -157,7 +157,7 @@ def _state_with_distinctive_values() -> AppState:
     A field left at its default would round-trip 'successfully' even if it
     were being dropped, which is exactly the failure mode being tested.
     """
-    from models import (
+    from swp_planner.core.models import (
         AllocationChunk,
         EquityTaxChunk,
         FDRateChunk,

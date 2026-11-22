@@ -23,8 +23,8 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from fund_filters import fund_score as FS  # noqa: E402
-from ingest import fund_store as F  # noqa: E402
+from swp_planner.fund_filters import fund_score as FS  # noqa: E402
+from swp_planner.ingest import fund_store as F  # noqa: E402
 
 JUL, AUG = dt.date(2026, 7, 31), dt.date(2026, 8, 7)
 GOOD = {"AAA": 90.0, "AA": 10.0}
@@ -286,7 +286,7 @@ def test_the_cap_applied_is_recorded_with_the_row():
 def conn(dsn):
     import psycopg2
 
-    from ingest import store as S
+    from swp_planner.ingest import store as S
     c = psycopg2.connect(dsn)
     with c.cursor() as cur:
         cur.execute("DROP SCHEMA IF EXISTS india CASCADE")
@@ -338,7 +338,7 @@ def test_one_borrower_across_funds_is_one_row(conn):
 
 # ── the cap does not bind on quasi-sovereigns ───────────────────────────────
 
-from fund_filters import quasi_sovereign as Q  # noqa: E402
+from swp_planner.fund_filters import quasi_sovereign as Q  # noqa: E402
 
 
 @pytest.mark.parametrize("name,key", [

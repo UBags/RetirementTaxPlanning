@@ -24,8 +24,8 @@ from __future__ import annotations
 
 import pytest
 
-from configuration import config
-from models import OtherIncome
+from swp_planner.config.configuration import config
+from swp_planner.core.models import OtherIncome
 
 SD = float(config.standard_deduction_salary_pension)
 RENT_DED = float(config.rental_maintenance_deduction)

@@ -20,8 +20,8 @@ from __future__ import annotations
 
 import pytest
 
-from models import EquityTaxChunk, TaxChunk, TaxSlab
-from tax_allocator import (
+from swp_planner.core.models import EquityTaxChunk, TaxChunk, TaxSlab
+from swp_planner.core.tax_allocator import (
     EntityYear,
     best_cash_split,
     best_split,

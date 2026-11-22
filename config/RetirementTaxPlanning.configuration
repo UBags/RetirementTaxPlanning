@@ -1,0 +1,196 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# RetirementTaxPlanning.configuration
+# ═══════════════════════════════════════════════════════════════════════════════
+# All configurable constants for the SWP Financial Planner application.
+# Values are read once at startup by Configuration.py (singleton).
+#
+# Format: key = value
+#   - Lines starting with '#' are comments
+#   - Blank lines are ignored
+#   - Numeric values are auto-parsed (int, float)
+#   - Boolean values: true/false (case-insensitive)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ─── Tax Constants ────────────────────────────────────────────────────────────
+# Health & education cess rate applied on top of all tax computations
+cess_rate = 0.04
+
+# Fallback tax rates when user has not configured tax chunks
+fallback_equity_ltcg_rate = 0.125
+fallback_other_ltcg_rate  = 0.125
+fallback_debt_top_rate    = 0.30
+fallback_stcg_rate        = 0.15
+
+# ─── Fund / Portfolio Constants ───────────────────────────────────────────────
+# Months of holding below which Short-Term Capital Gains tax applies
+stcg_holding_months = 12
+
+# Exit load fraction for redemptions within stcg_holding_months
+exit_load_fraction = 0.01
+
+# ─── Vintage folios ───────────────────────────────────────────────────────────
+# Front-lot gain fraction past which fresh money starts a NEW folio.
+#
+# Indian practice computes capital gains FIFO per folio, not across a PAN
+# (CBDT Circular 704), so the folio is the only lot-selection lever there is.
+# Splitting by vintage lets cash be drawn from the cheapest folio and gain
+# harvested from the dearest -- two rules that point opposite ways, which is
+# exactly why the split is worth anything (HANDOVER 4.5).
+#
+# 0.0 DISABLES splitting: one folio per fund, behaviour identical to before
+# folios existed. Raise it to switch the strategy on.
+#
+# The threshold is a dial for how many folios you end up running, not for the
+# tax outcome -- every value measured reached the same answer, with 0.50
+# settling on three folios and 0.10 on five. Few, deliberate folios are
+# preferable: AMCs reserve the right to consolidate folios under one PAN, and
+# a proliferation of micro-folios invites GAAR scrutiny.
+# HUF ration: annual draw = k * huf_value / years_remaining, capped at
+# the cash raisable inside the nil band. 0.0 disables it and the fixed
+# huf_withdrawal_chunks schedule applies unchanged. HANDOVER 4.2.
+huf_ration_k = 0.0
+
+folio_cohort_threshold = 0.0
+
+# Hard ceiling on simultaneous folios per fund, whatever the threshold implies.
+folio_max_cohorts = 5
+
+# Month index at which Bounded Smart Withdrawal activates (corpus needs time to drift)
+smart_withdrawal_start_month = 18
+
+# Maximum simulation horizon in financial years.
+#
+# NOT the same thing as the length Monte Carlo supports. MC arrays are
+# 30-element until Phase D and run_monte_carlo() refuses any other horizon
+# outright, so a plan longer than 30 projects and charts correctly but has
+# no Monte Carlo. The Plan Period dialog says so before you choose.
+max_simulation_years = 40
+
+# Minimum plan length in financial years. A retirement drawdown plan shorter
+# than this is not a plan the rest of the system is built to reason about:
+# the glide path needs room to transition, the default chunk structures
+# divide the horizon into as many as four parts, and the through-the-cycle
+# metrics are measured over rolling 3Y windows. Clamped by AppState.horizon,
+# and never allowed to exceed max_simulation_years.
+min_simulation_years = 10
+
+# ─── Bounded Smart Withdrawal ────────────────────────────────────────────────
+# Maximum tolerated return drift (annualised fraction) before correction kicks in
+drift_cap_personal = 0.0015
+drift_cap_huf      = 0.0050
+
+# Maximum tolerated weight deviation (absolute fraction) per fund before
+# the SWP preferentially withdraws from overweighted funds
+weight_drift_threshold = 0.015
+
+# ─── Tax-Optimal Split Optimizer Defaults ─────────────────────────────────────
+# Maximum extra HUF withdrawal per FY (₹ lakhs)
+optimizer_default_user_cap = 7.5
+
+# Minimum fraction of personal SWP to retain
+optimizer_min_personal_fraction = 0.25
+
+# Maximum fraction of HUF corpus to withdraw per FY
+optimizer_max_huf_corpus_drain = 0.03
+
+# Grid search step size (₹ lakhs)
+optimizer_grid_step = 0.25
+
+# Number of optimise → re-run cycles
+optimizer_default_iterations = 2
+
+# ─── Rebalancing ──────────────────────────────────────────────────────────────
+# No-trade band: minimum absolute weight difference to trigger a sell/buy
+rebalance_no_trade_band = 0.005
+
+# ─── AMFI API ─────────────────────────────────────────────────────────────────
+# Seconds to sleep between consecutive AMFI API calls
+amfi_sleep_between_calls = 0.4
+
+# ─── File Paths (relative to project root) ────────────────────────────────────
+# Default input CSV for the fund allocator (relative to project root)
+allocator_default_input = data/funds/Fund_Metrics_Output.csv
+
+# Default output CSV for the fund allocator (relative to project root)
+allocator_default_output = outputs/allocation_result.csv
+
+# Default CAGR fallback (%) when no CAGR data is available for a fund
+default_cagr_fallback = 7.0
+
+# ─── Allocation Chunk Defaults ───────────────────────────────────────
+# Risk-free rate: the yield offered by liquid funds, as a fraction.
+# Anchors the per-Option default chunk min_return (see chunk_defaults.py):
+#     min_return = risk_free_rate + spread
+#
+# PLACEHOLDER — replace with the measured figure.  After importing a fund
+# CSV, chunk_defaults.suggest_risk_free_rate(state.funds) reports what this
+# should say, computed as the mean of min(Avg_CAGR_*) across liquid funds.
+# Stored rather than computed on the fly so that saved plans stay
+# reproducible: a default that moved with every CSV reimport would mean a
+# project opened six months later no longer matches the structure it was
+# built against.
+risk_free_rate = 0.058
+
+# ─── Through-the-cycle percentile metrics ─────────────────────────────────
+# Percentile of the cross-fund monthly average of liquid-fund rolling 3Y CAGR,
+# used as risk_free_rate. At 33 there is roughly a two-in-three chance the
+# realised rate is higher, so plans come in ahead of projection rather than
+# behind.
+risk_free_rate_percentile = 33
+
+# Percentile applied to each fund's 3Y/5Y/7Y/10Y rolling CAGR series; the
+# fund's expected return is the lowest of the four.
+fund_return_percentile = 33
+
+# Minimum liquid funds that must have data in a calendar month before that
+# month contributes to the risk-free average. Early months are covered by a
+# handful of long-lived schemes whose average describes those schemes rather
+# than the category.
+risk_free_min_funds = 10
+
+# ─── FD tax benchmark ladder ──────────────────────────────────────────────
+# The FD benchmark is a notional "what if it had all sat in fixed deposits"
+# comparator; the tax it would have attracted, less the tax the SWP actually
+# pays, is transferred to the HUF. A single flat rate for thirty years
+# asserts as much confidence about year 30 as about year 1, so the default
+# chunk structure uses three measured percentiles of the SAME liquid-fund
+# monthly series, each plus the spread below:
+#
+#     FY1..a    risk_free_rate      + fd_benchmark_spread
+#     FY..b     risk_free_rate_mid  + fd_benchmark_spread
+#     FY..end   risk_free_rate_low  + fd_benchmark_spread
+#
+# A rate a user sets in the FD Interest Rate Chunks dialog always wins; this
+# is only the default.
+#
+# The two _percentile keys are the tunables. The two rate keys below them are
+# MEASURED and rewritten by get_funds_data.py, exactly as risk_free_rate is
+# -- do not hand-edit them expecting the change to survive a fund refresh.
+risk_free_rate_mid_percentile = 20
+risk_free_rate_low_percentile = 5
+
+# PLACEHOLDER -- both are overwritten on the next get_funds_data.py run.
+# Seeded from the 2016-01..2026-07 series (127 months, liquid funds) so the
+# application starts; treat them as provisional until that run reports them.
+risk_free_rate_mid = 0.0487
+risk_free_rate_low = 0.0399
+
+# Percentage points added to each rung. 0.01 = 1%: a fixed deposit yields a
+# little above the liquid-fund category it is being compared with.
+fd_benchmark_spread = 0.01
+
+# ─── Statutory deductions on non-portfolio income ─────────────────────────
+# Applied by OtherIncome.assessable(), which is what a tax slab sees.
+# OtherIncome.taxable() stays GROSS: you receive the whole rent and the whole
+# pension; these reduce what is assessed, not what arrives.
+
+# s.16(ia) standard deduction against salary and pension, in Rs lakhs.
+# 0.75 = Rs 75,000, the new-regime figure from FY2024-25. Capped at the
+# salary-and-pension income itself, so it cannot create a loss. An HUF has no
+# salary head and does not get it.
+standard_deduction_salary_pension = 0.75
+
+# s.24(a) standard deduction against income from house property: 30% of the
+# rent, for maintenance, whatever was actually spent. Applies to individual
+# and HUF alike.
+rental_maintenance_deduction = 0.30

@@ -6,7 +6,7 @@ silently produce a flattering, wrong answer if they broke.
 """
 import pytest
 
-from redemption_gate import (
+from swp_planner.core.redemption_gate import (
     CORPORATE,
     EQUITY,
     HYBRID,

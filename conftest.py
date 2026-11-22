@@ -1,7 +1,9 @@
 """
 Root pytest configuration.
 
-  1. Put the project root on sys.path so `import engine` works from tests/.
+  1. Put src/ on sys.path so `import swp_planner` works without an install
+     (pytest.ini's `pythonpath = src` does the same; this covers running a
+     test file directly).
   2. Force headless Qt before PySide6 is imported anywhere, so CI (and any
      SSH session) can import the dialog modules without an X server.
   3. Block outbound TCP for the whole session (Phase 1.2), so a test cannot
@@ -16,8 +18,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).parent.resolve()
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -31,7 +34,7 @@ def project_root() -> Path:
 
 @pytest.fixture(scope="session")
 def config_path(project_root: Path) -> Path:
-    return project_root / "RetirementTaxPlanning.configuration"
+    return project_root / "config" / "RetirementTaxPlanning.configuration"
 
 
 # ── Phase 1.2: network isolation ──────────────────────────────────────
@@ -86,7 +89,7 @@ def mc_cache_dir(tmp_path_factory):
 
     mp = MonkeyPatch()
     try:
-        import monte_carlo as _mc
+        from swp_planner.simulation import monte_carlo as _mc
     except Exception:               # numpy/pandas absent — nothing to isolate
         yield None
         return

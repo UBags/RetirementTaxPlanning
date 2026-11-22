@@ -15,9 +15,9 @@ from __future__ import annotations
 
 import pytest
 
-import percentile_metrics as pm
+from swp_planner.simulation import percentile_metrics as pm
 
-CFG = "RetirementTaxPlanning.configuration"
+CFG = "config/RetirementTaxPlanning.configuration"
 
 
 def _full_config(tmp_path, project_root):
@@ -29,12 +29,14 @@ def _full_config(tmp_path, project_root):
     """
     src = project_root / CFG
     dst = tmp_path / CFG
+    dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
     return dst
 
 
 def _mini_config(tmp_path, body=None):
     p = tmp_path / CFG
+    p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(body or (
         "# ─── Tax Constants ───\n"
         "# Health & education cess\n"
@@ -51,7 +53,7 @@ def _mini_config(tmp_path, body=None):
 # ── the rewriter ─────────────────────────────────────────────────────────────
 
 def test_set_value_changes_only_the_target_line(tmp_path):
-    import configuration as cfg
+    from swp_planner.config import configuration as cfg
     p = _mini_config(tmp_path)
     before = p.read_text(encoding="utf-8").splitlines()
 
@@ -69,7 +71,7 @@ def test_set_value_preserves_comments_and_blank_lines(tmp_path):
     A rewrite that dumped the parsed dict back out would lose all of it — and
     those comments are the only documentation several of these keys have.
     """
-    import configuration as cfg
+    from swp_planner.config import configuration as cfg
     p = _mini_config(tmp_path)
     cfg.set_value("risk_free_rate", 0.055, path=p)
     text = p.read_text(encoding="utf-8")
@@ -85,7 +87,7 @@ def test_set_value_preserves_comments_and_blank_lines(tmp_path):
 def test_set_value_refuses_to_create_a_key(tmp_path):
     """A typo should fail loudly, not quietly add `risk_fre_rate` beside the
     real one and leave the real one stale forever."""
-    import configuration as cfg
+    from swp_planner.config import configuration as cfg
     p = _mini_config(tmp_path)
     with pytest.raises(KeyError, match="not present"):
         cfg.set_value("risk_fre_rate", 0.055, path=p)
@@ -93,7 +95,7 @@ def test_set_value_refuses_to_create_a_key(tmp_path):
 
 
 def test_set_value_ignores_the_key_name_inside_comments(tmp_path):
-    import configuration as cfg
+    from swp_planner.config import configuration as cfg
     p = _mini_config(tmp_path, body=(
         "# risk_free_rate = 0.09  <- an old value, commented out\n"
         "risk_free_rate = 0.0665\n"
@@ -105,7 +107,7 @@ def test_set_value_ignores_the_key_name_inside_comments(tmp_path):
 
 
 def test_set_value_round_trips(tmp_path):
-    import configuration as cfg
+    from swp_planner.config import configuration as cfg
     p = _mini_config(tmp_path)
     original = p.read_text(encoding="utf-8")
     cfg.set_value("risk_free_rate", 0.055, path=p)
@@ -114,7 +116,7 @@ def test_set_value_round_trips(tmp_path):
 
 
 def test_set_value_is_readable_by_the_parser(tmp_path):
-    import configuration as cfg
+    from swp_planner.config import configuration as cfg
     p = _mini_config(tmp_path)
     cfg.set_value("risk_free_rate", 0.055, path=p)
     assert cfg._parse_properties(p)["risk_free_rate"] == pytest.approx(0.055)
@@ -179,8 +181,8 @@ def test_the_stub_matches_the_real_configured_signature():
 
 
 def test_writeback_computes_and_writes(tmp_path, monkeypatch, project_root):
-    import configuration as cfg
-    from get_funds_data import _write_risk_free_rate
+    from swp_planner.config import configuration as cfg
+    from swp_planner.funddata.get_funds_data import _write_risk_free_rate
 
     p = _full_config(tmp_path, project_root)
     monkeypatch.setattr(cfg, "get_project_root", lambda: tmp_path)
@@ -198,8 +200,8 @@ def test_writeback_computes_and_writes(tmp_path, monkeypatch, project_root):
 def test_writeback_refuses_when_too_few_liquid_funds(tmp_path, monkeypatch, project_root):
     """Overwriting a working config with a number built from four funds is
     worse than leaving it alone."""
-    import configuration as cfg
-    from get_funds_data import _write_risk_free_rate
+    from swp_planner.config import configuration as cfg
+    from swp_planner.funddata.get_funds_data import _write_risk_free_rate
 
     p = _full_config(tmp_path, project_root)
     before = cfg._parse_properties(p)['risk_free_rate']
@@ -212,8 +214,8 @@ def test_writeback_refuses_when_too_few_liquid_funds(tmp_path, monkeypatch, proj
 
 
 def test_writeback_ignores_funds_that_are_not_liquid(tmp_path, monkeypatch, project_root):
-    import configuration as cfg
-    from get_funds_data import _write_risk_free_rate
+    from swp_planner.config import configuration as cfg
+    from swp_planner.funddata.get_funds_data import _write_risk_free_rate
 
     p = _full_config(tmp_path, project_root)
     before = cfg._parse_properties(p)['risk_free_rate']
@@ -229,8 +231,8 @@ def test_writeback_ignores_funds_that_are_not_liquid(tmp_path, monkeypatch, proj
 
 
 def test_writeback_refuses_an_implausible_rate(tmp_path, monkeypatch, project_root):
-    import configuration as cfg
-    from get_funds_data import _write_risk_free_rate
+    from swp_planner.config import configuration as cfg
+    from swp_planner.funddata.get_funds_data import _write_risk_free_rate
 
     p = _full_config(tmp_path, project_root)
     before = cfg._parse_properties(p)['risk_free_rate']
@@ -248,8 +250,8 @@ def test_writeback_skips_series_whose_dates_do_not_match(tmp_path, monkeypatch, 
     Mismatched lengths mean the CAGR/date pairing is wrong, and a wrong pairing
     silently averages the wrong calendar months. Skip, do not zip-and-hope.
     """
-    import configuration as cfg
-    from get_funds_data import _write_risk_free_rate
+    from swp_planner.config import configuration as cfg
+    from swp_planner.funddata.get_funds_data import _write_risk_free_rate
 
     p = _full_config(tmp_path, project_root)
     before = cfg._parse_properties(p)['risk_free_rate']
@@ -269,7 +271,7 @@ def test_writeback_never_aborts_the_analyser_run(tmp_path, monkeypatch):
     The measurement is a side benefit of the run, not its purpose. A failure
     here must not lose an hour of NAV fetching.
     """
-    from get_funds_data import _write_risk_free_rate
+    from swp_planner.funddata.get_funds_data import _write_risk_free_rate
     monkeypatch.setattr(pm, "configured",
                         lambda: (_ for _ in ()).throw(RuntimeError("boom")))
     with pytest.raises(RuntimeError):

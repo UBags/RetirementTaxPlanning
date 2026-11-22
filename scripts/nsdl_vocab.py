@@ -51,10 +51,10 @@ import re
 import sys
 
 _ROOT = pathlib.Path(__file__).resolve().parent.parent
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+if str(_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(_ROOT / "src"))
 
-from fund_filters import instruments as I  # noqa: E402
+from swp_planner.fund_filters import instruments as I  # noqa: E402
 
 # Candidate seniority tokens, drawn from Indian debt naming conventions and
 # from the strings the first audit printed. NONE of these is adopted here.

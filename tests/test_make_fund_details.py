@@ -21,7 +21,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from ingest import fund_store as F  # noqa: E402
+from swp_planner.ingest import fund_store as F  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location(
     "make_fund_details", _ROOT / "scripts" / "make_fund_details.py")
@@ -44,7 +44,7 @@ def _holding():
 def conn(dsn):
     import psycopg2
 
-    from ingest import store as S
+    from swp_planner.ingest import store as S
     c = psycopg2.connect(dsn)
     with c.cursor() as cur:
         cur.execute("DROP SCHEMA IF EXISTS india CASCADE")

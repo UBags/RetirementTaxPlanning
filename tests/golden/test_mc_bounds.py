@@ -41,7 +41,7 @@ def _band(mu_arr, sig_arr, floor_n=2.5, cap_n=3.0):
 
 def test_run_monte_carlo_defaults_are_2_5_and_3_0():
     """The approved numbers, read off the signature rather than a comment."""
-    from monte_carlo import run_monte_carlo
+    from swp_planner.simulation.monte_carlo import run_monte_carlo
     params = inspect.signature(run_monte_carlo).parameters
     assert "cap_multiplier" in params, (
         "run_monte_carlo() has no cap_multiplier — §2.2 not applied")
@@ -57,7 +57,7 @@ def test_band_is_asymmetric_upward():
     left-skewed by min(Avg_CAGR_*), so the room belongs on the upside. A patch
     that transposed the two multipliers would satisfy every other test here.
     """
-    from monte_carlo import run_monte_carlo
+    from swp_planner.simulation.monte_carlo import run_monte_carlo
     p = inspect.signature(run_monte_carlo).parameters
     assert p["cap_multiplier"].default > p["floor_multiplier"].default, (
         "the cap must sit further from the mean than the floor")
@@ -66,7 +66,7 @@ def test_band_is_asymmetric_upward():
 # ── the generators respect the band ──────────────────────────────────────────
 
 def test_lognormal_returns_are_clamped_to_the_band():
-    from monte_carlo import _lognormal_returns
+    from swp_planner.simulation.monte_carlo import _lognormal_returns
     mu, sig = _flat(0.075, 0.05)
     floors, caps = _band(mu, sig)
     r = _lognormal_returns(mu, sig, 4000, floors, caps,
@@ -86,7 +86,7 @@ def test_lognormal_without_a_cap_would_exceed_it():
     produces returns above mu + 3sigma, which is exactly what the unpatched
     code shipped to the fan chart.
     """
-    from monte_carlo import _lognormal_returns
+    from swp_planner.simulation.monte_carlo import _lognormal_returns
     mu, sig = _flat(0.075, 0.05)
     floors, caps = _band(mu, sig)
     wide = mu + 100.0 * sig
@@ -98,7 +98,7 @@ def test_lognormal_without_a_cap_would_exceed_it():
 
 
 def test_block_bootstrap_returns_are_clamped_to_the_band():
-    from monte_carlo import _block_bootstrap_returns
+    from swp_planner.simulation.monte_carlo import _block_bootstrap_returns
     rng = np.random.default_rng(11)
     eq_hist = rng.normal(0.12, 0.20, 25)
     dbt_hist = rng.normal(0.07, 0.03, 25)
@@ -125,7 +125,7 @@ def test_band_is_measured_from_mu_det_not_the_historical_mean(recwarn):
     returns would land near 30%. Applied after centring, nothing may exceed
     mu_det + 3sigma.
     """
-    from monte_carlo import _block_bootstrap_returns
+    from swp_planner.simulation.monte_carlo import _block_bootstrap_returns
     rng = np.random.default_rng(5)
     eq_hist = rng.normal(0.30, 0.10, 25)      # deliberately nothing like mu_det
     dbt_hist = rng.normal(0.30, 0.10, 25)
@@ -150,7 +150,7 @@ def test_band_is_measured_from_mu_det_not_the_historical_mean(recwarn):
 @pytest.mark.slow
 def test_mc_results_carries_caps(scenario):
     """use_bootstrap=False keeps this off the network entirely."""
-    from monte_carlo import run_monte_carlo
+    from swp_planner.simulation.monte_carlo import run_monte_carlo
     label, state = scenario
     res = run_monte_carlo(state, n_sims=120, seed=1, use_bootstrap=False)
 
@@ -166,7 +166,7 @@ def test_mc_results_carries_caps(scenario):
 
 @pytest.mark.slow
 def test_band_matches_the_multipliers_it_was_given(scenario):
-    from monte_carlo import run_monte_carlo
+    from swp_planner.simulation.monte_carlo import run_monte_carlo
     label, state = scenario
     res = run_monte_carlo(state, n_sims=60, seed=1, use_bootstrap=False,
                           floor_multiplier=2.5, cap_multiplier=3.0)
@@ -183,7 +183,7 @@ def test_capping_lowers_the_upper_tail(scenario):
     An effectively-absent cap must produce a higher P95 final corpus than the
     3-sigma one. Same seed throughout, so the only difference is the clamp.
     """
-    from monte_carlo import run_monte_carlo
+    from swp_planner.simulation.monte_carlo import run_monte_carlo
     label, state = scenario
     capped = run_monte_carlo(state, n_sims=400, seed=42, use_bootstrap=False,
                              cap_multiplier=3.0)
@@ -200,7 +200,7 @@ def test_monte_carlo_is_reproducible_for_a_fixed_seed(scenario):
     MC has no golden master until Phase 1.2 lands, so determinism is the only
     thing standing between a refactor and silent drift.
     """
-    from monte_carlo import run_monte_carlo
+    from swp_planner.simulation.monte_carlo import run_monte_carlo
     label, state = scenario
     a = run_monte_carlo(state, n_sims=150, seed=99, use_bootstrap=False)
     b = run_monte_carlo(state, n_sims=150, seed=99, use_bootstrap=False)
@@ -219,7 +219,7 @@ def test_mc_bounds_do_not_reach_the_engine(scenario):
     """
     import copy
 
-    from engine import Engine
+    from swp_planner.core.engine import Engine
     label, state = scenario
     _, y1, _, _ = Engine(copy.deepcopy(state)).run()
     _, y2, _, _ = Engine(copy.deepcopy(state)).run()
@@ -232,7 +232,7 @@ def _sensitivity_dialog(state):
     pytest.importorskip("PySide6")
     from PySide6.QtWidgets import QApplication
 
-    from dialogs import SensitivityDialog
+    from swp_planner.gui.dialogs import SensitivityDialog
     app = QApplication.instance() or QApplication([])   # noqa: F841
     return SensitivityDialog(state)
 
@@ -272,7 +272,7 @@ def test_run_sensitivity_still_accepts_an_arbitrary_list(scenario):
     """
     import copy
 
-    from engine import run_sensitivity
+    from swp_planner.core.engine import run_sensitivity
     label, state = scenario
     alt = [copy.deepcopy(c) for c in state.return_chunks]
     for c in alt:

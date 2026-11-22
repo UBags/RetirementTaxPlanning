@@ -16,9 +16,9 @@ import statistics as st
 
 import pytest
 
-from data_synthesizer import engine as E
-from data_synthesizer import metrics as M
-from data_synthesizer import verify as V
+from swp_planner.data_synthesizer import engine as E
+from swp_planner.data_synthesizer import metrics as M
+from swp_planner.data_synthesizer import verify as V
 
 
 def daily_dates(n, start_year=2005):

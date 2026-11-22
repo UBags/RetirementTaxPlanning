@@ -28,7 +28,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from ingest import fund_store as F  # noqa: E402
+from swp_planner.ingest import fund_store as F  # noqa: E402
 
 DSN = os.environ.get("RTP_TEST_DSN")
 JUN, JUL, AUG = dt.date(2026, 6, 30), dt.date(2026, 7, 31), dt.date(2026, 8, 6)
@@ -111,7 +111,7 @@ pytestmark_db = pytest.mark.skipif(not DSN, reason="set RTP_TEST_DSN")
 def conn(dsn):
     import psycopg2
 
-    from ingest import store as S
+    from swp_planner.ingest import store as S
     c = psycopg2.connect(dsn)
     with c.cursor() as cur:
         cur.execute("DROP SCHEMA IF EXISTS india CASCADE")

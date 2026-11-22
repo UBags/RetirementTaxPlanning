@@ -8,8 +8,8 @@ the file.
 """
 import pytest
 
-from fund_filters import caps as C
-from fund_filters import instruments as I
+from swp_planner.fund_filters import caps as C
+from swp_planner.fund_filters import instruments as I
 
 BANK = "Private Sector Bank (IN050102002)"
 PSU_BANK = "Public Sector Bank (IN050102001)"

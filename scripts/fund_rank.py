@@ -39,15 +39,16 @@ import pathlib
 import sys
 
 _ROOT = pathlib.Path(__file__).resolve().parent.parent
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+if str(_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(_ROOT / "src"))
 
-from fund_filters import fund_score as FS  # noqa: E402
-from ingest import fund_store as F  # noqa: E402
-from lookup.api import normalise as _normalise  # noqa: E402
+from swp_planner.fund_filters import fund_score as FS  # noqa: E402
+from swp_planner.ingest import fund_store as F  # noqa: E402
+from swp_planner.lookup.api import normalise as _normalise  # noqa: E402
+from swp_planner.paths import FUNDS_DIR  # noqa: E402
 
 DEFAULT_DSN = "dbname=RetirementPlanning"
-DEFAULT_METRICS = "Fund_Metrics_Output.csv"
+DEFAULT_METRICS = str(FUNDS_DIR / "Fund_Metrics_Output.csv")
 
 
 def read_metrics(path):

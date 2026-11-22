@@ -19,7 +19,7 @@ import math
 
 import pytest
 
-from data_synthesizer import metrics as M
+from swp_planner.data_synthesizer import metrics as M
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 

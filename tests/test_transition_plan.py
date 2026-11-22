@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import pytest
 
-from transition_plan import (
+from swp_planner.core.transition_plan import (
     PURSES,
     Boundary,
     Measurement,

@@ -43,7 +43,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from ingest import fund_store as F  # noqa: E402
+from swp_planner.ingest import fund_store as F  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location(
     "review_server", _ROOT / "scripts" / "review_server.py")
@@ -107,7 +107,7 @@ def _h(cid, pct, company, gap, itype="Debenture", **kw):
 def server(dsn):
     import psycopg2
 
-    from ingest import store as S
+    from swp_planner.ingest import store as S
     conn = psycopg2.connect(dsn)
     with conn.cursor() as cur:
         cur.execute("DROP SCHEMA IF EXISTS india CASCADE")

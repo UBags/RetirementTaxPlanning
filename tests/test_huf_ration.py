@@ -25,14 +25,14 @@ import types
 
 import pytest
 
-import configuration
-from engine import (
+from swp_planner.config import configuration
+from swp_planner.core.engine import (
     Engine,
     FIFOBucket,
     FolioSet,
     _cash_consumption_order,
 )
-from models import TaxChunk, TaxSlab
+from swp_planner.core.models import TaxChunk, TaxSlab
 
 NAV = 2.0
 _SLABS = [TaxSlab(0, 4, 0.0), TaxSlab(4, 8, 0.05), TaxSlab(8, 1e9, 0.30)]
